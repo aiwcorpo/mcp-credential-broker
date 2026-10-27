@@ -329,6 +329,40 @@ class BrokerIntegrationTest {
     }
 
     @Test
+    void confluenceIdentityIsTakenFromUsernameOfUserCurrent() {
+        String sub = newSub();
+        int jiraBefore = env.whoamiCalls.get();
+        BrokerClient.Response put = putSecret(sub, "alice", "{\"secret\":\"alice-pat\"}", "confluence");
+        assertThat(put.status()).isEqualTo(200);
+        assertThat(Contracts.brokerSchemaErrors("PutSecretResponse", put.json())).isEmpty();
+        assertThat(put.json().path("status").stringValue()).isEqualTo("connected");
+        assertThat(put.json().path("backendUser").stringValue()).isEqualTo("alice");
+        assertThat(env.whoamiCalls.get()).as("Jira whoami is not used for Confluence").isEqualTo(jiraBefore);
+        assertThat(resolve(sub, "alice", TestTokens.newRequestId(), "{\"system\":\"confluence\"}").json()
+                .path("value").stringValue()).isEqualTo("alice-pat");
+    }
+
+    @Test
+    void anotherPersonsConfluencePatIsRejectedAndNothingIsStored() {
+        String carol = newSub();
+        BrokerClient.Response put = putSecret(carol, "carol", "{\"secret\":\"bob-pat\"}", "confluence");
+        assertThat(put.status()).isEqualTo(422);
+        assertThat(put.json().path("error").stringValue()).isEqualTo("identity_mismatch");
+        assertThat(rows(carol)).isZero();
+        assertThat(resolve(carol, "carol", TestTokens.newRequestId(), "{\"system\":\"confluence\"}").status())
+                .isEqualTo(409);
+    }
+
+    @Test
+    void confluencePatTheSystemRejectsIsNotStored() {
+        String sub = newSub();
+        BrokerClient.Response put = putSecret(sub, "alice", "{\"secret\":\"invalid-pat\"}", "confluence");
+        assertThat(put.status()).isEqualTo(422);
+        assertThat(put.json().path("error").stringValue()).isEqualTo("secret_invalid");
+        assertThat(rows(sub)).isZero();
+    }
+
+    @Test
     void secretTheSystemRejectsIsNotStored() {
         String sub = newSub();
         BrokerClient.Response invalid = putSecret(sub, "alice", "{\"secret\":\"invalid-pat\"}");
@@ -443,8 +477,9 @@ class BrokerIntegrationTest {
         for (JsonNode system : fromGateway.json()) {
             assertThat(Contracts.brokerSchemaErrors("SystemInfo", system)).isEmpty();
         }
-        assertThat(fromGateway.json().get(0).path("system").stringValue()).isEqualTo("jira");
-        assertThat(fromGateway.json().get(0).path("supportedTypes").get(0).stringValue()).isEqualTo("user-secret");
+        assertThat(fromGateway.json().get(0).path("system").stringValue()).isEqualTo("confluence");
+        assertThat(fromGateway.json().get(1).path("system").stringValue()).isEqualTo("jira");
+        assertThat(fromGateway.json().get(1).path("supportedTypes").get(0).stringValue()).isEqualTo("user-secret");
 
         BrokerClient.Response fromPortal = bff.send("GET", "/v1/systems", tokens.bffUser(newSub(), "alice"), null, null);
         assertThat(fromPortal.status()).isEqualTo(200);

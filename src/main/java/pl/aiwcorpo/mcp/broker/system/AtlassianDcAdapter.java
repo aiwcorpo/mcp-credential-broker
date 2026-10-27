@@ -14,23 +14,43 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Jira and Confluence Data Center (D9). whoami is {@code GET /rest/api/2/myself} (C4.1); the user name is
- * {@code name}, the e-mail {@code emailAddress}. The HTTP client must not follow redirects: a redirect
- * to another host would carry the user's PAT there.
+ * Jira and Confluence Data Center (D9). whoami differs per product (C4.1, CC-073): Jira answers
+ * {@code GET /rest/api/2/myself} with the login in {@code name}, Confluence {@code GET /rest/api/user/current}
+ * with the login in {@code username}. Confluence does not send an e-mail there. The HTTP client must not
+ * follow redirects: a redirect to another host would carry the user's PAT there.
  */
 public class AtlassianDcAdapter implements SystemAdapter {
 
-    static final String WHOAMI_PATH = "/rest/api/2/myself";
+    /** Which product the adapter talks to; decides the whoami path and the field holding the login. */
+    public enum Product {
+        JIRA("/rest/api/2/myself", "name"),
+        CONFLUENCE("/rest/api/user/current", "username");
+
+        private final String whoamiPath;
+        private final String loginField;
+
+        Product(String whoamiPath, String loginField) {
+            this.whoamiPath = whoamiPath;
+            this.loginField = loginField;
+        }
+
+        String whoamiPath() {
+            return whoamiPath;
+        }
+    }
+
+    private final Product product;
 
     private final URI baseUrl;
     private final Duration timeout;
     private final HttpClient http;
     private final JsonMapper json;
 
-    public AtlassianDcAdapter(URI baseUrl, Duration timeout, HttpClient http, JsonMapper json) {
+    public AtlassianDcAdapter(Product product, URI baseUrl, Duration timeout, HttpClient http, JsonMapper json) {
         if (http.followRedirects() != HttpClient.Redirect.NEVER) {
             throw new IllegalArgumentException("whoami client must not follow redirects");
         }
+        this.product = product;
         this.baseUrl = baseUrl;
         this.timeout = timeout;
         this.http = http;
@@ -42,7 +62,7 @@ public class AtlassianDcAdapter implements SystemAdapter {
         if (!secret.isHeaderToken()) {
             return new WhoamiResult.Rejected();
         }
-        HttpRequest request = HttpRequest.newBuilder(resolve(WHOAMI_PATH))
+        HttpRequest request = HttpRequest.newBuilder(resolve(product.whoamiPath))
                 .timeout(timeout)
                 .header("Accept", "application/json")
                 .header("Authorization", scheme.wire() + " " + secret.reveal())
@@ -70,7 +90,7 @@ public class AtlassianDcAdapter implements SystemAdapter {
         } catch (JacksonException e) {
             throw new UpstreamUnavailableException("whoami answered a body that is not JSON");
         }
-        JsonNode name = body.path("name");
+        JsonNode name = body.path(product.loginField);
         if (!name.isString() || name.stringValue().isBlank()) {
             throw new UpstreamUnavailableException("whoami answered without a user name");
         }

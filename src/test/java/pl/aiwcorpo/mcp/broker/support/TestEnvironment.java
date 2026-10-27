@@ -58,6 +58,7 @@ public final class TestEnvironment {
     public final GenericContainer<?> openbao;
     public final HttpServer upstream;
     public final AtomicInteger whoamiCalls = new AtomicInteger();
+    public final AtomicInteger confluenceWhoamiCalls = new AtomicInteger();
     public final TestPki pki = new TestPki("mcp-test-ca");
     public final TestPki foreignPki = new TestPki("mcp-foreign-ca");
     public final TestTokens tokens = new TestTokens();
@@ -129,6 +130,27 @@ public final class TestEnvironment {
                 exchange.getResponseBody().write(bytes);
                 exchange.close();
             });
+            upstream.createContext("/rest/api/user/current", exchange -> {
+                confluenceWhoamiCalls.incrementAndGet();
+                String auth = exchange.getRequestHeaders().getFirst("Authorization");
+                String pat = auth != null && auth.startsWith("Bearer ") ? auth.substring(7) : null;
+                int status;
+                String body;
+                if (pat == null || pat.startsWith("invalid")) {
+                    status = 401;
+                    body = "{\"statusCode\":401,\"message\":\"\"}";
+                } else {
+                    String user = JIRA_PATS.getOrDefault(pat, "someone-else");
+                    status = 200;
+                    body = "{\"type\":\"known\",\"username\":\"" + user + "\",\"userKey\":\"2c9" + user
+                            + "\",\"displayName\":\"" + user + "\"}";
+                }
+                byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().add("Content-Type", "application/json");
+                exchange.sendResponseHeaders(status, bytes.length);
+                exchange.getResponseBody().write(bytes);
+                exchange.close();
+            });
             upstream.createContext("/jwks", exchange -> {
                 byte[] bytes = tokens.idpJwks().getBytes(StandardCharsets.UTF_8);
                 exchange.getResponseHeaders().add("Content-Type", "application/json");
@@ -170,6 +192,10 @@ public final class TestEnvironment {
         registry.add("MCP_GATEWAY_JWKS_FILE", () -> workDir.resolve("gateway-jwks.json").toString());
         registry.add("MCP_ALLOW_TEST_KEYS", () -> "true");
         registry.add("MCP_JIRA_URL", this::upstreamUrl);
+        registry.add("broker.systems.confluence.base-url", this::upstreamUrl);
+        registry.add("broker.systems.confluence.adapter", () -> "atlassian-dc");
+        registry.add("broker.systems.confluence.supported-types", () -> "user-secret");
+        registry.add("broker.systems.confluence.default-type", () -> "user-secret");
         registry.add("MCP_PORTAL_URL", () -> "https://mcp-portal.test");
         registry.add("MCP_ALLOW_PLAIN_HTTP", () -> "true");
     }

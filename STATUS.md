@@ -1,7 +1,7 @@
 # Status ws-06 (mcp-credential-broker)
 
 Kamień: **M1** (`PUT secret` + `resolve` dla `user-secret` Jira, OpenBao KV v2 + Transit, audyt C8, mTLS + JWT
-z `x-allowed-client-cn`). Kontrakty: `mcp-contracts` `v2.0.0` (od 2026-10-27, wcześniej 1.1.0). M2-M4 nie są
+z `x-allowed-client-cn`). Kontrakty: `mcp-contracts` `v2.1.1` (od 2026-10-27, wcześniej 2.0.0 i 1.1.0). M2-M4 nie są
 zaczęte.
 
 ## M1: zrobione
@@ -13,7 +13,7 @@ zaczęte.
 | `GET /v1/systems` | gateway (także wariant serwisowy, CC-030) i BFF; potrzebne gateway'owi przy starcie |
 | `GET /v1/connections` | przeniesione do M1 (decyzja człowieka 2026-10-27): tylko CN `mcp-portal-bff`, połączenia `sub` z tokenu, statusy C4 (`connected`, `expiring`, `expired`, `revoked`, `error`), bez wartości sekretu |
 | `DELETE /v1/connections/{system}` | przeniesione do M1: usuwa sekret z OpenBao (wszystkie wersje KV), potem metadane, publikuje `credential.invalidated`, audyt `connection_change`; idempotentne (204 także gdy nic nie było, wtedy bez zdarzenia); nieznany system -> 400; odwołanie u dostawcy dotyczy tylko `user-oauth` (M2) |
-| Weryfikacja C2 | wszystkie 43 wektory `test-vectors/jwt` 2.0.0 zgodne co do wyniku i powodu; klucze testowe odrzucane po `kid` i po SPKI |
+| Weryfikacja C2 | wszystkie 51 wektorów `test-vectors/jwt` 2.1.1 zgodne co do wyniku i powodu; klucze testowe odrzucane po `kid` i po SPKI |
 | `SecretStore` na OpenBao | AppRole, Transit encrypt/decrypt, KV v2, powiązanie szyfrogramu z (`sub`, system) |
 | Metadane | PostgreSQL `connection` (Flyway), bez wartości sekretów |
 | Audyt C8 | `credential_resolve`, `connection_change` (także odrzucenia na etapie tokenu), walidowane schematem w testach |
@@ -24,8 +24,8 @@ zaczęte.
 
 ```
 ./mvnw -B verify
-Tests run: 98, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS, mcp-contracts 2.0.0)
-  InternalJwtVectorTest 47, BrokerIntegrationTest 25, CredentialServiceTest 10, OperationsContractTest 3,
+Tests run: 109, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS, mcp-contracts 2.1.1)
+  InternalJwtVectorTest 55, BrokerIntegrationTest 28, CredentialServiceTest 10, OperationsContractTest 3,
   OpenBaoClientTest 3, KeySourceTest 3, ConnectionTest 2, AuditLogTest 2, ReturnPathTest 2,
   TransportSecurityTest 1
 ```
@@ -87,6 +87,18 @@ CC-054); ciało ma kształt `Error`.
 | 503 we wszystkich operacjach (CC-064) | było; ciała błędów walidowane schematem `Error` |
 | audyt 2.0.0 (CC-031) | testy walidują schematem 2.0.0; broker nie emituje `resource` |
 | `returnPath` (CC-032) | walidator `ReturnPath` z testem na wektorach; użyty w M2 (`oauth/start`) |
+
+## Przejście na `mcp-contracts` 2.1.1 (2026-10-27)
+
+Schemat Cedar bajtowo jak w 2.0.x; zmieniła się wersja zależności w `pom.xml` (artefakty z `~/.m2`).
+
+| Pozycja | Stan |
+| --- | --- |
+| CC-073: whoami Confluence DC | `AtlassianDcAdapter.Product`: Jira `GET /rest/api/2/myself` (login w `name`), Confluence `GET /rest/api/user/current` (login w `username`); produkt wybiera `SystemRegistry` po id systemu (adapter `atlassian-dc` obsługuje tylko `jira` i `confluence`). Testy: `confluenceIdentityIsTakenFromUsernameOfUserCurrent` (connected, `backendUser` = username, bez wywołania whoami Jiry), `anotherPersonsConfluencePatIsRejectedAndNothingIsStored` (`identity_mismatch`, brak wiersza, `resolve` -> 409), `confluencePatTheSystemRejectsIsNotStored` (401 -> `secret_invalid`); Jira bez regresji (dotychczasowe testy) |
+| Konfiguracja Confluence | system `confluence` nie jest w `application.yml` (wymagany adres zepsułby start tam, gdzie go nie ma); włącza się zmiennymi `BROKER_SYSTEMS_CONFLUENCE_*` (README). Dodanie `MCP_CONFLUENCE_URL` do `mcp-platform-dev` i mocka `/rest/api/user/current` to prace ws-01 |
+| CC-069/070: wektory JWT (9 nowych, razem 51) | wszystkie zgodne; w harnessie testowym `server/discover` dopisane do metod dozwolonych dla wariantu serwisowego (broker nie obsługuje JSON-RPC, więc kod produkcyjny bez zmian: wariant serwisowy nadal tylko `GET /v1/systems`) |
+| CC-071 (audyt `authentication`), CC-072, CC-074, CC-075, CC-076, CC-077 | nie dotyczą M1 brokera (broker nie emituje `authentication`, nie zwraca treści z systemów, nie obsługuje potwierdzeń); nic do zrobienia |
+| 2.1.1: `no-store` na potwierdzeniach, zamknięta lista pól `authentication` | dotyczy gateway'a, BFF i startera, nie brokera (broker ma `no-store` na `resolve` od M1) |
 
 ## Przegląd M1 (2026-10-27): znaleziska i poprawki
 

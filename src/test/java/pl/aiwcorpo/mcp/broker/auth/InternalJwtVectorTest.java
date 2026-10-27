@@ -42,7 +42,7 @@ import tools.jackson.databind.JsonNode;
  */
 class InternalJwtVectorTest {
 
-    private static final Set<String> PROTOCOL_METHODS = Set.of("initialize", "tools/list", "ping");
+    private static final Set<String> PROTOCOL_METHODS = Set.of("initialize", "server/discover", "tools/list", "ping");
 
     static Stream<Arguments> vectors() {
         List<Resource> files = Contracts.vectors("jwt");

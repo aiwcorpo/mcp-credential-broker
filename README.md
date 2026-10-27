@@ -3,7 +3,7 @@
 Credential broker platformy MCP (strumień ws-06): jedyne miejsce, w którym leżą poświadczenia użytkowników
 do systemów docelowych, per (`sub`, system). Gateway pobiera z niego poświadczenie przy wywołaniu
 narzędzia (`resolve`), portal BFF zapisuje je w imieniu zalogowanego użytkownika. Kontrakt: C4 z
-`mcp-contracts` 2.0.0 (`openapi/credential-broker.v1.yaml`), audyt C8, zdarzenie C4.3.
+`mcp-contracts` 2.1.1 (`openapi/credential-broker.v1.yaml`), audyt C8, zdarzenie C4.3.
 
 Stan: kamień M1 (PAT do Jiry). Co działa, czego jeszcze nie ma i odstępstwa od briefu: [STATUS.md](STATUS.md).
 
@@ -30,7 +30,7 @@ zgodnie z `x-allowed-client-cn` (inaczej 403), token pasujący do CN (inaczej 40
 tokenu; ścieżka, query i ciało nie mogą go wskazać (nieznane pola w JSON -> 400). Ciało jest ograniczone do
 16 KB liczonych przy czytaniu, więc limit działa także dla `Transfer-Encoding: chunked` bez `Content-Length`.
 
-Wewnętrzny JWT C2 sprawdzany jest dokładnie według wektorów `test-vectors/jwt` z 2.0.0 (wszystkie 43
+Wewnętrzny JWT C2 sprawdzany jest dokładnie według wektorów `test-vectors/jwt` z 2.1.1 (wszystkie 51
 przechodzą, także co do powodu odrzucenia): tylko ES256, `kid` z JWKS gateway'a, podpis, kształt claimów
 wariantu, `iss`, `aud` jako napis, `exp` z tolerancją 30 s, `iat` nie z przyszłości, czas życia do 60 s,
 `rid == X-Request-Id`, wariant serwisowy tylko dla `GET /v1/systems`, `tool` wymagany przy `resolve` i
@@ -39,8 +39,8 @@ zabroniony przy `GET /v1/systems` (CC-038), `vsc` według wzorców identyfikator
 (`kid` z prefiksem `test-` i, niezależnie od `kid`, klucze o skrócie SPKI z `test-vectors/keys`) są odrzucane
 z powodem `test_key_not_allowed`, chyba że `MCP_ALLOW_TEST_KEYS=true` (CC-044).
 
-`PUT secret` woła whoami systemu z nowym sekretem (Jira DC: `GET /rest/api/2/myself`, bez podążania za
-przekierowaniami, TLS z zaufaniem do wewnętrznego CA) i porównuje użytkownika z claimem SSO. Odrzucony
+`PUT secret` woła whoami systemu z nowym sekretem (Jira DC: `GET /rest/api/2/myself`, login w `name`; Confluence DC: `GET /rest/api/user/current`,
+login w `username`, CC-073; bez podążania za przekierowaniami, TLS z zaufaniem do wewnętrznego CA) i porównuje użytkownika z claimem SSO. Odrzucony
 sekret albo cudzy PAT nie jest nigdzie zapisywany. Zastąpienie istniejącego połączenia publikuje
 `credential.invalidated` (CC-046). `subjectToken` w `resolve` dla systemu, który nie jest `token-exchange`,
 daje 400.
@@ -113,6 +113,7 @@ Zmienne środowiska (nazwy z `mcp-platform-dev`, profil `full`). Pełna lista w
 | `MCP_GATEWAY_ISSUER` | `iss` wewnętrznego JWT, domyślnie `https://mcp-gateway.internal` |
 | `MCP_ALLOW_TEST_KEYS` | domyślnie `false`: opublikowane klucze testowe odrzucane; `true` tylko w testach i lokalnie |
 | `MCP_JIRA_URL` | adres Jiry (whoami), wymagany |
+| `BROKER_SYSTEMS_CONFLUENCE_*` | opcjonalny system `confluence` (adapter `atlassian-dc`): `BASEURL`, `ADAPTER=atlassian-dc`, `SUPPORTEDTYPES=user-secret`, `DEFAULTTYPE=user-secret`; ten sam sposób co `jira` w `application.yml` |
 | `MCP_PORTAL_URL` | baza `connectUrl` w `409 credential_required`, wymagany |
 | `MCP_ALLOW_PLAIN_HTTP` | domyślnie `false`; `true` dopuszcza `http` do OpenBao, JWKS i whoami (tylko dev) |
 
@@ -131,7 +132,7 @@ docker build -t mcp-credential-broker:dev .
 
 | Test | Co sprawdza |
 | --- | --- |
-| `InternalJwtVectorTest` | wszystkie wektory C2 z `mcp-contracts` 2.0.0 (wynik i powód, `allowTestKeys` z wektora), klucz testowy pod produkcyjnym `kid` (SPKI), replay |
+| `InternalJwtVectorTest` | wszystkie wektory C2 z `mcp-contracts` 2.1.1 (wynik i powód, `allowTestKeys` z wektora), klucz testowy pod produkcyjnym `kid` (SPKI), replay |
 | `ReturnPathTest` | walidator `returnPath` (CC-032) na wektorach `return-paths/`, gotowy pod `oauth/start` w M2 |
 | `OperationsContractTest` | tabela operacji filtra == metody, ścieżki i `x-allowed-client-cn` z OpenAPI C4 |
 | `BrokerIntegrationTest` | mTLS, PostgreSQL, Redis z ACL jak w dev, OpenBao (AppRole, KV v2, Transit), fałszywa Jira; odpowiedzi walidowane schematami OpenAPI, audyt schematem C8, zdarzenie schematem C4.3; brak sekretu w odpowiedziach poza `resolve` i w logach |

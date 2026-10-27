@@ -53,8 +53,16 @@ public class SystemRegistry {
 
     private static SystemAdapter adapter(String id, BrokerProperties.SystemConfig system, HttpClient http, JsonMapper json) {
         return switch (system.adapter()) {
-            case "atlassian-dc" -> new AtlassianDcAdapter(system.baseUrl(), system.timeout(), http, json);
+            case "atlassian-dc" -> new AtlassianDcAdapter(atlassianProduct(id), system.baseUrl(), system.timeout(), http, json);
             default -> throw new IllegalArgumentException("broker.systems." + id + ": unknown adapter " + system.adapter());
+        };
+    }
+
+    private static AtlassianDcAdapter.Product atlassianProduct(String id) {
+        return switch (id) {
+            case "jira" -> AtlassianDcAdapter.Product.JIRA;
+            case "confluence" -> AtlassianDcAdapter.Product.CONFLUENCE;
+            default -> throw new IllegalArgumentException("broker.systems." + id + ": adapter atlassian-dc serves only jira and confluence");
         };
     }
 
