@@ -4,6 +4,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 
@@ -48,6 +49,23 @@ public class ConnectionRepository {
                 .param("lastUsedAt", timestamp(connection.lastUsedAt()))
                 .param("secretVersion", connection.secretVersion())
                 .param("now", timestamp(now))
+                .update();
+    }
+
+    public List<Connection> findAll(String sub) {
+        return jdbc.sql("""
+                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version
+                from connection where sub = :sub order by system
+                """)
+                .param("sub", sub)
+                .query(ConnectionRepository::map)
+                .list();
+    }
+
+    public void delete(String sub, String system) {
+        jdbc.sql("delete from connection where sub = :sub and system = :system")
+                .param("sub", sub)
+                .param("system", system)
                 .update();
     }
 

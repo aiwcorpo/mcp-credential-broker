@@ -190,6 +190,54 @@ public class CredentialService {
         }
     }
 
+    /** Connections of the calling user with their C4 status; never touches the secret store. */
+    public List<Listed> connections(Caller.PortalUser caller) {
+        Instant now = clock.instant();
+        return connections.findAll(caller.sub()).stream()
+                .map(c -> new Listed(c, c.status(now, expiringThreshold)))
+                .toList();
+    }
+
+    public record Listed(Connection connection, ConnectionStatus status) {
+    }
+
+    /**
+     * Disconnects the calling user's system. Idempotent. The secret goes first (all KV versions), then the
+     * row: if the store fails, the connection stays usable and the call can be repeated; if the row delete
+     * fails after that, resolve already answers credential_required. Revocation at the provider applies to
+     * user-oauth (M2), not to user-secret.
+     */
+    public boolean disconnect(Caller.PortalUser caller, String systemId) {
+        AuditLog.Entry entry = audit.event("connection_change", caller.requestId())
+                .user(caller.sub(), caller.username(), caller.azp())
+                .system(systemId);
+        try {
+            if (!SystemRegistry.KNOWN_SYSTEMS.contains(systemId)) {
+                throw new InvalidRequestException("unknown system");
+            }
+            Optional<Connection> existing = connections.find(caller.sub(), systemId);
+            if (existing.isEmpty()) {
+                entry.ok("nothing_to_disconnect");
+                return false;
+            }
+            entry.credentialType(existing.get().type().wire());
+            secrets.delete(existing.get().secretKey());
+            connections.delete(caller.sub(), systemId);
+            invalidations.invalidated(caller.sub(), systemId);
+            entry.ok("disconnected");
+            return true;
+        } catch (InvalidRequestException e) {
+            entry.denied("invalid_request", "invalid_argument");
+            throw e;
+        } catch (SecretStoreUnavailableException e) {
+            entry.error("secret_store_unavailable", "upstream_unavailable");
+            throw e;
+        } catch (RuntimeException e) {
+            entry.error(unavailableDatabase(e) ? "database_unavailable" : "internal_error", "upstream_unavailable");
+            throw e;
+        }
+    }
+
     static boolean unavailableDatabase(RuntimeException e) {
         return e instanceof DataAccessResourceFailureException || e instanceof TransientDataAccessException
                 || e instanceof RecoverableDataAccessException;

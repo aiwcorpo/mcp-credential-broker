@@ -149,6 +149,98 @@ class BrokerIntegrationTest {
     }
 
     @Test
+    void listsAndDeletesOnlyTheCallersConnections(CapturedOutput output) throws InterruptedException {
+        String alice = newSub();
+        String bob = newSub();
+        Instant expires = Instant.now().plus(3, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS);
+        assertThat(putSecret(alice, "alice", "{\"secret\":\"alice-pat\",\"expiresAt\":\"" + expires + "\"}").status())
+                .isEqualTo(200);
+        assertThat(putSecret(bob, "bob", "{\"secret\":\"bob-pat\"}").status()).isEqualTo(200);
+        String aliceToken = tokens.bffUser(alice, "alice");
+
+        BrokerClient.Response list = bff.send("GET", "/v1/connections?sub=" + bob, aliceToken, null, null);
+        assertThat(list.status()).isEqualTo(200);
+        assertThat(list.body()).doesNotContain("alice-pat").doesNotContain("bob");
+        assertThat(list.json().isArray()).isTrue();
+        assertThat(list.json()).hasSize(1);
+        JsonNode connection = list.json().get(0);
+        assertThat(Contracts.brokerSchemaErrors("Connection", connection)).isEmpty();
+        assertThat(connection.path("system").stringValue()).isEqualTo("jira");
+        assertThat(connection.path("status").stringValue()).isEqualTo("expiring");
+        assertThat(connection.path("backendUser").stringValue()).isEqualTo("alice");
+        assertThat(connection.path("expiresAt").stringValue()).isEqualTo(expires.toString());
+        assertThat(connection.path("lastUsedAt").isNull()).isTrue();
+        String alicePath = storedPath(alice);
+
+        String deleteOther = TestTokens.newRequestId();
+        assertThat(bff.send("DELETE", "/v1/connections/" + bob, aliceToken, deleteOther, null).status()).isEqualTo(400);
+        assertThat(auditEvents(output, deleteOther)).singleElement()
+                .satisfies(e -> assertThat(e.has("server")).isFalse());
+
+        BlockingQueue<String> messages = new LinkedBlockingQueue<>();
+        RedisClient client = RedisClient.create(RedisURI.builder()
+                .withHost(env.redis.getHost()).withPort(env.redis.getMappedPort(6379))
+                .withAuthentication("admin", TestEnvironment.REDIS_ADMIN_PASSWORD.toCharArray()).build());
+        try (StatefulRedisPubSubConnection<String, String> pubsub = client.connectPubSub()) {
+            pubsub.addListener(new RedisPubSubAdapter<>() {
+                @Override
+                public void message(String channel, String message) {
+                    messages.add(message);
+                }
+            });
+            pubsub.sync().subscribe("credential.invalidated");
+
+            String rid = TestTokens.newRequestId();
+            BrokerClient.Response deleted = bff.send("DELETE", "/v1/connections/jira?sub=" + bob, aliceToken, rid,
+                    "{\"sub\":\"" + bob + "\"}");
+            assertThat(deleted.status()).isEqualTo(204);
+            assertThat(deleted.body()).isEmpty();
+            JsonNode event = Contracts.JSON.readTree(messages.poll(5, TimeUnit.SECONDS));
+            assertThat(Contracts.schemaErrors("schemas/credential-invalidated-event.schema.json", event)).isEmpty();
+            assertThat(event.path("sub").stringValue()).isEqualTo(alice);
+            assertThat(auditEvents(output, rid)).singleElement().satisfies(e -> {
+                assertThat(e.path("event").stringValue()).isEqualTo("connection_change");
+                assertThat(e.path("reason").stringValue()).isEqualTo("disconnected");
+            });
+
+            assertThat(bff.send("DELETE", "/v1/connections/jira", aliceToken, null, null).status())
+                    .as("idempotent").isEqualTo(204);
+            assertThat(messages.poll(500, TimeUnit.MILLISECONDS)).as("nothing left to invalidate").isNull();
+        } finally {
+            client.shutdown();
+        }
+
+        assertThat(rows(alice)).isZero();
+        assertThat(env.bao("GET", alicePath, null).statusCode()).isEqualTo(404);
+        assertThat(resolve(alice, "alice", TestTokens.newRequestId(), "{\"system\":\"jira\"}").status()).isEqualTo(409);
+        assertThat(bff.send("GET", "/v1/connections", aliceToken, null, null).json()).isEmpty();
+
+        assertThat(rows(bob)).isOne();
+        assertThat(resolve(bob, "bob", TestTokens.newRequestId(), "{\"system\":\"jira\"}").json()
+                .path("value").stringValue()).isEqualTo("bob-pat");
+        assertNoSecretsLogged(output);
+    }
+
+    @Test
+    void listedStatusFollowsStoredStateAndExpiry() {
+        String sub = newSub();
+        assertThat(putSecret(sub, "alice", "{\"secret\":\"alice-pat\"}").status()).isEqualTo(200);
+        jdbc.sql("update connection set expires_at = now() - interval '1 day' where sub = ?").param(sub).update();
+        assertThat(listedStatus(sub)).isEqualTo("expired");
+        jdbc.sql("update connection set expires_at = null, state = 'revoked' where sub = ?").param(sub).update();
+        assertThat(listedStatus(sub)).isEqualTo("revoked");
+        jdbc.sql("update connection set state = 'error' where sub = ?").param(sub).update();
+        assertThat(listedStatus(sub)).isEqualTo("error");
+        assertThat(resolve(sub, "alice", TestTokens.newRequestId(), "{\"system\":\"jira\"}").status()).isEqualTo(409);
+    }
+
+    private String listedStatus(String sub) {
+        BrokerClient.Response list = bff.send("GET", "/v1/connections", tokens.bffUser(sub, "alice"), null, null);
+        assertThat(Contracts.brokerSchemaErrors("Connection", list.json().get(0))).isEmpty();
+        return list.json().get(0).path("status").stringValue();
+    }
+
+    @Test
     void storedValueIsTransitCiphertextUnderTheSubHash() {
         String sub = newSub();
         assertThat(putSecret(sub, "alice", "{\"secret\":\"alice-pat\"}").status()).isEqualTo(200);
@@ -372,7 +464,7 @@ class BrokerIntegrationTest {
         String rid = TestTokens.newRequestId();
         assertThat(gateway.send("POST", "/v1/credentials/resolve", tokens.gatewayUser(sub, "alice", rid), rid,
                 "{\"system\":\"jira\",\"extra\":1}").status()).isEqualTo(400);
-        assertThat(gateway.send("GET", "/v1/connections", null, null, null).status()).isEqualTo(404);
+        assertThat(gateway.send("GET", "/v1/connections", null, null, null).status()).isEqualTo(403);
         assertThat(rows(sub)).isZero();
         assertNoSecretsLogged(output);
     }
@@ -422,7 +514,7 @@ class BrokerIntegrationTest {
     void unknownPathsAndMethodsGetNoHandler() {
         String bffToken = tokens.bffUser(newSub(), "alice");
         for (String path : List.of("/v1/credentials/../systems", "/v1/%2e%2e/systems", "/v1/systems;x=1", "//v1/systems",
-                "/error", "/actuator/env", "/v1/connections", "/v1/admin/users/x/purge")) {
+                "/error", "/actuator/env", "/v1/connections/jira/secret/x", "/v1/admin/users/x/purge")) {
             int status = bff.send("GET", path, bffToken, null, null).status();
             assertThat(status).as(path).isIn(400, 404);
         }

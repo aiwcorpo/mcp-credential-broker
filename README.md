@@ -16,9 +16,11 @@ Wszystko po HTTPS z wymaganym certyfikatem klienta z wewnętrznego CA (port 8443
 | `POST /v1/credentials/resolve` | `mcp-gateway` | wewnętrzny JWT C2, wariant użytkownika, `aud=mcp-credential-broker` | `200 {scheme, value, type, expiresAt, cacheTtlSeconds}` z `Cache-Control: no-store`, `409 credential_required` |
 | `PUT /v1/connections/{system}/secret` | `mcp-portal-bff` | token użytkownika po token exchange: `aud` zawiera `mcp-credential-broker`, `azp=mcp-portal-bff` | `200 {status, backendUser, expiresAt}`, `422 secret_invalid` / `identity_mismatch` |
 | `GET /v1/systems` | `mcp-gateway`, `mcp-portal-bff` | jak wyżej; od gateway'a także wariant serwisowy C2 (CC-030) | lista systemów z konfiguracji |
+| `GET /v1/connections` | `mcp-portal-bff` | token użytkownika jak przy `PUT secret` | połączenia użytkownika z tokenu, statusy C4, bez wartości sekretu |
+| `DELETE /v1/connections/{system}` | `mcp-portal-bff` | jak wyżej | `204`; usuwa sekret (wszystkie wersje KV) i metadane, publikuje `credential.invalidated`; idempotentne |
 | `GET /actuator/health` | dowolny z wewnętrznego CA | brak | `UP`/`DOWN` |
 
-Pozostałe operacje C4 (`GET /v1/connections`, `oauth/*`, `DELETE`, `purge`) odpowiadają
+Pozostałe operacje C4 (`oauth/*`, `purge`) odpowiadają
 `404 not_found_or_denied` do czasu M2-M4, tak samo jak każda nieznana ścieżka i metoda. C4 nie ma 500:
 nieoczekiwany błąd i niedostępna zależność (OpenBao, PostgreSQL, Redis, JWKS gateway'a lub IdP) dają
 `503 upstream_unavailable`.

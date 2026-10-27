@@ -11,6 +11,8 @@ zaczęte.
 | `POST /v1/credentials/resolve` | tylko CN `mcp-gateway` + wewnętrzny JWT C2 (wariant użytkownika); `200` z `Cache-Control: no-store` i `Pragma: no-cache`, `cacheTtlSeconds` <= 60 i nie dłużej niż do `expiresAt`; `409 credential_required` z `connectUrl`; `503` przy niedostępnym OpenBao/Redis |
 | `PUT /v1/connections/{system}/secret` | tylko CN `mcp-portal-bff` + token z IdP (`aud` brokera, `azp=mcp-portal-bff`); whoami Jiry, porównanie z `preferred_username`; `422 secret_invalid` / `identity_mismatch` bez zapisu |
 | `GET /v1/systems` | gateway (także wariant serwisowy, CC-030) i BFF; potrzebne gateway'owi przy starcie |
+| `GET /v1/connections` | przeniesione do M1 (decyzja człowieka 2026-10-27): tylko CN `mcp-portal-bff`, połączenia `sub` z tokenu, statusy C4 (`connected`, `expiring`, `expired`, `revoked`, `error`), bez wartości sekretu |
+| `DELETE /v1/connections/{system}` | przeniesione do M1: usuwa sekret z OpenBao (wszystkie wersje KV), potem metadane, publikuje `credential.invalidated`, audyt `connection_change`; idempotentne (204 także gdy nic nie było, wtedy bez zdarzenia); nieznany system -> 400; odwołanie u dostawcy dotyczy tylko `user-oauth` (M2) |
 | Weryfikacja C2 | wszystkie 43 wektory `test-vectors/jwt` 2.0.0 zgodne co do wyniku i powodu; klucze testowe odrzucane po `kid` i po SPKI |
 | `SecretStore` na OpenBao | AppRole, Transit encrypt/decrypt, KV v2, powiązanie szyfrogramu z (`sub`, system) |
 | Metadane | PostgreSQL `connection` (Flyway), bez wartości sekretów |
@@ -22,8 +24,8 @@ zaczęte.
 
 ```
 ./mvnw -B verify
-Tests run: 96, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS, mcp-contracts 2.0.0)
-  InternalJwtVectorTest 47, BrokerIntegrationTest 23, CredentialServiceTest 10, OperationsContractTest 3,
+Tests run: 98, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS, mcp-contracts 2.0.0)
+  InternalJwtVectorTest 47, BrokerIntegrationTest 25, CredentialServiceTest 10, OperationsContractTest 3,
   OpenBaoClientTest 3, KeySourceTest 3, ConnectionTest 2, AuditLogTest 2, ReturnPathTest 2,
   TransportSecurityTest 1
 ```
@@ -56,6 +58,20 @@ Bez certyfikatu i z certyfikatem obcego CA: zerwany handshake.
 | `resolve` zwraca `cacheTtlSeconds` <= 60 | testy integracyjne i `CredentialServiceTest.cacheTtlNeverOutlivesTheCredential` |
 
 Punkty DoD o OAuth, `DELETE`/`purge`, revoke i odświeżaniu należą do M2-M4.
+
+## Przeniesione do M1: `GET /v1/connections` i `DELETE /v1/connections/{system}` (2026-10-27)
+
+Decyzja człowieka: test integracyjny portalu (przeglądarka -> BFF -> prawdziwy broker) potrzebował listy
+połączeń. OAuth, refresh, purge i reszta M2-M4 nadal poza zakresem.
+
+| Test | Co sprawdza |
+| --- | --- |
+| `listsAndDeletesOnlyTheCallersConnections` | lista walidowana schematem `Connection` z OpenAPI 2.0.0, bez wartości sekretu; `?sub=` w liście i `DELETE`, `sub` w ciele `DELETE` i `sub` w miejscu systemu (400) nie dotykają cudzego połączenia; po `DELETE`: 204, `credential.invalidated` (schemat), audyt `disconnected`, brak wiersza i wpisu w OpenBao, `resolve` -> 409; drugi `DELETE` 204 bez zdarzenia |
+| `listedStatusFollowsStoredStateAndExpiry` | `expired`, `revoked`, `error` na liście; `resolve` dla nich -> 409 |
+| `OperationsContractTest` | tabela operacji obejmuje `listConnections` i `deleteConnection`; niezrobione zostają `startOAuth`, `completeOAuth`, `purgeUser` |
+
+`400` dla nieznanego systemu w `DELETE` nie jest wymienione w odpowiedziach tej operacji w C4 (C12 ma je od
+CC-054); ciało ma kształt `Error`.
 
 ## Przejście na `mcp-contracts` 2.0.0 (2026-10-27)
 

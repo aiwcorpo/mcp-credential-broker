@@ -24,9 +24,15 @@ public record Operation(String operationId, String method, Pattern path, Set<Str
     public static final Operation LIST_SYSTEMS = new Operation("listSystems", "GET",
             Pattern.compile("^/v1/systems$"), Set.of(GATEWAY, PORTAL_BFF), true, InternalJwtVerifier.ToolClaim.FORBIDDEN, null);
 
-    public static final List<Operation> ALL = List.of(RESOLVE, PUT_SECRET, LIST_SYSTEMS);
+    public static final Operation LIST_CONNECTIONS = new Operation("listConnections", "GET",
+            Pattern.compile("^/v1/connections$"), Set.of(PORTAL_BFF), false, InternalJwtVerifier.ToolClaim.FORBIDDEN, null);
+    public static final Operation DELETE_CONNECTION = new Operation("deleteConnection", "DELETE",
+            Pattern.compile("^/v1/connections/[^/]+$"), Set.of(PORTAL_BFF), false, InternalJwtVerifier.ToolClaim.FORBIDDEN,
+            "connection_change");
 
-    private static final Pattern SYSTEM_IN_PATH = Pattern.compile("^/v1/connections/([^/;]+)/");
+    public static final List<Operation> ALL = List.of(RESOLVE, PUT_SECRET, LIST_SYSTEMS, LIST_CONNECTIONS, DELETE_CONNECTION);
+
+    private static final Pattern SYSTEM_IN_PATH = Pattern.compile("^/v1/connections/([^/;]+)(?:/|$)");
 
     /** System named in a connection path, or null; the audit log keeps only known system ids. */
     public static String systemOf(String path) {
