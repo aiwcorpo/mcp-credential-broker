@@ -171,6 +171,7 @@ public final class TestEnvironment {
         registry.add("MCP_REJECT_TEST_KIDS", () -> "false");
         registry.add("MCP_JIRA_URL", this::upstreamUrl);
         registry.add("MCP_PORTAL_URL", () -> "https://mcp-portal.test");
+        registry.add("MCP_ALLOW_PLAIN_HTTP", () -> "true");
     }
 
     /** Raw OpenBao call with the root token, for setup and for checking what is stored. */

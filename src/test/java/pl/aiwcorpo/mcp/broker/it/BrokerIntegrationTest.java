@@ -131,12 +131,33 @@ class BrokerIntegrationTest {
     void storedValueIsTransitCiphertextUnderTheSubHash() {
         String sub = newSub();
         assertThat(putSecret(sub, "alice", "{\"secret\":\"alice-pat\"}").status()).isEqualTo(200);
-        String path = "secret/data/mcp/connections/" + new SecretKey(sub, "jira").subHash() + "/jira";
+        String path = storedPath(sub);
         var stored = env.bao("GET", path, null);
         assertThat(stored.statusCode()).isEqualTo(200);
         assertThat(stored.body()).doesNotContain("alice-pat").doesNotContain(sub);
         assertThat(Contracts.JSON.readTree(stored.body()).path("data").path("data").path("ciphertext").stringValue())
                 .startsWith("vault:v1:");
+
+        assertThat(putSecret(sub, "alice", "{\"secret\":\"alice-pat\"}").status()).isEqualTo(200);
+        assertThat(storedPath(sub)).isNotEqualTo(path);
+        assertThat(env.bao("GET", path, null).statusCode()).as("replaced value removed with all KV versions").isEqualTo(404);
+        assertThat(env.bao("GET", storedPath(sub), null).statusCode()).isEqualTo(200);
+    }
+
+    @Test
+    void ciphertextMovedToAnotherUsersPathIsRefused() {
+        String alice = newSub();
+        String mallory = newSub();
+        assertThat(putSecret(alice, "alice", "{\"secret\":\"alice-pat\"}").status()).isEqualTo(200);
+        assertThat(putSecret(mallory, "mallory", "{\"secret\":\"mallory-pat\"}").status()).isEqualTo(200);
+        String aliceEntry = env.bao("GET", storedPath(alice), null).body();
+        String ciphertext = Contracts.JSON.readTree(aliceEntry).path("data").path("data").path("ciphertext").stringValue();
+        assertThat(env.bao("POST", storedPath(mallory), "{\"data\":{\"ciphertext\":\"" + ciphertext + "\"}}").statusCode())
+                .isEqualTo(200);
+
+        BrokerClient.Response resolved = resolve(mallory, "mallory", TestTokens.newRequestId(), "{\"system\":\"jira\"}");
+        assertThat(resolved.status()).isEqualTo(503);
+        assertThat(resolved.body()).isEqualTo("{\"error\":\"upstream_unavailable\"}");
     }
 
     @Test
@@ -182,8 +203,8 @@ class BrokerIntegrationTest {
         assertThat(put.json().path("error").stringValue()).isEqualTo("identity_mismatch");
         assertThat(env.whoamiCalls.get()).isEqualTo(whoamiBefore + 1);
         assertThat(rows(carol)).isZero();
-        assertThat(env.bao("GET", "secret/data/mcp/connections/" + new SecretKey(carol, "jira").subHash() + "/jira", null)
-                .statusCode()).isEqualTo(404);
+        assertThat(env.bao("LIST", "secret/metadata/mcp/connections/" + new SecretKey(carol, "jira", null).subHash(), null)
+                .statusCode()).as("nothing stored under the user").isEqualTo(404);
         assertThat(resolve(carol, "carol", TestTokens.newRequestId(), "{\"system\":\"jira\"}").status()).isEqualTo(409);
 
         String alice = newSub();
@@ -354,6 +375,118 @@ class BrokerIntegrationTest {
         }
     }
 
+    @Test
+    void chunkedBodyOverTheLimitIsNotRead() {
+        String sub = newSub();
+        byte[] body = ("{\"secret\":\"" + "a".repeat(200_000) + "\"}").getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        int whoamiBefore = env.whoamiCalls.get();
+        BrokerClient.Response response = bff.sendChunked("PUT", "/v1/connections/jira/secret", tokens.bffUser(sub, "alice"), body);
+        assertThat(response.raw().request().headers().firstValue("Content-Length")).isEmpty();
+        assertThat(response.status()).isEqualTo(400);
+        assertThat(env.whoamiCalls.get()).isEqualTo(whoamiBefore);
+        assertThat(rows(sub)).isZero();
+    }
+
+    @Test
+    void unknownPathsAndMethodsGetNoHandler() {
+        String bffToken = tokens.bffUser(newSub(), "alice");
+        for (String path : List.of("/v1/credentials/../systems", "/v1/%2e%2e/systems", "/v1/systems;x=1", "//v1/systems",
+                "/error", "/actuator/env", "/v1/connections", "/v1/admin/users/x/purge")) {
+            int status = bff.send("GET", path, bffToken, null, null).status();
+            assertThat(status).as(path).isIn(400, 404);
+        }
+        BrokerClient.Response missing = bff.send("GET", "/v1/nothing", bffToken, null, null);
+        assertThat(missing.json().path("error").stringValue()).isEqualTo("not_found_or_denied");
+        assertThat(bff.send("OPTIONS", "/v1/systems", bffToken, null, null).status()).isEqualTo(404);
+        assertThat(bff.send("DELETE", "/v1/systems", bffToken, null, null).status()).isEqualTo(404);
+    }
+
+    @Test
+    void rejectionsBeforeTheServiceAreAudited(CapturedOutput output) {
+        String forbidden = TestTokens.newRequestId();
+        assertThat(bff.send("POST", "/v1/credentials/resolve", tokens.bffUser(newSub(), "alice"), forbidden,
+                "{\"system\":\"jira\"}").status()).isEqualTo(403);
+        assertThat(auditEvents(output, forbidden)).singleElement()
+                .satisfies(e -> assertThat(e.path("reason").stringValue()).isEqualTo("forbidden_cn"));
+
+        String sub = newSub();
+        String malformed = TestTokens.newRequestId();
+        assertThat(gateway.send("POST", "/v1/credentials/resolve", tokens.gatewayUser(sub, "alice", malformed), malformed,
+                "{\"system\":\"jira\",\"extra\":1}").status()).isEqualTo(400);
+        assertThat(auditEvents(output, malformed)).singleElement().satisfies(e -> {
+            assertThat(e.path("reason").stringValue()).isEqualTo("invalid_request");
+            assertThat(e.path("sub").stringValue()).isEqualTo(sub);
+        });
+
+        String unknownSystem = TestTokens.newRequestId();
+        assertThat(gateway.send("POST", "/v1/credentials/resolve", tokens.gatewayUser(sub, "alice", unknownSystem), unknownSystem,
+                "{\"system\":\"jirax\"}").status()).isEqualTo(400);
+        assertThat(auditEvents(output, unknownSystem)).singleElement()
+                .satisfies(e -> assertThat(e.has("server")).isFalse());
+
+        String subjectToken = TestTokens.newRequestId();
+        assertThat(gateway.send("POST", "/v1/credentials/resolve", tokens.gatewayUser(sub, "alice", subjectToken), subjectToken,
+                "{\"system\":\"jira\",\"subjectToken\":\"exchanged\"}").status()).isEqualTo(400);
+        assertThat(auditEvents(output, subjectToken)).hasSize(1);
+    }
+
+    @Test
+    void redisOutageFailsClosed(CapturedOutput output) {
+        String sub = newSub();
+        assertThat(putSecret(sub, "alice", "{\"secret\":\"alice-pat\"}").status()).isEqualTo(200);
+        String rid = TestTokens.newRequestId();
+        String token = tokens.gatewayUser(sub, "alice", rid);
+        BrokerClient.Response resolved;
+        pause(env.redis);
+        try {
+            resolved = gateway.send("POST", "/v1/credentials/resolve", token, rid, "{\"system\":\"jira\"}");
+        } finally {
+            unpause(env.redis);
+        }
+        assertThat(resolved.status()).isEqualTo(503);
+        assertThat(resolved.body()).isEqualTo("{\"error\":\"upstream_unavailable\"}");
+        assertThat(auditEvents(output, rid)).singleElement()
+                .satisfies(e -> assertThat(e.path("reason").stringValue()).isEqualTo("jti_store_unavailable"));
+    }
+
+    @Test
+    void databaseOutageFailsClosed(CapturedOutput output) {
+        String rid = TestTokens.newRequestId();
+        String token = tokens.gatewayUser(newSub(), "alice", rid);
+        BrokerClient.Response resolved;
+        pause(env.postgres);
+        try {
+            resolved = gateway.send("POST", "/v1/credentials/resolve", token, rid, "{\"system\":\"jira\"}");
+        } finally {
+            unpause(env.postgres);
+        }
+        assertThat(resolved.status()).isEqualTo(503);
+        assertThat(auditEvents(output, rid)).singleElement()
+                .satisfies(e -> assertThat(e.path("reason").stringValue()).isEqualTo("database_unavailable"));
+    }
+
+    @Test
+    void httpLayerStaysAtInfoEvenWhenDebugIsConfigured() {
+        ch.qos.logback.classic.Logger web = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory
+                .getLogger("org.springframework.web.servlet.DispatcherServlet");
+        ch.qos.logback.classic.Level previous = web.getLevel();
+        web.setLevel(ch.qos.logback.classic.Level.DEBUG);
+        try {
+            assertThat(web.isDebugEnabled()).as("logback-spring.xml installs HttpLayerDebugGuard").isFalse();
+            assertThat(web.isInfoEnabled()).isTrue();
+        } finally {
+            web.setLevel(previous);
+        }
+    }
+
+    private static void pause(org.testcontainers.containers.GenericContainer<?> container) {
+        container.getDockerClient().pauseContainerCmd(container.getContainerId()).exec();
+    }
+
+    private static void unpause(org.testcontainers.containers.GenericContainer<?> container) {
+        container.getDockerClient().unpauseContainerCmd(container.getContainerId()).exec();
+    }
+
     private BrokerClient.Response putSecret(String sub, String username, String body) {
         return putSecret(sub, username, body, "jira");
     }
@@ -364,6 +497,11 @@ class BrokerIntegrationTest {
 
     private BrokerClient.Response resolve(String sub, String username, String rid, String body) {
         return gateway.send("POST", "/v1/credentials/resolve", tokens.gatewayUser(sub, username, rid), rid, body);
+    }
+
+    private String storedPath(String sub) {
+        String version = jdbc.sql("select secret_version from connection where sub = ?").param(sub).query(String.class).single();
+        return "secret/data/mcp/connections/" + new SecretKey(sub, "jira", version).relativePath();
     }
 
     private long rows(String sub) {

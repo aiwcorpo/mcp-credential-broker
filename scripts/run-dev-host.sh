@@ -29,6 +29,9 @@ export MCP_BAO_ADDR=http://localhost:18200 MCP_BAO_ROLE_ID="$BAO_BROKER_ROLE_ID"
 export MCP_OIDC_ISSUER=http://localhost:18080/realms/corp
 export MCP_OIDC_JWKS_URI=http://localhost:18080/realms/corp/protocol/openid-connect/certs
 export MCP_JIRA_URL=http://localhost:18081
+export MCP_PORTAL_URL="${MCP_PORTAL_URL:-http://localhost:18090}"
+# OpenBao, Keycloak and the Jira mock of the dev stack speak plain HTTP.
+export MCP_ALLOW_PLAIN_HTTP=true
 if [[ -z "${MCP_GATEWAY_JWKS_URI:-}" ]]; then
   export MCP_GATEWAY_JWKS_FILE="${MCP_GATEWAY_JWKS_FILE:-$contracts/test-vectors/keys/test-gateway-jwks.json}"
   export MCP_REJECT_TEST_KIDS=false

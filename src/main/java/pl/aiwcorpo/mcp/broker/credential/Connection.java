@@ -3,6 +3,8 @@ package pl.aiwcorpo.mcp.broker.credential;
 import java.time.Duration;
 import java.time.Instant;
 
+import pl.aiwcorpo.mcp.broker.secret.SecretKey;
+
 /** Metadata of one (sub, system) connection; the value itself is in the secret store. */
 public record Connection(
         String sub,
@@ -12,7 +14,12 @@ public record Connection(
         String backendUser,
         Instant expiresAt,
         Instant connectedAt,
-        Instant lastUsedAt) {
+        Instant lastUsedAt,
+        String secretVersion) {
+
+    public SecretKey secretKey() {
+        return new SecretKey(sub, system, secretVersion);
+    }
 
     public enum StoredState {
         CONNECTED, REVOKED, ERROR

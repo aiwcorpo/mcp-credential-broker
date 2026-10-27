@@ -33,16 +33,6 @@ public final class SecretValue {
     }
 
     @Override
-    public boolean equals(Object other) {
-        return other instanceof SecretValue that && value.equals(that.value);
-    }
-
-    @Override
-    public int hashCode() {
-        return value.hashCode();
-    }
-
-    @Override
     public String toString() {
         return "SecretValue[***]";
     }

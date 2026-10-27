@@ -34,6 +34,6 @@ class ConnectionTest {
     }
 
     private static Connection connection(Connection.StoredState state, Instant expiresAt) {
-        return new Connection("sub", "jira", CredentialType.USER_SECRET, state, "alice", expiresAt, NOW, null);
+        return new Connection("sub", "jira", CredentialType.USER_SECRET, state, "alice", expiresAt, NOW, null, null);
     }
 }

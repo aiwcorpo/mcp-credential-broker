@@ -8,6 +8,7 @@ import java.time.temporal.ChronoUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import pl.aiwcorpo.mcp.broker.system.SystemRegistry;
 import tools.jackson.core.json.JsonWriteFeature;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -78,8 +79,9 @@ public class AuditLog {
             return this;
         }
 
+        /** Unknown system names come from the caller and are not written (C8 server is an enum). */
         public Entry system(String system) {
-            this.server = system == null ? null : "mcp-" + system;
+            this.server = system != null && SystemRegistry.KNOWN_SYSTEMS.contains(system) ? "mcp-" + system : null;
             return this;
         }
 

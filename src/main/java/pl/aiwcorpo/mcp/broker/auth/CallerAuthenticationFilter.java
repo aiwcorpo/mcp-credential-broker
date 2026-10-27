@@ -31,6 +31,7 @@ import tools.jackson.databind.json.JsonMapper;
 public class CallerAuthenticationFilter extends OncePerRequestFilter {
 
     public static final String CALLER = "pl.aiwcorpo.mcp.broker.caller";
+    public static final String REQUEST_ID = "pl.aiwcorpo.mcp.broker.requestId";
     public static final String REQUEST_ID_HEADER = "X-Request-Id";
 
     private static final Logger log = LoggerFactory.getLogger(CallerAuthenticationFilter.class);
@@ -58,6 +59,7 @@ public class CallerAuthenticationFilter extends OncePerRequestFilter {
         String headerRequestId = request.getHeader(REQUEST_ID_HEADER);
         String requestId = RequestIds.isValid(headerRequestId) ? headerRequestId : RequestIds.next(clock);
         response.setHeader(REQUEST_ID_HEADER, requestId);
+        request.setAttribute(REQUEST_ID, requestId);
         MDC.put("requestId", requestId);
         try {
             authenticate(request, response, chain, headerRequestId, requestId);
@@ -80,16 +82,18 @@ public class CallerAuthenticationFilter extends OncePerRequestFilter {
         }
         Optional<Operation> match = Operation.match(request.getMethod(), path);
         if (match.isEmpty()) {
-            write(response, 404, "not_found");
+            write(response, 404, "not_found_or_denied");
             return;
         }
         Operation operation = match.get();
         if (!operation.allowedCns().contains(cn.get())) {
             log.warn("Client certificate CN {} is not allowed for {}", cn.get(), operation.operationId());
+            deny(operation, requestId, path, "forbidden_cn", null);
             write(response, 403, "forbidden");
             return;
         }
         if (request.getContentLengthLong() > maxRequestBytes) {
+            deny(operation, requestId, path, "request_too_large", "invalid_argument");
             write(response, 400, "invalid_request");
             return;
         }
@@ -100,26 +104,31 @@ public class CallerAuthenticationFilter extends OncePerRequestFilter {
                 case Operation.GATEWAY -> new Caller.Gateway(requestId,
                         gatewayTokens.verify(token, headerRequestId, operation.serviceVariantAllowed()));
                 case Operation.PORTAL_BFF -> bffTokens.verify(token, requestId);
-                case Operation.OFFBOARDING -> new Caller.Offboarding(requestId);
                 default -> throw new TokenRejectedException("no_token_scheme_for_cn");
             };
         } catch (TokenRejectedException e) {
             log.warn("Rejected token from {} for {}: {}", cn.get(), operation.operationId(), e.reason());
-            if (operation.auditEvent() != null) {
-                audit.event(operation.auditEvent(), requestId).denied(e.reason(), "unauthenticated");
-            }
+            deny(operation, requestId, path, e.reason(), "unauthenticated");
             write(response, 401, "unauthenticated");
             return;
-        } catch (ReplayGuardUnavailableException e) {
-            log.warn("Token from {} not checked for replay: {}", cn.get(), e.getMessage());
+        } catch (ReplayGuardUnavailableException | KeySourceUnavailableException e) {
+            log.warn("Token from {} not verifiable for {}: {}", cn.get(), operation.operationId(), e.getMessage());
             if (operation.auditEvent() != null) {
-                audit.event(operation.auditEvent(), requestId).error("jti_store_unavailable", "upstream_unavailable");
+                audit.event(operation.auditEvent(), requestId).system(Operation.systemOf(path))
+                        .error(e instanceof ReplayGuardUnavailableException ? "jti_store_unavailable" : "key_source_unavailable",
+                                "upstream_unavailable");
             }
             write(response, 503, "upstream_unavailable");
             return;
         }
         request.setAttribute(CALLER, caller);
-        chain.doFilter(request, response);
+        chain.doFilter(new LimitedBodyRequest(request, maxRequestBytes), response);
+    }
+
+    private void deny(Operation operation, String requestId, String path, String reason, String errorCode) {
+        if (operation.auditEvent() != null) {
+            audit.event(operation.auditEvent(), requestId).system(Operation.systemOf(path)).denied(reason, errorCode);
+        }
     }
 
     private static boolean isHealth(String method, String path) {

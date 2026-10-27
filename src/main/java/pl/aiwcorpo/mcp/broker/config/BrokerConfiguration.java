@@ -1,5 +1,6 @@
 package pl.aiwcorpo.mcp.broker.config;
 
+import java.net.URI;
 import java.net.http.HttpClient;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -68,13 +69,9 @@ public class BrokerConfiguration {
             // (CC-035) could not be enforced, so refuse to start instead of silently checking the wrong name.
             throw new IllegalStateException("broker.gateway-jwt.jwks-uri host must equal broker.gateway-jwt.tls-name");
         }
-        HttpClient http = HttpClient.newBuilder()
-                .sslContext(trustOnly(sslBundles))
-                .connectTimeout(Duration.ofSeconds(5))
-                .followRedirects(HttpClient.Redirect.NEVER)
-                .build();
-        return JwksGatewayKeys.fromUri(config.jwksUri(), http, Duration.ofSeconds(5), clock, config.jwksRefresh(),
-                config.jwksMinRefreshInterval());
+        requireTls(config.jwksUri(), "broker.gateway-jwt.jwks-uri", properties.allowPlainHttp());
+        return JwksGatewayKeys.fromUri(config.jwksUri(), internalClient(sslBundles), Duration.ofSeconds(5), clock,
+                config.jwksRefresh(), config.jwksMinRefreshInterval(), config.jwksMaxStale());
     }
 
     @Bean
@@ -90,8 +87,9 @@ public class BrokerConfiguration {
     }
 
     @Bean
-    BffTokenVerifier bffTokenVerifier(BrokerProperties properties) {
-        return BffTokenVerifier.create(properties.bffToken());
+    BffTokenVerifier bffTokenVerifier(BrokerProperties properties, SslBundles sslBundles) {
+        requireTls(properties.bffToken().jwksUri(), "broker.bff-token.jwks-uri", properties.allowPlainHttp());
+        return BffTokenVerifier.create(properties.bffToken(), internalClient(sslBundles));
     }
 
     @Bean
@@ -107,22 +105,15 @@ public class BrokerConfiguration {
     @Bean
     SecretStore secretStore(BrokerProperties properties, SslBundles sslBundles, JsonMapper json, Clock clock) {
         BrokerProperties.OpenBao config = properties.openbao();
-        HttpClient.Builder http = HttpClient.newBuilder()
-                .connectTimeout(config.timeout())
-                .followRedirects(HttpClient.Redirect.NEVER);
-        if ("https".equals(config.address().getScheme())) {
-            http.sslContext(trustOnly(sslBundles));
-        }
-        return new OpenBaoSecretStore(new OpenBaoClient(config, http.build(), json, clock), config, json);
+        requireTls(config.address(), "broker.openbao.address", properties.allowPlainHttp());
+        return new OpenBaoSecretStore(new OpenBaoClient(config, internalClient(sslBundles), json, clock), config, json);
     }
 
     @Bean
-    SystemRegistry systemRegistry(BrokerProperties properties, JsonMapper json) {
-        HttpClient whoami = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(5))
-                .followRedirects(HttpClient.Redirect.NEVER)
-                .build();
-        return new SystemRegistry(properties.systems(), whoami, json);
+    SystemRegistry systemRegistry(BrokerProperties properties, SslBundles sslBundles, JsonMapper json) {
+        properties.systems().forEach((id, system) ->
+                requireTls(system.baseUrl(), "broker.systems." + id + ".base-url", properties.allowPlainHttp()));
+        return new SystemRegistry(properties.systems(), internalClient(sslBundles), json);
     }
 
     @Bean
@@ -140,6 +131,31 @@ public class BrokerConfiguration {
             InvalidationPublisher invalidations, AuditLog audit, Clock clock, BrokerProperties properties) {
         return new CredentialService(systems, connections, secrets, invalidations, audit, clock,
                 properties.cacheTtlSeconds(), properties.expiringThreshold());
+    }
+
+    /**
+     * Credentials and keys travel over these connections (PATs to whoami, AppRole secret to OpenBao, token
+     * keys from JWKS), so plain HTTP is refused unless broker.allow-plain-http is set for a local stack.
+     */
+    static void requireTls(URI uri, String property, boolean allowPlainHttp) {
+        String scheme = uri.getScheme();
+        if ("https".equals(scheme) || ("http".equals(scheme) && allowPlainHttp)) {
+            return;
+        }
+        throw new IllegalStateException(property + " must use https (set broker.allow-plain-http=true only for local development)");
+    }
+
+    /**
+     * Client for internal endpoints: trusts the internal CA of the SSL bundle, presents no client
+     * certificate (the broker certificate is serverAuth only) and never follows redirects, which could
+     * carry a credential to another host.
+     */
+    private static HttpClient internalClient(SslBundles sslBundles) {
+        return HttpClient.newBuilder()
+                .sslContext(trustOnly(sslBundles))
+                .connectTimeout(Duration.ofSeconds(5))
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build();
     }
 
     private static SSLContext trustOnly(SslBundles sslBundles) {

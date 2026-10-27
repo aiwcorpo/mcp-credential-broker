@@ -27,8 +27,4 @@ public sealed interface Caller {
             return "PortalUser[sub=" + sub + ", username=" + username + "]";
         }
     }
-
-    /** Offboarding webhook (CN only, no token). */
-    record Offboarding(String requestId) implements Caller {
-    }
 }

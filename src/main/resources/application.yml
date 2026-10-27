@@ -30,6 +30,13 @@ spring:
     url: ${MCP_DB_URL}
     username: ${MCP_DB_USER}
     password: ${MCP_DB_PASSWORD}
+    hikari:
+      # Fail fast when PostgreSQL is gone (503 within seconds) instead of holding requests for 30 s.
+      connection-timeout: 2000
+      validation-timeout: 1000
+      data-source-properties:
+        socketTimeout: 5
+        options: "-c statement_timeout=3000"
   data:
     redis:
       host: ${MCP_REDIS_HOST:localhost}
@@ -60,7 +67,8 @@ management:
 
 broker:
   component-id: mcp-credential-broker
-  portal-base-url: ${MCP_PORTAL_URL:http://localhost:18090}
+  portal-base-url: ${MCP_PORTAL_URL}
+  allow-plain-http: ${MCP_ALLOW_PLAIN_HTTP:false}
   cache-ttl-seconds: 60
   expiring-threshold: 7d
   gateway-jwt:
@@ -84,7 +92,7 @@ broker:
     invalidation-channel: credential.invalidated
   systems:
     jira:
-      base-url: ${MCP_JIRA_URL:http://jira.internal:8080}
+      base-url: ${MCP_JIRA_URL}
       adapter: atlassian-dc
       supported-types: [user-secret]
       default-type: user-secret

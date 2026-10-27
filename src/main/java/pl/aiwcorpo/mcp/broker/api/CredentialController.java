@@ -1,9 +1,5 @@
 package pl.aiwcorpo.mcp.broker.api;
 
-import java.time.DateTimeException;
-import java.time.Instant;
-import java.util.HashSet;
-
 import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -17,9 +13,7 @@ import jakarta.validation.Valid;
 import pl.aiwcorpo.mcp.broker.auth.Caller;
 import pl.aiwcorpo.mcp.broker.auth.CallerAuthenticationFilter;
 import pl.aiwcorpo.mcp.broker.credential.CredentialService;
-import pl.aiwcorpo.mcp.broker.credential.InvalidRequestException;
 import pl.aiwcorpo.mcp.broker.secret.SecretValue;
-import pl.aiwcorpo.mcp.broker.system.SystemRegistry;
 
 @RestController
 public class CredentialController {
@@ -37,11 +31,8 @@ public class CredentialController {
         if (!(caller instanceof Caller.Gateway gateway) || gateway.claims().service()) {
             throw new IllegalStateException("resolve reached without a gateway user token");
         }
-        requireKnownSystem(request.system());
-        if (request.scopes() != null && new HashSet<>(request.scopes()).size() != request.scopes().size()) {
-            throw new InvalidRequestException("scopes must be unique");
-        }
-        CredentialService.Resolved resolved = credentials.resolve(gateway, request.system());
+        CredentialService.Resolved resolved = credentials.resolve(gateway, request.system(), request.scopes(),
+                request.subjectToken());
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
                 .header("Pragma", "no-cache")
@@ -57,28 +48,10 @@ public class CredentialController {
         if (!(caller instanceof Caller.PortalUser user)) {
             throw new IllegalStateException("PUT secret reached without a portal user token");
         }
-        requireKnownSystem(system);
         CredentialService.Stored stored = credentials.putSecret(user, system, SecretValue.of(request.secret()),
-                parseTimestamp(request.expiresAt()));
+                request.expiresAt());
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
                 .body(new PutSecretResponse(stored.status().wire(), stored.backendUser(), stored.expiresAt()));
-    }
-
-    private static void requireKnownSystem(String system) {
-        if (!SystemRegistry.KNOWN_SYSTEMS.contains(system)) {
-            throw new InvalidRequestException("unknown system");
-        }
-    }
-
-    private static Instant parseTimestamp(String value) {
-        if (value == null) {
-            return null;
-        }
-        try {
-            return Instant.parse(value);
-        } catch (DateTimeException e) {
-            throw new InvalidRequestException("expiresAt is not a valid timestamp");
-        }
     }
 }

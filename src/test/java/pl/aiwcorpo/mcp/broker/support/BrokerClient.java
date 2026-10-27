@@ -1,5 +1,6 @@
 package pl.aiwcorpo.mcp.broker.support;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.URI;
@@ -49,9 +50,21 @@ public final class BrokerClient {
     }
 
     public Response send(String method, String path, String bearer, String requestId, String body) {
+        return send(method, path, bearer, requestId, body,
+                body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body));
+    }
+
+    /** Body without Content-Length (chunked transfer encoding). */
+    public Response sendChunked(String method, String path, String bearer, byte[] body) {
+        return send(method, path, bearer, null, "",
+                HttpRequest.BodyPublishers.ofInputStream(() -> new ByteArrayInputStream(body)));
+    }
+
+    private Response send(String method, String path, String bearer, String requestId, String body,
+            HttpRequest.BodyPublisher publisher) {
         HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(baseUrl + path))
-                .timeout(Duration.ofSeconds(10))
-                .method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body));
+                .timeout(Duration.ofSeconds(20))
+                .method(method, publisher);
         if (body != null) {
             request.header("Content-Type", "application/json");
         }

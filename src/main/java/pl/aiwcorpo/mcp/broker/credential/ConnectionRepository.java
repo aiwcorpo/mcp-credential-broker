@@ -19,7 +19,7 @@ public class ConnectionRepository {
 
     public Optional<Connection> find(String sub, String system) {
         return jdbc.sql("""
-                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at
+                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version
                 from connection where sub = :sub and system = :system
                 """)
                 .param("sub", sub)
@@ -30,12 +30,13 @@ public class ConnectionRepository {
 
     public void upsert(Connection connection, Instant now) {
         jdbc.sql("""
-                insert into connection (sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, updated_at)
-                values (:sub, :system, :type, :state, :backendUser, :expiresAt, :connectedAt, :lastUsedAt, :now)
+                insert into connection (sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, updated_at)
+                values (:sub, :system, :type, :state, :backendUser, :expiresAt, :connectedAt, :lastUsedAt, :secretVersion, :now)
                 on conflict (sub, system) do update set
                     type = excluded.type, state = excluded.state, backend_user = excluded.backend_user,
                     expires_at = excluded.expires_at, connected_at = excluded.connected_at,
-                    last_used_at = excluded.last_used_at, updated_at = excluded.updated_at
+                    last_used_at = excluded.last_used_at, secret_version = excluded.secret_version,
+                    updated_at = excluded.updated_at
                 """)
                 .param("sub", connection.sub())
                 .param("system", connection.system())
@@ -45,6 +46,7 @@ public class ConnectionRepository {
                 .param("expiresAt", timestamp(connection.expiresAt()))
                 .param("connectedAt", timestamp(connection.connectedAt()))
                 .param("lastUsedAt", timestamp(connection.lastUsedAt()))
+                .param("secretVersion", connection.secretVersion())
                 .param("now", timestamp(now))
                 .update();
     }
@@ -72,6 +74,6 @@ public class ConnectionRepository {
         return new Connection(rs.getString("sub"), rs.getString("system"), credentialType,
                 Connection.StoredState.valueOf(rs.getString("state").toUpperCase(Locale.ROOT)),
                 rs.getString("backend_user"), instant(rs, "expires_at"), instant(rs, "connected_at"),
-                instant(rs, "last_used_at"));
+                instant(rs, "last_used_at"), rs.getString("secret_version"));
     }
 }

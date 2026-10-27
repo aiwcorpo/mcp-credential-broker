@@ -1,7 +1,10 @@
 package pl.aiwcorpo.mcp.broker.auth;
 
+import java.net.http.HttpClient;
+import java.time.Duration;
 import java.util.List;
 
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.security.oauth2.core.OAuth2Error;
 import org.springframework.security.oauth2.core.OAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
@@ -11,6 +14,9 @@ import org.springframework.security.oauth2.jwt.JwtException;
 import org.springframework.security.oauth2.jwt.JwtIssuerValidator;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.web.client.RestTemplate;
+
+import com.nimbusds.jose.KeySourceException;
 
 import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
 
@@ -29,8 +35,12 @@ public class BffTokenVerifier {
         this.usernameClaim = usernameClaim;
     }
 
-    public static BffTokenVerifier create(BrokerProperties.BffToken config) {
-        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(config.jwksUri().toString()).build();
+    public static BffTokenVerifier create(BrokerProperties.BffToken config, HttpClient http) {
+        JdkClientHttpRequestFactory requests = new JdkClientHttpRequestFactory(http);
+        requests.setReadTimeout(Duration.ofSeconds(5));
+        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(config.jwksUri().toString())
+                .restOperations(new RestTemplate(requests))
+                .build();
         decoder.setJwtValidator(validator(config));
         return new BffTokenVerifier(decoder, config.usernameClaim());
     }
@@ -50,6 +60,15 @@ public class BffTokenVerifier {
                 : OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "claim " + claim + " rejected", null));
     }
 
+    private static boolean keySourceFailure(Throwable e) {
+        for (Throwable cause = e; cause != null; cause = cause.getCause()) {
+            if (cause instanceof KeySourceException) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public Caller.PortalUser verify(String token, String requestId) {
         if (token == null || token.isEmpty()) {
             throw new TokenRejectedException("missing_token");
@@ -58,6 +77,9 @@ public class BffTokenVerifier {
         try {
             jwt = decoder.decode(token);
         } catch (JwtException e) {
+            if (keySourceFailure(e)) {
+                throw new KeySourceUnavailableException("IdP JWKS unavailable");
+            }
             throw new TokenRejectedException("invalid_bff_token");
         }
         String username = jwt.getClaimAsString(usernameClaim);

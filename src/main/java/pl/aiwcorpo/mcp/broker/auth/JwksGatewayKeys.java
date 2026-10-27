@@ -14,6 +14,7 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Callable;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
@@ -26,10 +27,16 @@ import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.KeyUse;
 
 /**
- * Gateway JWKS (C2) from its internal endpoint or from a file. Keys are refreshed periodically and on an
- * unknown kid (rotation publishes the new key ahead of use), but not more often than the minimum interval,
- * so a flood of tokens with random kids cannot turn into a flood of JWKS requests. A failed refresh keeps
- * the keys already loaded.
+ * Gateway JWKS (C2) from its internal endpoint or from a file.
+ * <ul>
+ * <li>Refreshed periodically and on an unknown kid (rotation publishes the new key ahead of use), but not
+ * more often than the minimum interval, so tokens with random kids cannot flood the JWKS endpoint.</li>
+ * <li>A failed refresh keeps the loaded keys only up to {@code maxStale}; after that lookups fail with
+ * {@link KeySourceUnavailableException}, so a key the gateway has retired stops working even while the
+ * endpoint is down.</li>
+ * <li>Only the first load blocks; later refreshes are done by one thread while others keep using the
+ * current keys.</li>
+ * </ul>
  */
 public class JwksGatewayKeys implements GatewayKeys {
 
@@ -40,26 +47,31 @@ public class JwksGatewayKeys implements GatewayKeys {
     private final Clock clock;
     private final Duration refresh;
     private final Duration minRefreshInterval;
+    private final Duration maxStale;
+    private final ReentrantLock refreshLock = new ReentrantLock();
 
     private volatile Map<String, ECKey> keys = Map.of();
-    private volatile Instant loadedAt = Instant.EPOCH;
+    private volatile Instant loadedAt;
     private volatile Instant attemptedAt = Instant.EPOCH;
 
-    JwksGatewayKeys(Callable<String> source, String description, Clock clock, Duration refresh, Duration minRefreshInterval) {
+    JwksGatewayKeys(Callable<String> source, String description, Clock clock, Duration refresh, Duration minRefreshInterval,
+            Duration maxStale) {
         this.source = source;
         this.description = description;
         this.clock = clock;
         this.refresh = refresh;
         this.minRefreshInterval = minRefreshInterval;
+        this.maxStale = maxStale;
     }
 
     public static JwksGatewayKeys fromFile(Path file, Clock clock) {
+        Duration forever = Duration.ofDays(3650);
         return new JwksGatewayKeys(() -> Files.readString(file, StandardCharsets.UTF_8), file.toString(), clock,
-                Duration.ofDays(3650), Duration.ofSeconds(10));
+                forever, Duration.ofSeconds(10), forever);
     }
 
     public static JwksGatewayKeys fromUri(URI uri, HttpClient http, Duration timeout, Clock clock, Duration refresh,
-            Duration minRefreshInterval) {
+            Duration minRefreshInterval, Duration maxStale) {
         Callable<String> fetch = () -> {
             HttpRequest request = HttpRequest.newBuilder(uri).timeout(timeout).header("Accept", "application/json").GET().build();
             HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
@@ -68,13 +80,13 @@ public class JwksGatewayKeys implements GatewayKeys {
             }
             return response.body();
         };
-        return new JwksGatewayKeys(fetch, uri.toString(), clock, refresh, minRefreshInterval);
+        return new JwksGatewayKeys(fetch, uri.toString(), clock, refresh, minRefreshInterval, maxStale);
     }
 
     @Override
     public Optional<ECKey> find(String kid) {
         Instant now = clock.instant();
-        if (now.isAfter(loadedAt.plus(refresh))) {
+        if (loadedAt == null || now.isAfter(loadedAt.plus(refresh))) {
             reload(now);
         }
         ECKey key = keys.get(kid);
@@ -82,15 +94,24 @@ public class JwksGatewayKeys implements GatewayKeys {
             reload(now);
             key = keys.get(kid);
         }
+        Instant loaded = loadedAt;
+        if (loaded == null || now.isAfter(loaded.plus(maxStale))) {
+            throw new KeySourceUnavailableException("gateway JWKS not loaded or older than " + maxStale);
+        }
         return Optional.ofNullable(key);
     }
 
-    private synchronized void reload(Instant now) {
-        if (now.isBefore(attemptedAt.plus(minRefreshInterval))) {
+    private void reload(Instant now) {
+        if (loadedAt == null) {
+            refreshLock.lock();
+        } else if (!refreshLock.tryLock()) {
             return;
         }
-        attemptedAt = now;
         try {
+            if (now.isBefore(attemptedAt.plus(minRefreshInterval))) {
+                return;
+            }
+            attemptedAt = now;
             JWKSet set = JWKSet.parse(source.call());
             keys = set.getKeys().stream()
                     .filter(JwksGatewayKeys::usableSigningKey)
@@ -103,6 +124,8 @@ public class JwksGatewayKeys implements GatewayKeys {
         } catch (Exception e) {
             log.warn("Gateway JWKS from {} not loaded ({}); keeping {} known keys", description,
                     e.getClass().getSimpleName(), keys.size());
+        } finally {
+            refreshLock.unlock();
         }
     }
 

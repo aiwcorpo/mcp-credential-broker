@@ -27,6 +27,7 @@ public record BrokerProperties(
         @DefaultValue("60") @Min(0) @Max(60) int cacheTtlSeconds,
         @DefaultValue("7d") @NotNull Duration expiringThreshold,
         @DefaultValue("16384") @Min(1024) int maxRequestBytes,
+        @DefaultValue("false") boolean allowPlainHttp,
         @Valid @NotNull GatewayJwt gatewayJwt,
         @Valid @NotNull BffToken bffToken,
         @Valid @NotNull OpenBao openbao,
@@ -44,7 +45,8 @@ public record BrokerProperties(
             @DefaultValue("30s") @NotNull Duration clockSkew,
             @DefaultValue("60s") @NotNull Duration maxLifetime,
             @DefaultValue("5m") @NotNull Duration jwksRefresh,
-            @DefaultValue("10s") @NotNull Duration jwksMinRefreshInterval) {
+            @DefaultValue("10s") @NotNull Duration jwksMinRefreshInterval,
+            @DefaultValue("1h") @NotNull Duration jwksMaxStale) {
     }
 
     /** User token of the portal BFF, exchanged in the IdP for aud=mcp-credential-broker (C4). */

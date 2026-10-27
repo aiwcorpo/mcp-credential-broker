@@ -13,7 +13,7 @@ import tools.jackson.databind.node.ObjectNode;
 
 /**
  * {@link SecretStore} on OpenBao (D6). The credential is encrypted with Transit before it is written to
- * KV v2 at {@code <kvMount>/data/<pathPrefix>/<sha256(sub)>/<system>}, so a KV reader without the Transit
+ * KV v2 at {@code <kvMount>/data/<pathPrefix>/<sha256(sub)>/<system>/<version>}, so a KV reader without the Transit
  * key sees only ciphertext. The plaintext names its owner (sub, system) and is checked on decrypt, so a
  * ciphertext copied to another user's path does not decrypt into a usable credential.
  */
@@ -113,7 +113,7 @@ public class OpenBaoSecretStore implements SecretStore {
     }
 
     private String relative(SecretKey key) {
-        return config.pathPrefix() + "/" + key.subHash() + "/" + key.system();
+        return config.pathPrefix() + "/" + key.relativePath();
     }
 
     private String transitPath(String operation) {

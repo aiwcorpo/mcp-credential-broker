@@ -22,10 +22,6 @@ public class SystemRegistry {
 
     public record ConfiguredSystem(String id, BrokerProperties.SystemConfig config, SystemAdapter adapter) {
 
-        public String serverId() {
-            return "mcp-" + id;
-        }
-
         public boolean supports(CredentialType type) {
             return config.supportedTypes().contains(type);
         }

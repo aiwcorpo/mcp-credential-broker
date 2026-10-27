@@ -105,7 +105,7 @@ class InternalJwtVectorTest {
     private static InternalJwtVerifier verifier(JsonNode verifier, ReplayGuard replay, boolean rejectTestKids) {
         Clock clock = Clock.fixed(Instant.parse(verifier.path("now").stringValue()), ZoneOffset.UTC);
         String jwks = Contracts.text("test-vectors/" + verifier.path("jwks").stringValue());
-        GatewayKeys keys = new JwksGatewayKeys(() -> jwks, "vectors", clock, Duration.ofDays(1), Duration.ZERO);
+        GatewayKeys keys = new JwksGatewayKeys(() -> jwks, "vectors", clock, Duration.ofDays(1), Duration.ZERO, Duration.ofDays(1));
         return new InternalJwtVerifier(verifier.path("issuer").stringValue(), verifier.path("audience").stringValue(),
                 keys, replay, clock, Duration.ofSeconds(verifier.path("clockSkewSeconds").asLong()),
                 Duration.ofSeconds(verifier.path("maxLifetimeSeconds").asLong()), rejectTestKids);

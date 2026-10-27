@@ -25,8 +25,14 @@ public class OpenBaoClient {
 
     private static final Logger log = LoggerFactory.getLogger(OpenBaoClient.class);
 
-    /** Renew the AppRole token when this fraction of its lease is used, so calls never race its expiry. */
+    /** Renew the token when this fraction of its lease is used, so calls never race its expiry. */
     private static final double RENEW_AT_LEASE_FRACTION = 0.75;
+
+    /** A renewal granting less than this means token_max_ttl is close; a fresh login is due. */
+    private static final long MIN_USEFUL_LEASE_SECONDS = 60;
+
+    /** After a failed renewal and login, how long the still valid token is used before trying again. */
+    private static final long RETRY_SECONDS = 10;
 
     private final BrokerProperties.OpenBao config;
     private final HttpClient http;
@@ -35,6 +41,7 @@ public class OpenBaoClient {
 
     private String token;
     private Instant tokenRenewAt = Instant.EPOCH;
+    private Instant tokenExpiresAt = Instant.EPOCH;
 
     public OpenBaoClient(BrokerProperties.OpenBao config, HttpClient http, JsonMapper json, Clock clock) {
         this.config = config;
@@ -88,10 +95,30 @@ public class OpenBaoClient {
         }
     }
 
+    /**
+     * Token lifecycle: renew-self at 75% of the lease while token_max_ttl allows; near max TTL (or when
+     * renewal fails) log in with AppRole again. If that login fails too (e.g. an expired secret_id), the
+     * current token is kept until it really expires, so an AppRole problem degrades to a warning for the
+     * remaining token lifetime instead of an immediate outage.
+     */
     private synchronized String currentToken() {
-        if (token == null || !clock.instant().isBefore(tokenRenewAt)) {
-            login();
+        Instant now = clock.instant();
+        if (token != null && now.isBefore(tokenRenewAt)) {
+            return token;
         }
+        if (token != null && now.isBefore(tokenExpiresAt)) {
+            if (renewSelf(now)) {
+                return token;
+            }
+            try {
+                login(now);
+            } catch (SecretStoreUnavailableException e) {
+                log.warn("Secret store login failed ({}); using the current token until {}", e.getMessage(), tokenExpiresAt);
+                tokenRenewAt = now.plusSeconds(RETRY_SECONDS);
+            }
+            return token;
+        }
+        login(now);
         return token;
     }
 
@@ -99,7 +126,18 @@ public class OpenBaoClient {
         token = null;
     }
 
-    private void login() {
+    private boolean renewSelf(Instant now) {
+        Response response = send("POST", "auth/token/renew-self", json.createObjectNode(), token);
+        long lease = response.body().path("auth").path("lease_duration").asLong(0);
+        if (response.status() != 200 || lease < MIN_USEFUL_LEASE_SECONDS) {
+            return false;
+        }
+        tokenExpiresAt = now.plusSeconds(lease);
+        tokenRenewAt = now.plusSeconds((long) (lease * RENEW_AT_LEASE_FRACTION));
+        return true;
+    }
+
+    private void login(Instant now) {
         ObjectNode body = json.createObjectNode()
                 .put("role_id", config.roleId())
                 .put("secret_id", config.secretId());
@@ -114,7 +152,8 @@ public class OpenBaoClient {
         }
         long lease = Math.max(auth.path("lease_duration").asLong(0), 1);
         token = clientToken.stringValue();
-        tokenRenewAt = clock.instant().plusSeconds((long) (lease * RENEW_AT_LEASE_FRACTION));
+        tokenExpiresAt = now.plusSeconds(lease);
+        tokenRenewAt = now.plusSeconds((long) (lease * RENEW_AT_LEASE_FRACTION));
         log.info("Logged in to the secret store with AppRole, token lease {} s", lease);
     }
 

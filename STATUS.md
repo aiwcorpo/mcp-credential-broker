@@ -21,13 +21,16 @@ z `x-allowed-client-cn`). Kontrakty: `mcp-contracts` `v1.1.0`. M2-M4 nie są zac
 
 ```
 ./mvnw -B verify
-Tests run: 69, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS)
-  InternalJwtVectorTest 41, BrokerIntegrationTest 15, CredentialServiceTest 6,
-  OperationsContractTest 3, ConnectionTest 2, AuditLogTest 2
+Tests run: 87, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS)
+  InternalJwtVectorTest 41, BrokerIntegrationTest 22, CredentialServiceTest 10, OperationsContractTest 3,
+  OpenBaoClientTest 3, KeySourceTest 3, ConnectionTest 2, AuditLogTest 2, TransportSecurityTest 1
 ```
 
-Test akceptacyjny w `mcp-platform-dev` (obraz `mcp-credential-broker:dev`, usługa z profilu `full`
-uruchomiona z `--no-deps`, prawdziwy Keycloak, OpenBao, PostgreSQL, Redis z ACL, mock Jiry):
+Test akceptacyjny w `mcp-platform-dev` @ `8d459c1` (obraz `mcp-credential-broker:dev`, usługa z profilu
+`full` przez `compose run --no-deps -e MCP_ALLOW_PLAIN_HTTP=true -e MCP_PORTAL_URL=...`, prawdziwy Keycloak,
+OpenBao, PostgreSQL, Redis z ACL, mock Jiry; powtórzony po poprawkach z przeglądu, bez resetu środowiska:
+migracja V2 przeszła na istniejących danych, a PAT alice zapisany w M1 bez wersji ścieżki został zastąpiony
+wersjonowanym):
 
 ```
 $ make pat USER=alice BROKER_URL=https://localhost:18100
@@ -53,12 +56,36 @@ Bez certyfikatu i z certyfikatem obcego CA: zerwany handshake.
 
 Punkty DoD o OAuth, `DELETE`/`purge`, revoke i odświeżaniu należą do M2-M4.
 
+## Przegląd M1 (2026-10-27): znaleziska i poprawki
+
+| # | Znalezisko | Co zrobione |
+| --- | --- | --- |
+| M1 | `identity-claim=email` bez `email_verified` | tryb `email` wymaga `email_verified: true` (brak/`false` -> `identity_mismatch`); domyślnie `preferred_username`; zalecenie dla Entra w README; test `emailIdentityNeedsAVerifiedEmail` |
+| M2 | nie każde `resolve`/`PUT` w audycie | audyt także dla 403 (`forbidden_cn`), za dużego ciała, złego JSON i walidacji (`invalid_request`), z `sub` gdy token był poprawny; walidacja systemu, `scopes` i `subjectToken` przeniesiona do serwisu; test `rejectionsBeforeTheServiceAreAudited` |
+| M3 | HTTP do OpenBao/whoami, whoami bez CA | `https` wymagane dla OpenBao, JWKS gateway'a i IdP oraz whoami, chyba że `MCP_ALLOW_PLAIN_HTTP=true`; jeden klient wewnętrzny z zaufaniem do CA z SSL bundle, bez certyfikatu klienta i przekierowań; `TransportSecurityTest` |
+| M4 | brak odnawiania tokenu OpenBao | `auth/token/renew-self` po 75% dzierżawy, logowanie AppRole przy `token_max_ttl` lub błędzie odnowienia, przy nieudanym logowaniu praca na ważnym tokenie do jego wygaśnięcia; `OpenBaoClientTest` |
+| M5 | brak testów zabezpieczeń | testy: szyfrogram pod cudzą ścieżką -> 503, Redis i PostgreSQL wstrzymane -> 503 z audytem, JWKS gateway'a przeterminowany i JWKS IdP niedostępny -> 503, sondy ścieżek -> 404 |
+| M6 | baza niedostępna -> 500, Hikari 30 s | wyjątki dostępu do danych (zasób, transient, recoverable) -> 503 i audyt `database_unavailable`; `connection-timeout` 2 s, `socketTimeout` 5 s, `statement_timeout` 3 s |
+| L7 | `toLowerCase` łączy znaki spoza ASCII | równość dokładna albo bez wielkości liter tylko dla ASCII |
+| L8 | JWKS niedostępny -> 401, klucze bez limitu, monitor przy pobieraniu | niedostępny JWKS IdP/gateway'a -> 503; klucze gateway'a ważne 1 h od ostatniego pobrania (`jwks-max-stale`); pobranie w tle pod `tryLock`, blokuje tylko pierwsze |
+| L9 | stare wersje w KV, `deleteQuietly` usuwał poprzednie | ścieżka z wersją (`.../<system>/<wersja>`, kolumna `secret_version`, migracja V2): nowa wartość obok starej, przełączenie wiersza, potem usunięcie starej ścieżki ze wszystkimi wersjami; przy błędzie usuwana tylko nowa |
+| L10 | DEBUG warstwy HTTP cytuje PAT | `HttpLayerDebugGuard` (turbo filter w `logback-spring.xml`) odrzuca DEBUG/TRACE z `org.springframework.web`, `org.springframework.http`, Tomcat, Jackson; test w kontekście |
+| L11 | limit tylko po `Content-Length` (także przegląd automatyczny) | `LimitedBodyRequest` liczy bajty faktycznie czytane i przerywa po 16 KB; test `chunkedBodyOverTheLimitIsNotRead` (200 KB chunked -> 400, bez whoami, bez zapisu) |
+| L12 | adresy dev jako domyślne | `MCP_PORTAL_URL` i `MCP_JIRA_URL` wymagane |
+| L13 | `not_found`, 500 spoza OpenAPI | 404 `not_found_or_denied` (CC-012); każdy nieoczekiwany błąd -> 503 `upstream_unavailable` |
+| L14 | martwy kod | usunięte `ConfiguredSystem.serverId()`, `SecretValue.equals/hashCode`, gałąź `ReplayGuardUnavailableException` w handlerze, `Caller.Offboarding` (wróci z `purge` w M4) |
+| L15 | `CC-???` w STATUS | CC-046, CC-047 |
+| L16 | zapis `lastUsedAt` przy każdym `resolve` | najwyżej raz na 5 min |
+| L17 | `subjectToken` przyjmowany i ignorowany | 400 `invalid_request` dla systemów innych niż `token-exchange` |
+| L18, L19 | tożsamość = sam CN; `subHash` bez klucza | informacyjnie, bez zmian (wynika z C4; `sub` jest i tak w bazie) |
+
 ## Odstępstwa od briefu
 
-- **Ścieżka w KV:** `secret/data/mcp/connections/<sha256(sub)>/<system>` zamiast `mcp/<system>/<sub-hash>`
-  z briefu, bo polityka AppRole w `mcp-platform-dev` (`openbao/init.sh`) daje dostęp tylko do
-  `secret/data/mcp/connections/*`. Kolejność `<sub-hash>/<system>` pozwala w M4 wylistować wszystkie
-  sekrety użytkownika przy `purge` (polityka ma `list` na metadanych).
+- **Ścieżka w KV:** `secret/data/mcp/connections/<sha256(sub)>/<system>/<wersja>` zamiast
+  `mcp/<system>/<sub-hash>` z briefu, bo polityka AppRole w `mcp-platform-dev` (`openbao/init.sh`) daje
+  dostęp tylko do `secret/data/mcp/connections/*`. Kolejność `<sub-hash>/<system>` pozwala w M4 wylistować
+  wszystkie sekrety użytkownika przy `purge` (polityka ma `list` na metadanych). Wpisy z M1 bez wersji są
+  czytane pod starą ścieżką i znikają przy następnym `PUT`.
 - **"Envelope" przez Transit:** wartość jest szyfrowana bezpośrednio `transit/encrypt` (klucz nie opuszcza
   OpenBao), bez lokalnych kluczy danych z `transit/datakey`; polityka dev nie daje `datakey`, a dla
   sekretów do 4 KB osobny klucz danych nic nie wnosi.
@@ -69,13 +96,17 @@ Punkty DoD o OAuth, `DELETE`/`purge`, revoke i odświeżaniu należą do M2-M4.
   propozycje CC (niżej).
 - **Profil `full`:** `make up-full` nie przejdzie, dopóki nie ma obrazów `mcp-gateway:dev` i
   `mcp-server-jira:dev` (`pull_policy: never`). Test akceptacyjny uruchomiony na usłudze brokera z profilu
-  `full` przez `./scripts/compose.sh --profile full up -d --no-deps mcp-credential-broker`, po teście
-  kontener usunięty (ten sam alias DNS co stub C4). Nic w `mcp-platform-dev` nie było edytowane.
+  `full` przez `compose run --no-deps`, po teście kontener usunięty (ten sam alias DNS co stub C4). Nic w
+  `mcp-platform-dev` nie było edytowane.
+- **Prośba do ws-01 (`docker-compose.yml`, usługa `mcp-credential-broker`):** dopisać
+  `MCP_ALLOW_PLAIN_HTTP: "true"` (OpenBao, Keycloak i mock Jiry w dev są po HTTP) i
+  `MCP_PORTAL_URL: http://localhost:${PORTAL_PORT}`. Bez nich obraz nie wstaje w compose (sprawdzone: odmowa
+  startu z komunikatem `must use https`); do tego czasu `-e` przy `compose run`.
 
 ## Propozycje zmian kontraktów (dopisane do `mcp-contracts/CONTRACT_CHANGES.md`, status `open`)
 
-1. `CC-??? | C4 | credential.invalidated także po zastąpieniu sekretu` (patch).
-2. `CC-??? | C4/C8 | X-Request-Id w wywołaniach BFF -> broker` (minor: opcjonalny nagłówek).
+1. CC-046 `credential.invalidated` także po zastąpieniu sekretu (patch).
+2. CC-047 `X-Request-Id` w wywołaniach BFF -> broker (minor: opcjonalny nagłówek).
 
 ## Otwarte pytania
 
@@ -84,9 +115,12 @@ Punkty DoD o OAuth, `DELETE`/`purge`, revoke i odświeżaniu należą do M2-M4.
   wpis CC.
 - **`resolve` dla systemu nieskonfigurowanego w brokerze:** `400 invalid_request` (nie `409`, bo połączenie i
   tak nie byłoby możliwe). Do potwierdzenia z ws-05.
-- **Porównanie tożsamości:** bez rozróżniania wielkości liter (`Locale.ROOT`), domyślnie
-  `preferred_username` == `name` z whoami. Prod (Entra/Okta + Jira DC) może wymagać e-maila: ustawienie
-  `identity-claim: email` per system.
+- **Porównanie tożsamości w prod:** domyślnie `preferred_username` == `name` z whoami (wielkość liter tylko
+  w ASCII); tryb `email` wymaga `email_verified`. Dla Entra potrzebny będzie tryb na niezmiennym claimie
+  (`oid` lub UPN) z mapowaniem na login w Jirze; do decyzji przy D4.
+- **503 w `PUT secret` i `GET /v1/systems`:** OpenAPI C4 opisuje 503 tylko dla `resolve`, a broker zwraca
+  `503 upstream_unavailable` także przy niedostępnej Jirze/OpenBao/bazie w `PUT secret` (kształt `Error` z
+  CC-012). Jeśli ma to być w kontrakcie, potrzebny wpis CC (dopisanie odpowiedzi 503, minor).
 - **`expiresAt` w przeszłości przy `PUT secret`:** `400 invalid_request`.
 - **Prefiksy Redis:** używane `jti:mcp-credential-broker:*` (SET NX EX) i kanał `credential.invalidated`
   (PUBLISH); `broker:*` jeszcze nieużywany. Lista komend ACL z `redis/start.sh` wystarcza; health indicator
@@ -106,8 +140,9 @@ Punkty DoD o OAuth, `DELETE`/`purge`, revoke i odświeżaniu należą do M2-M4.
 - JWKS pod `https://mcp-gateway.internal:8443/.well-known/jwks.json` (broker pobiera przy pierwszym
   użyciu, odświeża co 5 min i przy nieznanym `kid`, nie częściej niż co 10 s); certyfikat z SAN
   `mcp-gateway.internal`, zaufany przez wewnętrzne CA. Produkcyjne `kid` nie mogą zaczynać się od `test-`.
+  Gdy JWKS nie odpowiada dłużej niż 1 h, `resolve` daje 503.
 - Cache wartości najwyżej `cacheTtlSeconds`, subskrypcja `credential.invalidated` (dziś wysyłane przy
   zastąpieniu PAT).
 - `409 credential_required` -> C10 `credential_required` z `connectUrl`; `503` -> `upstream_unavailable`;
-  `401`/`403` -> błąd konfiguracji gateway'a (nie dotyczy użytkownika).
+  `400` (np. `subjectToken` dla systemu `user-secret`), `401`, `403` -> błąd gateway'a, nie użytkownika.
 - Do testów bez brokera w compose: `scripts/run-dev-host.sh` (testowy JWKS z `mcp-contracts`).

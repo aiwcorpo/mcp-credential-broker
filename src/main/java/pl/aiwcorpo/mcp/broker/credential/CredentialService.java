@@ -1,14 +1,19 @@
 package pl.aiwcorpo.mcp.broker.credential;
 
 import java.time.Clock;
+import java.time.DateTimeException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.Locale;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.RecoverableDataAccessException;
+import org.springframework.dao.TransientDataAccessException;
 
 import pl.aiwcorpo.mcp.broker.audit.AuditLog;
 import pl.aiwcorpo.mcp.broker.auth.Caller;
@@ -45,6 +50,9 @@ public class CredentialService {
     public record Stored(ConnectionStatus status, String backendUser, Instant expiresAt) {
     }
 
+    /** lastUsedAt is informational; writing it on every resolve would put a database write on the hot path. */
+    static final Duration LAST_USED_PRECISION = Duration.ofMinutes(5);
+
     private final SystemRegistry systems;
     private final ConnectionRepository connections;
     private final SecretStore secrets;
@@ -66,7 +74,7 @@ public class CredentialService {
         this.expiringThreshold = expiringThreshold;
     }
 
-    public Resolved resolve(Caller.Gateway caller, String systemId) {
+    public Resolved resolve(Caller.Gateway caller, String systemId, List<String> scopes, String subjectToken) {
         InternalJwtClaims user = caller.claims();
         AuditLog.Entry entry = audit.event("credential_resolve", caller.requestId())
                 .user(user.sub(), user.usr(), user.azp())
@@ -75,6 +83,14 @@ public class CredentialService {
         try {
             ConfiguredSystem system = systems.find(systemId)
                     .orElseThrow(() -> new InvalidRequestException("system is not configured in the broker"));
+            if (scopes != null && new HashSet<>(scopes).size() != scopes.size()) {
+                throw new InvalidRequestException("scopes must be unique");
+            }
+            if (subjectToken != null && !system.supports(CredentialType.TOKEN_EXCHANGE)) {
+                // A user token sent where none is needed is a gateway bug; accepting it silently would
+                // hide that the gateway hands user tokens to places that do not need them.
+                throw new InvalidRequestException("subjectToken is only for token-exchange systems");
+            }
             Instant now = clock.instant();
             Optional<Connection> connection = connections.find(user.sub(), system.id());
             if (connection.isEmpty() || !connection.get().status(now, expiringThreshold).usable()) {
@@ -82,7 +98,7 @@ public class CredentialService {
             }
             Connection found = connection.get();
             entry.credentialType(found.type().wire());
-            StoredCredential stored = secrets.get(new SecretKey(user.sub(), system.id()))
+            StoredCredential stored = secrets.get(found.secretKey())
                     .orElseThrow(() -> {
                         log.warn("Connection metadata without a stored secret for system {}", system.id());
                         return new CredentialRequiredException(system.id());
@@ -90,7 +106,9 @@ public class CredentialService {
             if (stored.type() != found.type()) {
                 throw new SecretStoreUnavailableException("stored credential type differs from connection metadata");
             }
-            connections.touch(user.sub(), system.id(), now);
+            if (found.lastUsedAt() == null || found.lastUsedAt().isBefore(now.minus(LAST_USED_PRECISION))) {
+                connections.touch(user.sub(), system.id(), now);
+            }
             Resolved resolved = new Resolved(system.config().secretScheme(), stored.value(), found.type(),
                     found.expiresAt(), ttl(now, found.expiresAt()));
             entry.ok("resolved");
@@ -105,12 +123,12 @@ public class CredentialService {
             entry.error("secret_store_unavailable", "upstream_unavailable");
             throw e;
         } catch (RuntimeException e) {
-            entry.error("internal_error", "internal_error");
+            entry.error(unavailableDatabase(e) ? "database_unavailable" : "internal_error", "upstream_unavailable");
             throw e;
         }
     }
 
-    public Stored putSecret(Caller.PortalUser caller, String systemId, SecretValue secret, Instant expiresAt) {
+    public Stored putSecret(Caller.PortalUser caller, String systemId, SecretValue secret, String expiresAtText) {
         AuditLog.Entry entry = audit.event("connection_change", caller.requestId())
                 .user(caller.sub(), caller.username(), caller.azp())
                 .system(systemId)
@@ -120,6 +138,7 @@ public class CredentialService {
                     .filter(s -> s.supports(CredentialType.USER_SECRET))
                     .orElseThrow(() -> new InvalidRequestException("system does not accept user secrets"));
             Instant now = clock.instant();
+            Instant expiresAt = parseTimestamp(expiresAtText);
             if (expiresAt != null && !expiresAt.isAfter(now)) {
                 throw new InvalidRequestException("expiresAt is in the past");
             }
@@ -131,23 +150,27 @@ public class CredentialService {
                 throw new SecretRejectedException("identity_mismatch");
             }
 
-            SecretKey key = new SecretKey(caller.sub(), system.id());
-            boolean replaced = connections.find(caller.sub(), system.id()).isPresent();
+            // Each stored value gets its own path; the connection row points at it. A replacement is written
+            // next to the old value and only the row switches, so a failure in between leaves the previous
+            // credential intact, and the old path (all KV versions) is deleted only after the switch.
+            Optional<Connection> previous = connections.find(caller.sub(), system.id());
+            SecretKey key = SecretKey.newVersion(caller.sub(), system.id());
             secrets.put(key, StoredCredential.of(CredentialType.USER_SECRET, secret));
             Instant expires = expiresAt == null ? null : expiresAt.truncatedTo(ChronoUnit.SECONDS);
             Connection connection = new Connection(caller.sub(), system.id(), CredentialType.USER_SECRET,
-                    Connection.StoredState.CONNECTED, identity.username(), expires, now.truncatedTo(ChronoUnit.SECONDS), null);
+                    Connection.StoredState.CONNECTED, identity.username(), expires, now.truncatedTo(ChronoUnit.SECONDS),
+                    null, key.version());
             try {
                 connections.upsert(connection, now);
             } catch (RuntimeException e) {
-                // Without metadata the secret is unreachable but still stored; remove it so a failed
-                // request leaves nothing behind.
                 deleteQuietly(key);
                 throw e;
             }
-            if (replaced) {
+            if (previous.isPresent()) {
+                deleteQuietly(previous.get().secretKey());
                 invalidations.invalidated(caller.sub(), system.id());
             }
+            boolean replaced = previous.isPresent();
             Stored stored = new Stored(connection.status(now, expiringThreshold), identity.username(), expires);
             entry.ok(replaced ? "secret_replaced" : "secret_stored");
             return stored;
@@ -162,18 +185,55 @@ public class CredentialService {
                     "upstream_unavailable");
             throw e;
         } catch (RuntimeException e) {
-            entry.error("internal_error", "internal_error");
+            entry.error(unavailableDatabase(e) ? "database_unavailable" : "internal_error", "upstream_unavailable");
             throw e;
         }
     }
 
-    /** C4.1: the backend account must be the SSO user's own (case-insensitive, as Jira user names are). */
+    static boolean unavailableDatabase(RuntimeException e) {
+        return e instanceof DataAccessResourceFailureException || e instanceof TransientDataAccessException
+                || e instanceof RecoverableDataAccessException;
+    }
+
+    private static Instant parseTimestamp(String value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Instant.parse(value);
+        } catch (DateTimeException e) {
+            throw new InvalidRequestException("expiresAt is not a valid timestamp");
+        }
+    }
+
+    /**
+     * C4.1: the backend account must be the SSO user's own. E-mail is used only when the IdP vouches for it
+     * (email_verified true), because users can change their e-mail in some IdPs.
+     */
     static boolean sameIdentity(Caller.PortalUser caller, ConfiguredSystem system, BackendIdentity identity) {
         String claim = system.config().identityClaim();
+        boolean byEmail = "email".equals(claim);
+        if (byEmail && !Boolean.TRUE.equals(caller.claims().get("email_verified"))) {
+            return false;
+        }
         String expected = caller.identity(claim);
-        String actual = "email".equals(claim) ? identity.email() : identity.username();
-        return expected != null && actual != null
-                && expected.toLowerCase(Locale.ROOT).equals(actual.toLowerCase(Locale.ROOT));
+        String actual = byEmail ? identity.email() : identity.username();
+        return expected != null && actual != null && sameName(expected, actual);
+    }
+
+    /**
+     * Exact match, or case-insensitive when both names are plain ASCII (Jira user names are case-insensitive).
+     * Case folding outside ASCII is not used: it maps distinct characters together (e.g. KELVIN SIGN to k).
+     */
+    static boolean sameName(String a, String b) {
+        if (a.equals(b)) {
+            return true;
+        }
+        return isAscii(a) && isAscii(b) && a.equalsIgnoreCase(b);
+    }
+
+    private static boolean isAscii(String value) {
+        return value.chars().allMatch(c -> c < 0x80);
     }
 
     private int ttl(Instant now, Instant expiresAt) {
@@ -188,7 +248,7 @@ public class CredentialService {
         try {
             secrets.delete(key);
         } catch (RuntimeException e) {
-            log.error("Secret for system {} stored without metadata and could not be removed ({})", key.system(),
+            log.error("Unreferenced secret for system {} could not be removed ({})", key.system(),
                     e.getClass().getSimpleName());
         }
     }
