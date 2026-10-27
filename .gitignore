@@ -1,0 +1,14 @@
+target/
+!.mvn/wrapper/maven-wrapper.jar
+*.class
+.idea/
+*.iml
+.vscode/
+# TLS material and local env files never belong in the repo
+*.p12
+*.jks
+*.pem
+*.key
+*.crt
+*.env
+*.log

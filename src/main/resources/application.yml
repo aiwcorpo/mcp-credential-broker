@@ -1,0 +1,92 @@
+# Environment variables follow mcp-platform-dev (docs/integracja.md, profile "full").
+server:
+  port: ${MCP_BROKER_PORT:8443}
+  ssl:
+    bundle: broker
+    client-auth: need
+  error:
+    whitelabel:
+      enabled: false
+    include-message: never
+    include-stacktrace: never
+  shutdown: graceful
+
+spring:
+  application:
+    name: mcp-credential-broker
+  ssl:
+    bundle:
+      jks:
+        broker:
+          keystore:
+            location: file:${MCP_TLS_KEYSTORE}
+            password: ${MCP_TLS_STORE_PASSWORD}
+            type: PKCS12
+          truststore:
+            location: file:${MCP_TLS_TRUSTSTORE}
+            password: ${MCP_TLS_STORE_PASSWORD}
+            type: PKCS12
+  datasource:
+    url: ${MCP_DB_URL}
+    username: ${MCP_DB_USER}
+    password: ${MCP_DB_PASSWORD}
+  data:
+    redis:
+      host: ${MCP_REDIS_HOST:localhost}
+      port: ${MCP_REDIS_PORT:6379}
+      username: ${MCP_REDIS_USER:broker}
+      password: ${MCP_REDIS_PASSWORD}
+      timeout: 2s
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
+      fail-on-null-for-primitives: true
+  mvc:
+    problemdetails:
+      enabled: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+  health:
+    # The broker's Redis ACL has no INFO, which the Redis health indicator needs.
+    redis:
+      enabled: false
+
+broker:
+  component-id: mcp-credential-broker
+  portal-base-url: ${MCP_PORTAL_URL:http://localhost:18090}
+  cache-ttl-seconds: 60
+  expiring-threshold: 7d
+  gateway-jwt:
+    issuer: ${MCP_GATEWAY_ISSUER:https://mcp-gateway.internal}
+    audience: mcp-credential-broker
+    jwks-uri: ${MCP_GATEWAY_JWKS_URI:}
+    jwks-file: ${MCP_GATEWAY_JWKS_FILE:}
+    tls-name: ${MCP_GATEWAY_TLS_NAME:}
+    reject-test-kids: ${MCP_REJECT_TEST_KIDS:true}
+  bff-token:
+    issuer: ${MCP_OIDC_ISSUER}
+    jwks-uri: ${MCP_OIDC_JWKS_URI}
+    audience: ${MCP_OIDC_AUDIENCE:mcp-credential-broker}
+    allowed-azp: ${MCP_BFF_ALLOWED_AZP:mcp-portal-bff}
+  openbao:
+    address: ${MCP_BAO_ADDR}
+    role-id: ${MCP_BAO_ROLE_ID}
+    secret-id: ${MCP_BAO_SECRET_ID}
+  redis:
+    jti-prefix: "jti:mcp-credential-broker:"
+    invalidation-channel: credential.invalidated
+  systems:
+    jira:
+      base-url: ${MCP_JIRA_URL:http://jira.internal:8080}
+      adapter: atlassian-dc
+      supported-types: [user-secret]
+      default-type: user-secret
+      secret-scheme: Bearer
+      identity-claim: preferred_username
