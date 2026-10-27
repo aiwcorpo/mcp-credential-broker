@@ -54,21 +54,28 @@ public final class TestTokens {
 
     /** User variant of C2 with aud=mcp-credential-broker, as the gateway sends it for resolve. */
     public String gatewayUser(String sub, String username, String requestId) {
+        return gatewayUser(sub, username, requestId, "get_issue");
+    }
+
+    /** User variant with the given {@code tool}; null leaves the claim out (CC-038). */
+    public String gatewayUser(String sub, String username, String requestId, String tool) {
         Instant now = Instant.now();
-        return signGateway(new JWTClaimsSet.Builder()
+        JWTClaimsSet.Builder claims = new JWTClaimsSet.Builder()
                 .issuer(GATEWAY_ISSUER)
                 .claim("aud", "mcp-credential-broker")
                 .subject(sub)
                 .claim("usr", username)
                 .claim("grp", List.of("mcp-jira-read"))
                 .claim("azp", "claude-code")
-                .claim("tool", "get_issue")
                 .claim("rid", requestId)
                 .claim("prv", "20261026120000-a1b2c3d")
                 .claim("iat", now.getEpochSecond())
                 .claim("exp", now.getEpochSecond() + 60)
-                .jwtID(UUID.randomUUID().toString())
-                .build());
+                .jwtID(UUID.randomUUID().toString());
+        if (tool != null) {
+            claims.claim("tool", tool);
+        }
+        return signGateway(claims.build());
     }
 
     /** Service variant (CC-030), accepted only for GET /v1/systems. */

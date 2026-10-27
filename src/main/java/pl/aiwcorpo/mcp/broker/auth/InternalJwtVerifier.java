@@ -1,10 +1,13 @@
 package pl.aiwcorpo.mcp.broker.auth;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.text.ParseException;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -37,10 +40,37 @@ public class InternalJwtVerifier {
     private static final Pattern COMPONENT_ID = Pattern.compile("^mcp-[a-z0-9]+(-[a-z0-9]+)*$");
 
     private static final Set<String> COMMON_CLAIMS = Set.of("iss", "aud", "sub", "grp", "rid", "prv", "iat", "exp", "jti");
-    private static final Set<String> USER_REQUIRED = union(COMMON_CLAIMS, Set.of("usr", "azp", "tool"));
-    private static final Set<String> USER_ALLOWED = union(USER_REQUIRED, Set.of("vs", "vsc", "mfa"));
-    private static final Set<String> VSC_KEYS = Set.of(
-            "jiraProjects", "confluenceSpaces", "gitlabGroups", "opensearchIndexPrefixes", "servicedeskQueues");
+    private static final Set<String> USER_REQUIRED = union(COMMON_CLAIMS, Set.of("usr", "azp"));
+    private static final Set<String> USER_ALLOWED = union(USER_REQUIRED, Set.of("tool", "vs", "vsc", "mfa"));
+
+    /** vsc fields and the id pattern of each (common.schema.json, CC-056); at most 50 ids per field. */
+    private static final Map<String, Pattern> VSC_ID_PATTERNS = Map.of(
+            "jiraProjects", Pattern.compile("^[A-Z][A-Z0-9_]{1,9}$"),
+            "confluenceSpaces", Pattern.compile("^[A-Za-z0-9]{1,255}$"),
+            "gitlabGroups", Pattern.compile(
+                    "^(?!.*\\.(?:git|atom)$)[A-Za-z0-9](?:[._-]?[A-Za-z0-9])*(?:/[A-Za-z0-9](?:[._-]?[A-Za-z0-9])*){0,19}$"),
+            "opensearchIndexPrefixes", Pattern.compile("^(?!\\.{1,2}$)[a-z0-9.][a-z0-9._-]{0,253}[a-z0-9_]$|^[a-z0-9]$"),
+            "servicedeskQueues", Pattern.compile("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"));
+    private static final int VSC_MAX_IDS = 50;
+    private static final int GITLAB_PATH_MAX_LENGTH = 1024;
+
+    /**
+     * SHA-256 of the SPKI of every EC key published in mcp-contracts test-vectors/keys (gateway A and B,
+     * attacker, test IdP). A published key is refused whatever kid it is served under (CC-044).
+     */
+    static final Set<String> TEST_KEY_SPKI_SHA256 = Set.of(
+            "2c9b2f1e8cc291d8f9ab8a2c312726a1d9162253038d3670363084d5e2a07147",
+            "f776f49706b7fa2a9368b66d075bbb8ae737911125f4f144187b9a586f31eccc",
+            "c679efaec91adf76e792b3d56d1d59d5da3a3a6c4378da690c9c00f6ceff010a",
+            "8a264c8d907f48620d4f5963d2e5250766b5845cd5263677554575041e86de2f");
+
+    /** Rule for the {@code tool} claim of the user variant (CC-038). */
+    public enum ToolClaim {
+        /** tools/call and the broker's resolve: the call is for one tool. */
+        REQUIRED,
+        /** Protocol methods and GET /v1/systems: no tool is being called. */
+        FORBIDDEN
+    }
 
     private final String issuer;
     private final String audience;
@@ -49,10 +79,10 @@ public class InternalJwtVerifier {
     private final Clock clock;
     private final long skewSeconds;
     private final long maxLifetimeSeconds;
-    private final boolean rejectTestKids;
+    private final boolean allowTestKeys;
 
     public InternalJwtVerifier(String issuer, String audience, GatewayKeys keys, ReplayGuard replayGuard, Clock clock,
-            Duration clockSkew, Duration maxLifetime, boolean rejectTestKids) {
+            Duration clockSkew, Duration maxLifetime, boolean allowTestKeys) {
         this.issuer = issuer;
         this.audience = audience;
         this.keys = keys;
@@ -60,15 +90,16 @@ public class InternalJwtVerifier {
         this.clock = clock;
         this.skewSeconds = clockSkew.toSeconds();
         this.maxLifetimeSeconds = maxLifetime.toSeconds();
-        this.rejectTestKids = rejectTestKids;
+        this.allowTestKeys = allowTestKeys;
     }
 
     /**
      * @param token                 compact JWS from the Authorization header, or null
      * @param xRequestId            value of the X-Request-Id header, or null
      * @param serviceVariantAllowed true only for operations that accept the service variant (GET /v1/systems)
+     * @param toolClaim             whether the user variant must or must not carry {@code tool}
      */
-    public InternalJwtClaims verify(String token, String xRequestId, boolean serviceVariantAllowed) {
+    public InternalJwtClaims verify(String token, String xRequestId, boolean serviceVariantAllowed, ToolClaim toolClaim) {
         if (token == null || token.isEmpty()) {
             throw new TokenRejectedException("missing_token");
         }
@@ -115,6 +146,12 @@ public class InternalJwtVerifier {
         if (service && !serviceVariantAllowed) {
             throw new TokenRejectedException("service_token_not_allowed");
         }
+        if (!service && toolClaim == ToolClaim.REQUIRED && verified.tool() == null) {
+            throw new TokenRejectedException("tool_missing");
+        }
+        if (!service && toolClaim == ToolClaim.FORBIDDEN && verified.tool() != null) {
+            throw new TokenRejectedException("tool_not_allowed");
+        }
         Duration window = Duration.ofSeconds(Math.max(1, exp + skewSeconds - now));
         if (!replayGuard.firstUse(verified.jti(), window)) {
             throw new TokenRejectedException("replayed_jti");
@@ -131,12 +168,15 @@ public class InternalJwtVerifier {
         if (kid == null || kid.isEmpty()) {
             throw new TokenRejectedException("unknown_kid");
         }
-        if (rejectTestKids && kid.startsWith("test-")) {
-            throw new TokenRejectedException("test_kid_not_allowed");
+        if (!allowTestKeys && kid.startsWith("test-")) {
+            throw new TokenRejectedException("test_key_not_allowed");
         }
         Optional<ECKey> key = keys.find(kid);
         if (key.isEmpty() || !Curve.P_256.equals(key.get().getCurve())) {
             throw new TokenRejectedException("unknown_kid");
+        }
+        if (!allowTestKeys && isPublishedTestKey(key.get())) {
+            throw new TokenRejectedException("test_key_not_allowed");
         }
         try {
             if (!jwt.verify(new ECDSAVerifier(key.get()))) {
@@ -144,6 +184,16 @@ public class InternalJwtVerifier {
             }
         } catch (JOSEException e) {
             throw new TokenRejectedException("bad_signature");
+        }
+    }
+
+    static boolean isPublishedTestKey(ECKey key) {
+        try {
+            byte[] spki = key.toECPublicKey().getEncoded();
+            String digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(spki));
+            return TEST_KEY_SPKI_SHA256.contains(digest);
+        } catch (JOSEException | NoSuchAlgorithmException e) {
+            return true;
         }
     }
 
@@ -170,9 +220,12 @@ public class InternalJwtVerifier {
         }
         String usr = string(claims, "usr", 255);
         String azp = string(claims, "azp", 255);
-        String tool = string(claims, "tool", 64);
-        if (!TOOL_NAME.matcher(tool).matches()) {
-            throw new TokenRejectedException("invalid_claims");
+        String tool = null;
+        if (claims.containsKey("tool")) {
+            tool = string(claims, "tool", 64);
+            if (!TOOL_NAME.matcher(tool).matches()) {
+                throw new TokenRejectedException("invalid_claims");
+            }
         }
         List<String> grp = groups(claims.get("grp"));
         boolean hasVs = claims.containsKey("vs");
@@ -227,15 +280,17 @@ public class InternalJwtVerifier {
     }
 
     private static void virtualServerScopes(Object value) {
-        if (!(value instanceof Map<?, ?> vsc) || !VSC_KEYS.containsAll(vsc.keySet())) {
+        if (!(value instanceof Map<?, ?> vsc) || !VSC_ID_PATTERNS.keySet().containsAll(vsc.keySet())) {
             throw new TokenRejectedException("invalid_claims");
         }
-        for (Object ids : vsc.values()) {
-            if (!(ids instanceof List<?> list) || list.isEmpty() || new HashSet<>(list).size() != list.size()) {
+        for (Map.Entry<?, ?> field : vsc.entrySet()) {
+            Pattern pattern = VSC_ID_PATTERNS.get(field.getKey());
+            if (!(field.getValue() instanceof List<?> list) || list.isEmpty() || list.size() > VSC_MAX_IDS
+                    || new HashSet<>(list).size() != list.size()) {
                 throw new TokenRejectedException("invalid_claims");
             }
             for (Object id : list) {
-                if (!(id instanceof String s) || s.isEmpty()) {
+                if (!(id instanceof String s) || s.length() > GITLAB_PATH_MAX_LENGTH || !pattern.matcher(s).matches()) {
                     throw new TokenRejectedException("invalid_claims");
                 }
             }

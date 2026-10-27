@@ -102,7 +102,7 @@ public class CallerAuthenticationFilter extends OncePerRequestFilter {
             String token = bearer(request.getHeader("Authorization"));
             caller = switch (cn.get()) {
                 case Operation.GATEWAY -> new Caller.Gateway(requestId,
-                        gatewayTokens.verify(token, headerRequestId, operation.serviceVariantAllowed()));
+                        gatewayTokens.verify(token, headerRequestId, operation.serviceVariantAllowed(), operation.toolClaim()));
                 case Operation.PORTAL_BFF -> bffTokens.verify(token, requestId);
                 default -> throw new TokenRejectedException("no_token_scheme_for_cn");
             };

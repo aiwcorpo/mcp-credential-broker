@@ -12,17 +12,17 @@ import java.util.regex.Pattern;
  * Anything not listed is answered 404 before any token is looked at.
  */
 public record Operation(String operationId, String method, Pattern path, Set<String> allowedCns,
-        boolean serviceVariantAllowed, String auditEvent) {
+        boolean serviceVariantAllowed, InternalJwtVerifier.ToolClaim toolClaim, String auditEvent) {
 
     public static final String GATEWAY = "mcp-gateway";
     public static final String PORTAL_BFF = "mcp-portal-bff";
 
     public static final Operation RESOLVE = new Operation("resolveCredential", "POST",
-            Pattern.compile("^/v1/credentials/resolve$"), Set.of(GATEWAY), false, "credential_resolve");
+            Pattern.compile("^/v1/credentials/resolve$"), Set.of(GATEWAY), false, InternalJwtVerifier.ToolClaim.REQUIRED, "credential_resolve");
     public static final Operation PUT_SECRET = new Operation("putSecret", "PUT",
-            Pattern.compile("^/v1/connections/[^/]+/secret$"), Set.of(PORTAL_BFF), false, "connection_change");
+            Pattern.compile("^/v1/connections/[^/]+/secret$"), Set.of(PORTAL_BFF), false, InternalJwtVerifier.ToolClaim.FORBIDDEN, "connection_change");
     public static final Operation LIST_SYSTEMS = new Operation("listSystems", "GET",
-            Pattern.compile("^/v1/systems$"), Set.of(GATEWAY, PORTAL_BFF), true, null);
+            Pattern.compile("^/v1/systems$"), Set.of(GATEWAY, PORTAL_BFF), true, InternalJwtVerifier.ToolClaim.FORBIDDEN, null);
 
     public static final List<Operation> ALL = List.of(RESOLVE, PUT_SECRET, LIST_SYSTEMS);
 

@@ -34,7 +34,7 @@ export MCP_PORTAL_URL="${MCP_PORTAL_URL:-http://localhost:18090}"
 export MCP_ALLOW_PLAIN_HTTP=true
 if [[ -z "${MCP_GATEWAY_JWKS_URI:-}" ]]; then
   export MCP_GATEWAY_JWKS_FILE="${MCP_GATEWAY_JWKS_FILE:-$contracts/test-vectors/keys/test-gateway-jwks.json}"
-  export MCP_REJECT_TEST_KIDS=false
+  export MCP_ALLOW_TEST_KEYS=true
 fi
 
 exec "${JAVA_HOME:+$JAVA_HOME/bin/}java" -jar "$jar"

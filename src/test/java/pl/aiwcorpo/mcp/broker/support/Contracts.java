@@ -22,7 +22,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.dataformat.yaml.YAMLMapper;
 
-/** Access to pl.aiwcorpo.mcp:mcp-contracts:1.1.0 (and its test-vectors jar) on the test classpath. */
+/** Access to pl.aiwcorpo.mcp:mcp-contracts (version from pom.xml) and its test-vectors jar on the test classpath. */
 public final class Contracts {
 
     public static final String ROOT = "mcp-contracts/";

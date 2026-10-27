@@ -83,7 +83,7 @@ public class BrokerConfiguration {
     InternalJwtVerifier internalJwtVerifier(BrokerProperties properties, GatewayKeys keys, ReplayGuard replayGuard, Clock clock) {
         BrokerProperties.GatewayJwt config = properties.gatewayJwt();
         return new InternalJwtVerifier(config.issuer(), config.audience(), keys, replayGuard, clock,
-                config.clockSkew(), config.maxLifetime(), config.rejectTestKids());
+                config.clockSkew(), config.maxLifetime(), config.allowTestKeys());
     }
 
     @Bean

@@ -78,6 +78,11 @@ class BrokerIntegrationTest {
         List<BrokerClient.Response> responses = BrokerClient.recorded();
         assertThat(responses).hasSizeGreaterThan(20);
         for (BrokerClient.Response response : responses) {
+            assertThat(response.header("X-Request-Id")).as("X-Request-Id on every response (CC-047)")
+                    .matches("^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$");
+            if (response.status() >= 400 && response.status() != 409 && response.status() != 422) {
+                assertThat(Contracts.brokerSchemaErrors("Error", response.json())).as(response.body()).isEmpty();
+            }
             boolean resolveSuccess = response.raw().request().uri().getPath().equals("/v1/credentials/resolve")
                     && response.status() == 200;
             if (resolveSuccess) {
@@ -125,6 +130,22 @@ class BrokerIntegrationTest {
         assertThat(audit.getFirst().path("server").stringValue()).isEqualTo("mcp-jira");
         assertThat(audit.getFirst().path("credentialType").stringValue()).isEqualTo("user-secret");
         assertNoSecretsLogged(output);
+    }
+
+    @Test
+    void portalRequestIdIsUsedForAuditAndEchoed(CapturedOutput output) {
+        String rid = TestTokens.newRequestId();
+        BrokerClient.Response put = bff.send("PUT", "/v1/connections/jira/secret", tokens.bffUser(newSub(), "alice"), rid,
+                "{\"secret\":\"alice-pat\"}");
+        assertThat(put.status()).isEqualTo(200);
+        assertThat(put.header("X-Request-Id")).isEqualTo(rid);
+        assertThat(auditEvents(output, rid)).singleElement()
+                .satisfies(e -> assertThat(e.path("event").stringValue()).isEqualTo("connection_change"));
+
+        BrokerClient.Response invalidId = bff.send("PUT", "/v1/connections/jira/secret", tokens.bffUser(newSub(), "alice"),
+                "not-a-uuid", "{\"secret\":\"alice-pat\"}");
+        assertThat(invalidId.status()).isEqualTo(200);
+        assertThat(invalidId.header("X-Request-Id")).isNotEqualTo("not-a-uuid");
     }
 
     @Test
@@ -309,6 +330,16 @@ class BrokerIntegrationTest {
         String bffToken = tokens.bffUser(sub, "alice");
         assertThat(gateway.send("POST", "/v1/credentials/resolve", bffToken, TestTokens.newRequestId(), body).status())
                 .isEqualTo(401);
+
+        String noTool = TestTokens.newRequestId();
+        assertThat(gateway.send("POST", "/v1/credentials/resolve", tokens.gatewayUser(sub, "alice", noTool, null), noTool, body)
+                .status()).as("resolve requires tool (CC-038)").isEqualTo(401);
+        String withTool = TestTokens.newRequestId();
+        assertThat(gateway.send("GET", "/v1/systems", tokens.gatewayUser(sub, "alice", withTool), withTool, null).status())
+                .as("tool not allowed outside resolve").isEqualTo(401);
+        String userNoTool = TestTokens.newRequestId();
+        assertThat(gateway.send("GET", "/v1/systems", tokens.gatewayUser(sub, "alice", userNoTool, null), userNoTool, null)
+                .status()).isEqualTo(200);
     }
 
     @Test

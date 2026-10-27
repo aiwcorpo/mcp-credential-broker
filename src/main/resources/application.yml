@@ -77,7 +77,7 @@ broker:
     jwks-uri: ${MCP_GATEWAY_JWKS_URI:}
     jwks-file: ${MCP_GATEWAY_JWKS_FILE:}
     tls-name: ${MCP_GATEWAY_TLS_NAME:}
-    reject-test-kids: ${MCP_REJECT_TEST_KIDS:true}
+    allow-test-keys: ${MCP_ALLOW_TEST_KEYS:false}
   bff-token:
     issuer: ${MCP_OIDC_ISSUER}
     jwks-uri: ${MCP_OIDC_JWKS_URI}

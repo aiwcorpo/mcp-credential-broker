@@ -41,7 +41,7 @@ public record BrokerProperties(
             URI jwksUri,
             String jwksFile,
             String tlsName,
-            @DefaultValue("true") boolean rejectTestKids,
+            @DefaultValue("false") boolean allowTestKeys,
             @DefaultValue("30s") @NotNull Duration clockSkew,
             @DefaultValue("60s") @NotNull Duration maxLifetime,
             @DefaultValue("5m") @NotNull Duration jwksRefresh,

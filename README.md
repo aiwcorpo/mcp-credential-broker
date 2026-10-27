@@ -3,7 +3,7 @@
 Credential broker platformy MCP (strumień ws-06): jedyne miejsce, w którym leżą poświadczenia użytkowników
 do systemów docelowych, per (`sub`, system). Gateway pobiera z niego poświadczenie przy wywołaniu
 narzędzia (`resolve`), portal BFF zapisuje je w imieniu zalogowanego użytkownika. Kontrakt: C4 z
-`mcp-contracts` 1.1.0 (`openapi/credential-broker.v1.yaml`), audyt C8, zdarzenie C4.3.
+`mcp-contracts` 2.0.0 (`openapi/credential-broker.v1.yaml`), audyt C8, zdarzenie C4.3.
 
 Stan: kamień M1 (PAT do Jiry). Co działa, czego jeszcze nie ma i odstępstwa od briefu: [STATUS.md](STATUS.md).
 
@@ -28,11 +28,14 @@ zgodnie z `x-allowed-client-cn` (inaczej 403), token pasujący do CN (inaczej 40
 tokenu; ścieżka, query i ciało nie mogą go wskazać (nieznane pola w JSON -> 400). Ciało jest ograniczone do
 16 KB liczonych przy czytaniu, więc limit działa także dla `Transfer-Encoding: chunked` bez `Content-Length`.
 
-Wewnętrzny JWT C2 sprawdzany jest dokładnie według wektorów `test-vectors/jwt` (wszystkie 38 przechodzą,
-także co do powodu odrzucenia): tylko ES256, `kid` z JWKS gateway'a (w produkcji bez prefiksu `test-`),
-podpis, kształt claimów wariantu, `iss`, `aud` jako napis, `exp` z tolerancją 30 s, `iat` nie z przyszłości,
-czas życia do 60 s, `rid == X-Request-Id`, wariant serwisowy tylko dla `GET /v1/systems`, `jti` jednorazowy
-(Redis, `SET NX EX` pod `jti:mcp-credential-broker:`).
+Wewnętrzny JWT C2 sprawdzany jest dokładnie według wektorów `test-vectors/jwt` z 2.0.0 (wszystkie 43
+przechodzą, także co do powodu odrzucenia): tylko ES256, `kid` z JWKS gateway'a, podpis, kształt claimów
+wariantu, `iss`, `aud` jako napis, `exp` z tolerancją 30 s, `iat` nie z przyszłości, czas życia do 60 s,
+`rid == X-Request-Id`, wariant serwisowy tylko dla `GET /v1/systems`, `tool` wymagany przy `resolve` i
+zabroniony przy `GET /v1/systems` (CC-038), `vsc` według wzorców identyfikatorów i najwyżej 50 na pole
+(CC-056), `jti` jednorazowy (Redis, `SET NX EX` pod `jti:mcp-credential-broker:`). Opublikowane klucze testowe
+(`kid` z prefiksem `test-` i, niezależnie od `kid`, klucze o skrócie SPKI z `test-vectors/keys`) są odrzucane
+z powodem `test_key_not_allowed`, chyba że `MCP_ALLOW_TEST_KEYS=true` (CC-044).
 
 `PUT secret` woła whoami systemu z nowym sekretem (Jira DC: `GET /rest/api/2/myself`, bez podążania za
 przekierowaniami, TLS z zaufaniem do wewnętrznego CA) i porównuje użytkownika z claimem SSO. Odrzucony
@@ -106,7 +109,7 @@ Zmienne środowiska (nazwy z `mcp-platform-dev`, profil `full`). Pełna lista w
 | `MCP_GATEWAY_JWKS_URI` albo `MCP_GATEWAY_JWKS_FILE` | JWKS wewnętrznego JWT (dokładnie jedno z dwóch) |
 | `MCP_GATEWAY_TLS_NAME` | nazwa TLS endpointu JWKS (CC-035); host w `MCP_GATEWAY_JWKS_URI` musi być równy |
 | `MCP_GATEWAY_ISSUER` | `iss` wewnętrznego JWT, domyślnie `https://mcp-gateway.internal` |
-| `MCP_REJECT_TEST_KIDS` | domyślnie `true`: `kid` z prefiksem `test-` odrzucany; `false` tylko w testach |
+| `MCP_ALLOW_TEST_KEYS` | domyślnie `false`: opublikowane klucze testowe odrzucane; `true` tylko w testach i lokalnie |
 | `MCP_JIRA_URL` | adres Jiry (whoami), wymagany |
 | `MCP_PORTAL_URL` | baza `connectUrl` w `409 credential_required`, wymagany |
 | `MCP_ALLOW_PLAIN_HTTP` | domyślnie `false`; `true` dopuszcza `http` do OpenBao, JWKS i whoami (tylko dev) |
@@ -126,7 +129,8 @@ docker build -t mcp-credential-broker:dev .
 
 | Test | Co sprawdza |
 | --- | --- |
-| `InternalJwtVectorTest` | wszystkie wektory C2 z `mcp-contracts` 1.1.0 (wynik i powód), odrzucenie `test-` kid, replay |
+| `InternalJwtVectorTest` | wszystkie wektory C2 z `mcp-contracts` 2.0.0 (wynik i powód, `allowTestKeys` z wektora), klucz testowy pod produkcyjnym `kid` (SPKI), replay |
+| `ReturnPathTest` | walidator `returnPath` (CC-032) na wektorach `return-paths/`, gotowy pod `oauth/start` w M2 |
 | `OperationsContractTest` | tabela operacji filtra == metody, ścieżki i `x-allowed-client-cn` z OpenAPI C4 |
 | `BrokerIntegrationTest` | mTLS, PostgreSQL, Redis z ACL jak w dev, OpenBao (AppRole, KV v2, Transit), fałszywa Jira; odpowiedzi walidowane schematami OpenAPI, audyt schematem C8, zdarzenie schematem C4.3; brak sekretu w odpowiedziach poza `resolve` i w logach |
 | `BrokerIntegrationTest` (awarie) | Redis i PostgreSQL wstrzymane (`docker pause`) -> 503 z audytem; szyfrogram przeniesiony pod cudzą ścieżkę -> 503; ciało chunked 200 KB -> 400 bez whoami; sondy ścieżek -> 404 |
@@ -142,16 +146,14 @@ docker build -t mcp-credential-broker:dev .
 ./mvnw -B package -DskipTests && docker build -t mcp-credential-broker:dev .
 cd ../mcp-platform-dev
 make up                                   # infrastruktura
-./scripts/compose.sh --profile full run -d --no-deps --service-ports --name mcp-dev-broker-acceptance \
-  -e MCP_ALLOW_PLAIN_HTTP=true -e MCP_PORTAL_URL=http://localhost:18090 mcp-credential-broker
+./scripts/compose.sh --profile full up -d --no-deps mcp-credential-broker
 make pat USER=alice BROKER_URL=https://localhost:18100                  # 200, backendUser alice
 make pat USER=alice SECRET=bob-pat BROKER_URL=https://localhost:18100   # 422 identity_mismatch
-docker rm -f mcp-dev-broker-acceptance
+./scripts/compose.sh --profile full rm -sf mcp-credential-broker
 ```
 
 `make up-full` uruchamia też gateway i `mcp-jira`; bez ich obrazów (`mcp-gateway:dev`,
-`mcp-server-jira:dev`) się nie powiedzie, stąd start samego brokera. Usługa w `docker-compose.yml` nie ma
-jeszcze `MCP_ALLOW_PLAIN_HTTP` i `MCP_PORTAL_URL` (prośba do ws-01 w STATUS.md), więc są podawane przez `-e`. W compose broker czyta JWKS gateway'a z
+`mcp-server-jira:dev`) się nie powiedzie, stąd start samego brokera. W compose broker czyta JWKS gateway'a z
 `https://mcp-gateway.internal:8443/.well-known/jwks.json` dopiero przy pierwszym `resolve`, więc startuje
 bez gateway'a. Póki działa obok stuba C4, oba mają alias `mcp-credential-broker.internal`; po teście
 kontener trzeba usunąć (ostatnia komenda).
@@ -165,7 +167,7 @@ JAVA_HOME=... scripts/run-dev-host.sh     # https://localhost:18100, sekrety z .
 
 Skrypt bierze sekrety i certyfikaty z `mcp-platform-dev` przy starcie (nic nie kopiuje do tego repo). Bez
 `MCP_GATEWAY_JWKS_URI` używa testowego JWKS z `../mcp-contracts/test-vectors/keys/test-gateway-jwks.json` i
-dopuszcza `kid` z prefiksem `test-`, żeby `resolve` dało się wywołać tokenem podpisanym kluczem testowym A
+ustawia `MCP_ALLOW_TEST_KEYS=true`, żeby `resolve` dało się wywołać tokenem podpisanym kluczem testowym A
 (`test-gateway-jwt-a`). To tylko do pracy lokalnej.
 
 ## Struktura

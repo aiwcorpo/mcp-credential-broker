@@ -1,7 +1,8 @@
 # Status ws-06 (mcp-credential-broker)
 
 Kamień: **M1** (`PUT secret` + `resolve` dla `user-secret` Jira, OpenBao KV v2 + Transit, audyt C8, mTLS + JWT
-z `x-allowed-client-cn`). Kontrakty: `mcp-contracts` `v1.1.0`. M2-M4 nie są zaczęte.
+z `x-allowed-client-cn`). Kontrakty: `mcp-contracts` `v2.0.0` (od 2026-10-27, wcześniej 1.1.0). M2-M4 nie są
+zaczęte.
 
 ## M1: zrobione
 
@@ -10,7 +11,7 @@ z `x-allowed-client-cn`). Kontrakty: `mcp-contracts` `v1.1.0`. M2-M4 nie są zac
 | `POST /v1/credentials/resolve` | tylko CN `mcp-gateway` + wewnętrzny JWT C2 (wariant użytkownika); `200` z `Cache-Control: no-store` i `Pragma: no-cache`, `cacheTtlSeconds` <= 60 i nie dłużej niż do `expiresAt`; `409 credential_required` z `connectUrl`; `503` przy niedostępnym OpenBao/Redis |
 | `PUT /v1/connections/{system}/secret` | tylko CN `mcp-portal-bff` + token z IdP (`aud` brokera, `azp=mcp-portal-bff`); whoami Jiry, porównanie z `preferred_username`; `422 secret_invalid` / `identity_mismatch` bez zapisu |
 | `GET /v1/systems` | gateway (także wariant serwisowy, CC-030) i BFF; potrzebne gateway'owi przy starcie |
-| Weryfikacja C2 | wszystkie 38 wektorów `test-vectors/jwt` zgodne co do wyniku i powodu; `kid` `test-` odrzucany domyślnie |
+| Weryfikacja C2 | wszystkie 43 wektory `test-vectors/jwt` 2.0.0 zgodne co do wyniku i powodu; klucze testowe odrzucane po `kid` i po SPKI |
 | `SecretStore` na OpenBao | AppRole, Transit encrypt/decrypt, KV v2, powiązanie szyfrogramu z (`sub`, system) |
 | Metadane | PostgreSQL `connection` (Flyway), bez wartości sekretów |
 | Audyt C8 | `credential_resolve`, `connection_change` (także odrzucenia na etapie tokenu), walidowane schematem w testach |
@@ -21,16 +22,16 @@ z `x-allowed-client-cn`). Kontrakty: `mcp-contracts` `v1.1.0`. M2-M4 nie są zac
 
 ```
 ./mvnw -B verify
-Tests run: 87, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS)
-  InternalJwtVectorTest 41, BrokerIntegrationTest 22, CredentialServiceTest 10, OperationsContractTest 3,
-  OpenBaoClientTest 3, KeySourceTest 3, ConnectionTest 2, AuditLogTest 2, TransportSecurityTest 1
+Tests run: 96, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS, mcp-contracts 2.0.0)
+  InternalJwtVectorTest 47, BrokerIntegrationTest 23, CredentialServiceTest 10, OperationsContractTest 3,
+  OpenBaoClientTest 3, KeySourceTest 3, ConnectionTest 2, AuditLogTest 2, ReturnPathTest 2,
+  TransportSecurityTest 1
 ```
 
-Test akceptacyjny w `mcp-platform-dev` @ `8d459c1` (obraz `mcp-credential-broker:dev`, usługa z profilu
-`full` przez `compose run --no-deps -e MCP_ALLOW_PLAIN_HTTP=true -e MCP_PORTAL_URL=...`, prawdziwy Keycloak,
-OpenBao, PostgreSQL, Redis z ACL, mock Jiry; powtórzony po poprawkach z przeglądu, bez resetu środowiska:
-migracja V2 przeszła na istniejących danych, a PAT alice zapisany w M1 bez wersji ścieżki został zastąpiony
-wersjonowanym):
+Test akceptacyjny w `mcp-platform-dev` @ `4731dd5` (obraz `mcp-credential-broker:dev` na kontraktach 2.0.0,
+`./scripts/compose.sh --profile full up -d --no-deps mcp-credential-broker`, prawdziwy Keycloak, OpenBao,
+PostgreSQL, Redis z ACL, mock Jiry; bez resetu środowiska, kontener usunięty po teście; wcześniejsze przebiegi
+po M1 i po przeglądzie dały ten sam wynik, migracja V2 przeszła na danych z M1):
 
 ```
 $ make pat USER=alice BROKER_URL=https://localhost:18100
@@ -55,6 +56,21 @@ Bez certyfikatu i z certyfikatem obcego CA: zerwany handshake.
 | `resolve` zwraca `cacheTtlSeconds` <= 60 | testy integracyjne i `CredentialServiceTest.cacheTtlNeverOutlivesTheCredential` |
 
 Punkty DoD o OAuth, `DELETE`/`purge`, revoke i odświeżaniu należą do M2-M4.
+
+## Przejście na `mcp-contracts` 2.0.0 (2026-10-27)
+
+| Wymaganie 2.0.0 | Stan |
+| --- | --- |
+| `tool` per metoda (CC-038) | wymagany przy `resolve` (`tool_missing`), zabroniony przy `GET /v1/systems` (`tool_not_allowed`); reguła w tabeli `Operation` |
+| klucze testowe (CC-044) | powód `test_key_not_allowed`; odrzucenie po `kid` `test-*` i po skrócie SPKI opublikowanych kluczy; ustawienie `MCP_ALLOW_TEST_KEYS` (zamiast `MCP_REJECT_TEST_KIDS`) |
+| harness wektorów | czyta `verifier.allowTestKeys`, reguły metod z serwera i z `Operation`; 43/43 wektorów, wynik i powód |
+| `vsc` (CC-056) | wzorce identyfikatorów per pole, 1..50 elementów, unikalne |
+| `X-Request-Id` (CC-047) | przyjmowany od BFF, w każdej odpowiedzi (test na wszystkich odpowiedziach klasy integracyjnej) |
+| `credential.invalidated` po zastąpieniu (CC-046) | było |
+| pojedynczy token w `PUT secret` (CC-049) | sekret musi być jednym tokenem bez spacji i znaków sterujących, inaczej `422 secret_invalid` bez wywołania whoami |
+| 503 we wszystkich operacjach (CC-064) | było; ciała błędów walidowane schematem `Error` |
+| audyt 2.0.0 (CC-031) | testy walidują schematem 2.0.0; broker nie emituje `resource` |
+| `returnPath` (CC-032) | walidator `ReturnPath` z testem na wektorach; użyty w M2 (`oauth/start`) |
 
 ## Przegląd M1 (2026-10-27): znaleziska i poprawki
 
@@ -98,10 +114,7 @@ Punkty DoD o OAuth, `DELETE`/`purge`, revoke i odświeżaniu należą do M2-M4.
   `mcp-server-jira:dev` (`pull_policy: never`). Test akceptacyjny uruchomiony na usłudze brokera z profilu
   `full` przez `compose run --no-deps`, po teście kontener usunięty (ten sam alias DNS co stub C4). Nic w
   `mcp-platform-dev` nie było edytowane.
-- **Prośba do ws-01 (`docker-compose.yml`, usługa `mcp-credential-broker`):** dopisać
-  `MCP_ALLOW_PLAIN_HTTP: "true"` (OpenBao, Keycloak i mock Jiry w dev są po HTTP) i
-  `MCP_PORTAL_URL: http://localhost:${PORTAL_PORT}`. Bez nich obraz nie wstaje w compose (sprawdzone: odmowa
-  startu z komunikatem `must use https`); do tego czasu `-e` przy `compose run`.
+- `MCP_ALLOW_PLAIN_HTTP` i `MCP_PORTAL_URL` są w `docker-compose.yml` od `mcp-platform-dev` `4731dd5`.
 
 ## Propozycje zmian kontraktów (dopisane do `mcp-contracts/CONTRACT_CHANGES.md`, status `open`)
 
@@ -125,11 +138,9 @@ Punkty DoD o OAuth, `DELETE`/`purge`, revoke i odświeżaniu należą do M2-M4.
 - **Prefiksy Redis:** używane `jti:mcp-credential-broker:*` (SET NX EX) i kanał `credential.invalidated`
   (PUBLISH); `broker:*` jeszcze nieużywany. Lista komend ACL z `redis/start.sh` wystarcza; health indicator
   Redis wyłączony (wymaga `INFO`).
-- **1.2.0:** w kopii roboczej `mcp-contracts` są wektory `broker-resolve-without-tool` (CC-038) i
-  `test-kid-rejected-by-default` (CC-044, pole `allowTestKeys` w `verifier`). Weryfikator już wymaga `tool`
-  w wariancie użytkownika i domyślnie odrzuca `test-` kid; przy przejściu na 1.2.0 test wektorów musi
-  czytać `allowTestKeys`, a powody odrzucenia (`tool_missing`, `test_key_not_allowed`) trzeba uzgodnić z
-  nazwami w kodzie.
+- **Lista kluczy testowych po SPKI** jest w kodzie (`InternalJwtVerifier.TEST_KEY_SPKI_SHA256`, cztery klucze EC
+  z `test-vectors/keys`); test pilnuje zgodności z jarem `test-vectors`. Nowy klucz testowy w kontraktach
+  wymaga dopisania skrótu.
 
 ## Czego potrzebuje gateway (ws-05)
 
