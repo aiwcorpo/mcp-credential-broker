@@ -317,29 +317,33 @@ class BrokerIntegrationTest {
     }
 
     @Test
-    void anotherPersonsPatIsRejectedAndNothingIsStored(CapturedOutput output) {
+    void aPatOfAnotherLoginIsStoredAndShownAsThatAccount() {
         String carol = newSub();
-        int whoamiBefore = env.whoamiCalls.get();
         BrokerClient.Response put = putSecret(carol, "carol", "{\"secret\":\"bob-pat\"}");
-        assertThat(put.status()).isEqualTo(422);
-        assertThat(Contracts.brokerSchemaErrors("PutSecretError", put.json())).isEmpty();
-        assertThat(put.json().path("error").stringValue()).isEqualTo("identity_mismatch");
-        assertThat(env.whoamiCalls.get()).isEqualTo(whoamiBefore + 1);
-        assertThat(rows(carol)).isZero();
-        assertThat(env.bao("LIST", "secret/metadata/mcp/connections/" + new SecretKey(carol, "jira", null).subHash(), null)
-                .statusCode()).as("nothing stored under the user").isEqualTo(404);
-        assertThat(resolve(carol, "carol", TestTokens.newRequestId(), "{\"system\":\"jira\"}").status()).isEqualTo(409);
+        assertThat(put.status()).as("no comparison with the SSO identity: logins differ between systems").isEqualTo(200);
+        assertThat(Contracts.brokerSchemaErrors("PutSecretResponse", put.json())).isEmpty();
+        assertThat(put.json().path("backendUser").stringValue()).isEqualTo("bob");
+        BrokerClient.Response list = bff.send("GET", "/v1/connections", tokens.bffUser(carol, "carol"), null, null);
+        assertThat(list.json().get(0).path("backendUser").stringValue()).isEqualTo("bob");
+        assertThat(resolve(carol, "carol", TestTokens.newRequestId(), "{\"system\":\"jira\"}").json()
+                .path("value").stringValue()).isEqualTo("bob-pat");
+    }
 
-        String alice = newSub();
-        assertThat(putSecret(alice, "alice", "{\"secret\":\"alice-pat\"}").status()).isEqualTo(200);
-        assertThat(putSecret(alice, "alice", "{\"secret\":\"bob-pat\"}").status()).isEqualTo(422);
-        assertThat(resolve(alice, "alice", TestTokens.newRequestId(), "{\"system\":\"jira\"}").json()
-                .path("value").stringValue()).isEqualTo("alice-pat");
+    @Test
+    void aPatTheSystemRefusesIsNotStored(CapturedOutput output) {
+        String sub = newSub();
+        BrokerClient.Response put = putSecret(sub, "carol", "{\"secret\":\"invalid-pat\"}");
+        assertThat(put.status()).isEqualTo(422);
+        assertThat(put.json().path("error").stringValue()).isEqualTo("secret_invalid");
+        assertThat(rows(sub)).isZero();
+        assertThat(env.bao("LIST", "secret/metadata/mcp/connections/" + new SecretKey(sub, "jira", null).subHash(), null)
+                .statusCode()).as("nothing stored under the user").isEqualTo(404);
+        assertThat(resolve(sub, "carol", TestTokens.newRequestId(), "{\"system\":\"jira\"}").status()).isEqualTo(409);
         assertNoSecretsLogged(output);
     }
 
     @Test
-    void confluenceIdentityIsTakenFromUsernameOfUserCurrent() {
+    void confluenceAccountIsTakenFromUsernameOfUserCurrent() {
         String sub = newSub();
         int jiraBefore = env.whoamiCalls.get();
         BrokerClient.Response put = putSecret(sub, "alice", "{\"secret\":\"alice-pat\"}", "confluence");
@@ -353,14 +357,12 @@ class BrokerIntegrationTest {
     }
 
     @Test
-    void anotherPersonsConfluencePatIsRejectedAndNothingIsStored() {
+    void aConfluencePatOfAnotherLoginIsStoredWithItsAccount() {
         String carol = newSub();
         BrokerClient.Response put = putSecret(carol, "carol", "{\"secret\":\"bob-pat\"}", "confluence");
-        assertThat(put.status()).isEqualTo(422);
-        assertThat(put.json().path("error").stringValue()).isEqualTo("identity_mismatch");
-        assertThat(rows(carol)).isZero();
-        assertThat(resolve(carol, "carol", TestTokens.newRequestId(), "{\"system\":\"confluence\"}").status())
-                .isEqualTo(409);
+        assertThat(put.status()).isEqualTo(200);
+        assertThat(put.json().path("backendUser").stringValue()).isEqualTo("bob");
+        assertThat(rows(carol)).isEqualTo(1);
     }
 
     @Test

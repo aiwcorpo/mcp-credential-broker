@@ -153,9 +153,6 @@ public class CredentialService {
                 case WhoamiResult.Rejected rejected -> throw new SecretRejectedException("secret_invalid");
                 case WhoamiResult.Identified identified -> identified.identity();
             };
-            if (!IdentityRule.matches(system.config().identityClaim(), caller.claims(), identity)) {
-                throw new SecretRejectedException("identity_mismatch");
-            }
 
             Instant expires = expiresAt == null ? null : expiresAt.truncatedTo(ChronoUnit.SECONDS);
             Replaced replaced = oauth.underRefreshLock(caller.sub(), system.id(), () -> {

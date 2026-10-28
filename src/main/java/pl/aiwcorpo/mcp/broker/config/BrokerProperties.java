@@ -112,17 +112,13 @@ public record BrokerProperties(
         }
     }
 
-    /**
-     * One target system. {@code identityClaim} names the SSO claim compared with the backend identity
-     * (C4.1): {@code preferred_username} against the backend user name, {@code email} against its e-mail.
-     */
+    /** One target system. */
     public record SystemConfig(
             @NotNull URI baseUrl,
             @NotBlank String adapter,
             @NotEmpty List<CredentialType> supportedTypes,
             @NotNull CredentialType defaultType,
             @DefaultValue("Bearer") @NotNull CredentialScheme secretScheme,
-            @DefaultValue("preferred_username") @NotBlank String identityClaim,
             @DefaultValue("") List<String> oauthScopes,
             @DefaultValue("5s") @NotNull Duration timeout,
             @Valid OAuth oauth) {

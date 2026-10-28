@@ -51,7 +51,7 @@ class CredentialServiceTest {
     private final ConnectionRepository connections = mock(ConnectionRepository.class);
     private final SecretStore secrets = mock(SecretStore.class);
     private final InvalidationPublisher invalidations = mock(InvalidationPublisher.class);
-    private final SystemRegistry systems = registry("preferred_username");
+    private final SystemRegistry systems = registry();
     private final CredentialService service = new CredentialService(systems, connections, secrets, invalidations,
             passThroughOAuth(), new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7));
 
@@ -147,7 +147,7 @@ class CredentialServiceTest {
         SystemAdapter adapter = (scheme, secret) ->
                 new WhoamiResult.Identified(identity);
         when(registry.find("jira")).thenReturn(Optional.of(
-                new SystemRegistry.ConfiguredSystem("jira", config("preferred_username"), adapter)));
+                new SystemRegistry.ConfiguredSystem("jira", config(), adapter)));
         return new CredentialService(registry, connections, secrets, invalidations,
                 passThroughOAuth(), new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7));
     }
@@ -161,14 +161,14 @@ class CredentialServiceTest {
         assertThat(stored.status()).isEqualTo(ConnectionStatus.EXPIRED);
     }
 
-    private static SystemRegistry registry(String identityClaim) {
-        return new SystemRegistry(Map.of("jira", config(identityClaim)), HttpClient.newHttpClient(), JsonMapper.builder().build(),
+    private static SystemRegistry registry() {
+        return new SystemRegistry(Map.of("jira", config()), HttpClient.newHttpClient(), JsonMapper.builder().build(),
                 mock(pl.aiwcorpo.mcp.broker.secret.OAuthClientSecrets.class));
     }
 
-    private static BrokerProperties.SystemConfig config(String identityClaim) {
+    private static BrokerProperties.SystemConfig config() {
         return new BrokerProperties.SystemConfig(URI.create("http://jira.test"), "atlassian-dc",
-                List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET, CredentialScheme.BEARER, identityClaim,
+                List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET, CredentialScheme.BEARER,
                 List.of(), Duration.ofSeconds(1), null);
     }
 

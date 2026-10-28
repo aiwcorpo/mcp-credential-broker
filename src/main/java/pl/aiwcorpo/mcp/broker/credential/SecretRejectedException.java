@@ -1,8 +1,8 @@
 package pl.aiwcorpo.mcp.broker.credential;
 
 /**
- * A 422 of C4: {@code secret_invalid} or {@code identity_mismatch} for a PAT, {@code flow_invalid} or
- * {@code identity_mismatch} for an OAuth flow. Nothing was stored. {@code reason} is the more specific
+ * A 422 of C4: {@code secret_invalid} for a PAT, {@code flow_invalid} for an OAuth flow. Nothing was stored.
+ * {@code reason} is the more specific
  * machine-readable cause that goes to the audit log only.
  */
 public class SecretRejectedException extends RuntimeException {

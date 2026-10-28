@@ -276,34 +276,34 @@ class OAuthIntegrationTest {
     }
 
     @Test
-    void aCodeOfAnotherAccountIsAnIdentityMismatchAndNothingIsStored() {
+    void anAccountWithAnotherLoginIsConnectedAndShown() {
         String sub = newSub();
         GitLabStub.Grant bobsCode = grant("bob", 7200);
         Started started = start(sub, "alice");
 
         BrokerClient.Response response = complete(sub, "alice", started, bobsCode.code());
-        assertThat(response.status()).isEqualTo(422);
-        assertThat(Contracts.brokerSchemaErrors("OAuthCompleteError", response.json())).isEmpty();
-        assertThat(response.json().path("error").stringValue()).isEqualTo("identity_mismatch");
-        assertThat(rows(sub)).isZero();
-        assertThat(env.bao("LIST", "secret/metadata/mcp/connections/" + new SecretKey(sub, "gitlab", null).subHash(), null)
-                .statusCode()).isEqualTo(404);
-        assertThat(resolve(sub, "alice", "gitlab").status()).isEqualTo(409);
-        assertThat(gitlab.revokeRequests()).extracting(form -> form.get("token"))
-                .as("the tokens issued for the wrong account are revoked").contains(bobsCode.accessToken(), bobsCode.refreshToken());
+        assertThat(response.status()).as("no comparison with the SSO identity: logins differ between systems").isEqualTo(200);
+        assertThat(Contracts.brokerSchemaErrors("OAuthCompleteResponse", response.json())).isEmpty();
+        assertThat(response.json().path("backendUser").stringValue()).isEqualTo("bob");
+        assertThat(rows(sub)).isEqualTo(1);
+        BrokerClient.Response list = bff.send("GET", "/v1/connections", tokens.bffUser(sub, "alice"), null, null);
+        assertThat(list.json().get(0).path("backendUser").stringValue()).isEqualTo("bob");
+        assertThat(resolve(sub, "alice", "gitlab").json().path("value").stringValue()).isEqualTo(bobsCode.accessToken());
+        assertThat(gitlab.revokeRequests()).extracting(form -> form.get("token")).doesNotContain(bobsCode.accessToken());
     }
 
     @Test
-    void identityMismatchKeepsTheExistingConnection() {
+    void connectingAnotherAccountReplacesTheOldOneAndRevokesItsGrant() {
         String sub = newSub();
         GitLabStub.Grant good = grant("alice", 7200);
         connect(sub, "alice", good);
-        String before = storedPath(sub);
 
         GitLabStub.Grant bobs = grant("bob", 7200);
-        assertThat(complete(sub, "alice", start(sub, "alice"), bobs.code()).status()).isEqualTo(422);
-        assertThat(storedPath(sub)).isEqualTo(before);
-        assertThat(resolve(sub, "alice", "gitlab").json().path("value").stringValue()).isEqualTo(good.accessToken());
+        assertThat(complete(sub, "alice", start(sub, "alice"), bobs.code()).status()).isEqualTo(200);
+        assertThat(resolve(sub, "alice", "gitlab").json().path("value").stringValue()).isEqualTo(bobs.accessToken());
+        BrokerClient.Response list = bff.send("GET", "/v1/connections", tokens.bffUser(sub, "alice"), null, null);
+        assertThat(list.json().get(0).path("backendUser").stringValue()).isEqualTo("bob");
+        assertThat(gitlab.revokeRequests()).extracting(form -> form.get("token")).contains(good.accessToken(), good.refreshToken());
     }
 
     @Test
@@ -392,7 +392,7 @@ class OAuthIntegrationTest {
     }
 
     @Test
-    void gitLabPersonalAccessTokenFollowsTheIdentityRule() {
+    void gitLabPersonalAccessTokenIsStoredWithItsAccount() {
         String sub = newSub();
         gitlab.pat("glpat-alice-2", "Alice");
         gitlab.pat("glpat-bob-2", "bob");
@@ -404,13 +404,11 @@ class OAuthIntegrationTest {
         assertThat(resolved.json().path("type").stringValue()).isEqualTo("user-secret");
         assertThat(resolved.json().path("value").stringValue()).isEqualTo("glpat-alice-2");
 
-        BrokerClient.Response foreign = putSecret(newSub(), "alice", "{\"secret\":\"glpat-bob-2\"}");
-        assertThat(foreign.status()).isEqualTo(422);
-        assertThat(foreign.json().path("error").stringValue()).isEqualTo("identity_mismatch");
+        BrokerClient.Response other = putSecret(newSub(), "alice", "{\"secret\":\"glpat-bob-2\"}");
+        assertThat(other.status()).isEqualTo(200);
+        assertThat(other.json().path("backendUser").stringValue()).isEqualTo("bob");
         assertThat(putSecret(newSub(), "alice", "{\"secret\":\"glpat-unknown\"}").json().path("error").stringValue())
                 .isEqualTo("secret_invalid");
-        assertThat(putSecret(newSub(), "ali", "{\"secret\":\"glpat-alice-2\"}").json().path("error").stringValue())
-                .as("a prefix is not the same account").isEqualTo("identity_mismatch");
     }
 
     @Test
@@ -563,7 +561,7 @@ class OAuthIntegrationTest {
     }
 
     @Test
-    void tokensIssuedForACodeAreRevokedWhenTheIdentityCheckCannotBeDone() {
+    void tokensIssuedForACodeAreRevokedWhenTheWhoamiCannotBeDone() {
         String sub = newSub();
         GitLabStub.Grant grant = grant("alice", 7200);
         gitlab.whoamiFails(grant.accessToken(), 500);

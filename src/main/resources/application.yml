@@ -104,4 +104,3 @@ broker:
       supported-types: [user-secret]
       default-type: user-secret
       secret-scheme: Bearer
-      identity-claim: preferred_username

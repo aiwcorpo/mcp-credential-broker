@@ -42,8 +42,9 @@ import pl.aiwcorpo.mcp.broker.system.WhoamiResult;
 /**
  * The user-oauth credential type (C4.2): the authorization code flow with PKCE started and completed for the
  * portal user, and the renewal of access tokens. The user is always the authenticated caller. A flow belongs
- * to the {@code sub} that started it; whoever completes it must present the same {@code sub}, the flow's
- * {@code state}, and a code that the provider issued for the same account as the SSO identity (C4.1).
+ * to the {@code sub} that started it; whoever completes it must present the same {@code sub} and the flow's
+ * {@code state}. The account the provider names for the tokens is recorded and shown, not compared with the SSO
+ * identity: logins differ between systems for the same person (decision of 2026-10-28).
  */
 public class OAuthService {
 
@@ -147,9 +148,6 @@ public class OAuthService {
                     throw new UpstreamUnavailableException("provider issued a token that its own whoami refuses");
                 case WhoamiResult.Identified identified -> identified.identity();
             };
-            if (!IdentityRule.matches(system.config().identityClaim(), caller.claims(), identity)) {
-                throw new SecretRejectedException("identity_mismatch");
-            }
             TokenSet issued = tokens;
             boolean replaced = underRefreshLock(caller.sub(), system.id(), () -> {
                 Instant now = clock.instant();
