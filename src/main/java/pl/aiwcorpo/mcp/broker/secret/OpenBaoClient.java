@@ -62,6 +62,16 @@ public class OpenBaoClient {
         return response.body();
     }
 
+    /** Keys below a KV v2 metadata path (LIST); null when there are none. */
+    public JsonNode list(String path) {
+        Response response = call("GET", path + "?list=true", null);
+        if (response.status() == 404) {
+            return null;
+        }
+        requireOk(response, "list");
+        return response.body();
+    }
+
     public JsonNode write(String path, ObjectNode body) {
         Response response = call("POST", path, body);
         requireOk(response, "write");

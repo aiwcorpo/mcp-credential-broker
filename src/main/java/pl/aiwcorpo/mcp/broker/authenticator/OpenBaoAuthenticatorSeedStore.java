@@ -68,6 +68,36 @@ public class OpenBaoAuthenticatorSeedStore implements AuthenticatorSeedStore {
         client.delete(metadataPath(sub, PENDING));
     }
 
+    @Override
+    public java.util.List<Entry> list() {
+        String root = openbao.kvMount() + "/metadata/" + config.pathPrefix();
+        JsonNode keys = client.list(root);
+        java.util.Set<String> hashes = new java.util.TreeSet<>();
+        if (keys != null) {
+            keys.path("data").path("keys").forEach(key -> {
+                String name = key.stringValue();
+                hashes.add(name.endsWith("/") ? name.substring(0, name.length() - 1) : name);
+            });
+        }
+        java.util.List<Entry> entries = new java.util.ArrayList<>();
+        for (String hash : hashes) {
+            for (boolean pending : new boolean[] {false, true}) {
+                JsonNode metadata = client.read(root + "/" + hash + (pending ? "/" + PENDING : ""));
+                if (metadata != null) {
+                    String updated = metadata.path("data").path("updated_time").asString(null);
+                    entries.add(new Entry(hash, pending, updated == null ? java.time.Instant.EPOCH : java.time.Instant.parse(updated)));
+                }
+            }
+        }
+        return entries;
+    }
+
+    @Override
+    public void delete(Entry entry) {
+        client.delete(openbao.kvMount() + "/metadata/" + config.pathPrefix() + "/" + entry.subHash()
+                + (entry.pending() ? "/" + PENDING : ""));
+    }
+
     private void put(String sub, String kind, String id, byte[] seed) {
         ObjectNode plaintext = json.createObjectNode()
                 .put("v", FORMAT_VERSION)

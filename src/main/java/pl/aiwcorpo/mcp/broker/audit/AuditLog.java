@@ -25,7 +25,7 @@ public class AuditLog {
     private static final Logger audit = LoggerFactory.getLogger(LOGGER);
     private static final Logger log = LoggerFactory.getLogger(AuditLog.class);
     private static final Pattern FORBIDDEN_IN_BACKEND_USER =
-            Pattern.compile("[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]");
+            Pattern.compile("[\\p{Cc}\\p{Cf}\\p{Cs}\\u2028\\u2029\\ufdd0-\\ufdef\\ufffe\\uffff\\u034f\\u115f\\u1160\\u3164\\uffa0\\u2800\\ufe00-\\ufe0f]");
     private static final DateTimeFormatter TS = DateTimeFormatter.ISO_INSTANT;
 
     private final JsonMapper json;
@@ -39,26 +39,13 @@ public class AuditLog {
     }
 
     /**
-     * The C8 pattern for backendUser: 1..255 characters, no C0/C1 controls, DEL, U+2028/2029 or bidi controls.
-     * Unpaired surrogates are refused on top of the schema: they are not valid Unicode and a SIEM parser may
-     * reject the whole line.
+     * The C8 pattern for backendUser (3.0.2): 1..255 characters, none of them a control, format or surrogate
+     * character (so also no unpaired surrogate), a line or paragraph separator, a noncharacter, an invisible
+     * filler or a variation selector.
      */
     static boolean validBackendUser(String value) {
         int length = value.codePointCount(0, value.length());
-        return length >= 1 && length <= 255 && !FORBIDDEN_IN_BACKEND_USER.matcher(value).find()
-                && !hasUnpairedSurrogate(value);
-    }
-
-    private static boolean hasUnpairedSurrogate(String value) {
-        for (int i = 0; i < value.length(); i++) {
-            char c = value.charAt(i);
-            if (Character.isHighSurrogate(c) && i + 1 < value.length() && Character.isLowSurrogate(value.charAt(i + 1))) {
-                i++;
-            } else if (Character.isSurrogate(c)) {
-                return true;
-            }
-        }
-        return false;
+        return length >= 1 && length <= 255 && !FORBIDDEN_IN_BACKEND_USER.matcher(value).find();
     }
 
     public Entry event(String event, String requestId) {

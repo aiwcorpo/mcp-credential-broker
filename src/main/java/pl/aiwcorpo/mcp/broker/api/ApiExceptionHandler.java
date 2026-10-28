@@ -65,7 +65,11 @@ public class ApiExceptionHandler {
     /** Raised and audited by the authenticator service: 409, 422 and 429 bodies of C4. */
     @ExceptionHandler(AuthenticatorRefusedException.class)
     ResponseEntity<Map<String, String>> authenticatorRefused(AuthenticatorRefusedException e) {
-        return ResponseEntity.status(e.status()).body(Map.of("error", e.error()));
+        ResponseEntity.BodyBuilder response = ResponseEntity.status(e.status());
+        if (e.retryAfterSeconds() != null) {
+            response.header("Retry-After", String.valueOf(e.retryAfterSeconds()));
+        }
+        return response.body(Map.of("error", e.error()));
     }
 
     /** Raised and audited by the service. */

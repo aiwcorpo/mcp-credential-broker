@@ -9,6 +9,8 @@ import java.util.Optional;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
 
+import pl.aiwcorpo.mcp.broker.secret.SecretKey;
+
 /**
  * Metadata of authenticators. {@link #lockOrCreate} and {@link #lock} take the row lock that serializes every
  * counter change of one user; they must run inside a transaction.
@@ -33,7 +35,16 @@ class AuthenticatorRepository {
                 .optional();
     }
 
+    Optional<AuthenticatorRecord> findBySubHash(String hash) {
+        return jdbc.sql("select " + COLUMNS + " from authenticator where sub_hash = :hash")
+                .param("hash", hash)
+                .query(AuthenticatorRepository::map)
+                .optional();
+    }
+
+    /** Waiting for the row lock is bounded below the statement timeout so that a stuck holder ends in a clear error. */
     Optional<AuthenticatorRecord> lock(String sub) {
+        jdbc.sql("set local lock_timeout = '2s'").update();
         return jdbc.sql("select " + COLUMNS + " from authenticator where sub = :sub for update")
                 .param("sub", sub)
                 .query(AuthenticatorRepository::map)
@@ -42,10 +53,11 @@ class AuthenticatorRepository {
 
     AuthenticatorRecord lockOrCreate(String sub, Instant now) {
         jdbc.sql("""
-                insert into authenticator (sub, state, updated_at) values (:sub, 'none', :now)
+                insert into authenticator (sub, sub_hash, state, updated_at) values (:sub, :hash, 'none', :now)
                 on conflict (sub) do nothing
                 """)
                 .param("sub", sub)
+                .param("hash", SecretKey.hashOf(sub))
                 .param("now", Timestamp.from(now))
                 .update();
         return lock(sub).orElseThrow(() -> new IllegalStateException("authenticator row vanished under its lock"));

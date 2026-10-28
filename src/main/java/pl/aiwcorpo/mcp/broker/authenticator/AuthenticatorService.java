@@ -5,8 +5,11 @@ import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.HexFormat;
+import java.util.Locale;
+import java.util.Objects;
 import java.util.OptionalLong;
 
 import org.slf4j.Logger;
@@ -26,8 +29,13 @@ import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
  * The TOTP authenticator of C4 (CC-091, CC-092, CC-126, CC-128). Every change of a user's counters, lock or
  * registration runs in one transaction that holds the row lock of that user's {@code authenticator} row, so the
  * check "not locked, not disabled", the 5-in-15-minutes and 20-in-24-hours counters and the lock are one atomic step
- * per {@code sub}. The seed is read from OpenBao before the lock is taken and compared by registration id inside
- * it, so the lock is never held across a call that can be slow for a user who is not allowed to try anyway.
+ * per {@code sub}.
+ *
+ * <p>No call to the secret store happens while that lock is held. A seed is read (and, for a confirmed enrollment,
+ * written) before the transaction, and the transaction only compares ids and changes metadata. The order keeps one
+ * invariant: a row in state {@code active} always has its seed in the store. Writes that precede a commit can leave
+ * an entry that no row accounts for, and deletes that follow a commit can fail; {@link #sweepOrphanSeeds} removes
+ * such entries after {@link AuthenticatorLimits#ORPHAN_GRACE}.
  */
 public class AuthenticatorService {
 
@@ -40,7 +48,7 @@ public class AuthenticatorService {
         OK, INVALID, REPLAYED, BURNED, LOCKED, DISABLED, NOT_REGISTERED;
 
         public String wire() {
-            return name().toLowerCase(java.util.Locale.ROOT);
+            return name().toLowerCase(Locale.ROOT);
         }
     }
 
@@ -60,6 +68,7 @@ public class AuthenticatorService {
         }
     }
 
+    /** {@code pendingDestroyed}: the row no longer has an enrollment, so its stored seed is to be deleted. */
     private sealed interface ConfirmOutcome {
         record Active(Status status) implements ConfirmOutcome {
         }
@@ -67,7 +76,7 @@ public class AuthenticatorService {
         record WrongCode() implements ConfirmOutcome {
         }
 
-        record Invalid() implements ConfirmOutcome {
+        record Invalid(boolean pendingDestroyed) implements ConfirmOutcome {
         }
     }
 
@@ -104,9 +113,19 @@ public class AuthenticatorService {
     public Enrollment startEnrollment(Caller.PortalUser user) {
         AuditLog.Entry entry = audit.event("authenticator", user.requestId()).user(user.sub(), user.username(), user.azp());
         try {
-            Enrollment enrollment = tx.execute(status -> startEnrollmentLocked(user));
+            Instant now = clock.instant();
+            String enrollmentId = "enr_" + randomToken(16);
+            tx.executeWithoutResult(status -> reserveEnrollment(user.sub(), enrollmentId, now));
+
+            byte[] seed = new byte[20];
+            random.nextBytes(seed);
+            // After the commit, so a refused or failed start never leaves a seed behind; if this write fails the
+            // reserved id has no seed, which confirm treats as an invalid enrollment and the sweep clears.
+            seeds.putPending(user.sub(), enrollmentId, seed);
+            String secret = Base32.encode(seed);
+            Arrays.fill(seed, (byte) 0);
             entry.ok("authenticator_enrollment_started");
-            return enrollment;
+            return new Enrollment(enrollmentId, otpauthUri(user.username(), secret), secret, now.plus(AuthenticatorLimits.ENROLLMENT_TTL));
         } catch (AuthenticatorRefusedException e) {
             entry.denied("authenticator_enrollment_failed", "rate_limited".equals(e.error()) ? "rate_limited" : null);
             throw e;
@@ -115,33 +134,24 @@ public class AuthenticatorService {
         }
     }
 
-    private Enrollment startEnrollmentLocked(Caller.PortalUser user) {
-        Instant now = clock.instant();
-        AuthenticatorRecord row = repository.lockOrCreate(user.sub(), now);
+    private void reserveEnrollment(String sub, String enrollmentId, Instant now) {
+        AuthenticatorRecord row = repository.lockOrCreate(sub, now);
         if (row.state == State.ACTIVE) {
             throw new AuthenticatorRefusedException(409, "already_registered");
         }
-        if (row.enrollWindowStart == null || !now.isBefore(row.enrollWindowStart.plus(Duration.ofHours(1)))) {
+        if (row.enrollWindowStart == null || !now.isBefore(row.enrollWindowStart.plus(AuthenticatorLimits.ENROLLMENT_START_WINDOW))) {
             row.enrollWindowStart = now;
             row.enrollStarts = 0;
         }
         if (row.enrollStarts >= config.enrollmentStartsPerHour()) {
-            throw new AuthenticatorRefusedException(429, "rate_limited");
+            Instant reopens = row.enrollWindowStart.plus(AuthenticatorLimits.ENROLLMENT_START_WINDOW);
+            throw new AuthenticatorRefusedException(429, "rate_limited", Math.max(1, Duration.between(now, reopens).toSeconds()));
         }
         row.enrollStarts++;
-
-        byte[] seed = new byte[20];
-        random.nextBytes(seed);
-        String enrollmentId = "enr_" + randomToken(16);
-        seeds.putPending(user.sub(), enrollmentId, seed);
         row.pendingId = enrollmentId;
         row.pendingCreatedAt = now;
         row.pendingWrongCodes = 0;
         repository.save(row, now);
-
-        String secret = Base32.encode(seed);
-        java.util.Arrays.fill(seed, (byte) 0);
-        return new Enrollment(enrollmentId, otpauthUri(user.username(), secret), secret, now.plus(config.enrollmentTtl()));
     }
 
     public Status confirmEnrollment(Caller.PortalUser user, String enrollmentId, String code) {
@@ -170,61 +180,92 @@ public class AuthenticatorService {
     }
 
     private ConfirmOutcome confirm(String sub, String enrollmentId, String code) {
+        Instant now = clock.instant();
         AuthenticatorRecord peek = repository.find(sub).orElse(null);
         if (peek == null || peek.pendingId == null || !peek.pendingId.equals(enrollmentId)) {
-            return new ConfirmOutcome.Invalid();
+            return new ConfirmOutcome.Invalid(false);
         }
         Seed pending = seeds.getPending(sub).orElse(null);
+        String registrationId = null;
         try {
-            return tx.execute(status -> confirmLocked(sub, enrollmentId, code, pending));
+            if (peek.state != State.ACTIVE && pending != null && pending.id().equals(enrollmentId)
+                    && !pendingExpired(peek, now)
+                    && Totp.matchingStep(pending.bytes(), code, now, AuthenticatorLimits.WINDOW_STEPS).isPresent()) {
+                // The active seed is written before the transaction that makes the registration active. The old
+                // entry is deleted first (all KV versions): a disabled registration's seed must not stay in the history.
+                registrationId = randomHex(16);
+                seeds.deleteActive(sub);
+                seeds.putActive(sub, registrationId, pending.bytes());
+            }
+            String written = registrationId;
+            Seed pendingSeed = pending;
+            ConfirmOutcome outcome = tx.execute(status -> confirmLocked(sub, enrollmentId, code, pendingSeed, written));
+            cleanAfterConfirm(sub, outcome, written);
+            return outcome;
         } finally {
             if (pending != null) {
-                java.util.Arrays.fill(pending.bytes(), (byte) 0);
+                Arrays.fill(pending.bytes(), (byte) 0);
             }
         }
     }
 
-    private ConfirmOutcome confirmLocked(String sub, String enrollmentId, String code, Seed pending) {
+    /** The decision is committed; what remains in the store is housekeeping, and the sweep covers a failure here. */
+    private void cleanAfterConfirm(String sub, ConfirmOutcome outcome, String writtenRegistrationId) {
+        try {
+            if (outcome instanceof ConfirmOutcome.Active
+                    || outcome instanceof ConfirmOutcome.Invalid invalid && invalid.pendingDestroyed()) {
+                seeds.deletePending(sub);
+            }
+            if (writtenRegistrationId != null && !(outcome instanceof ConfirmOutcome.Active)) {
+                seeds.deleteActive(sub);
+            }
+        } catch (SecretStoreUnavailableException e) {
+            log.warn("Could not delete an authenticator seed after an enrollment decision; the sweep will: {}", e.getMessage());
+        }
+    }
+
+    private ConfirmOutcome confirmLocked(String sub, String enrollmentId, String code, Seed pending, String registrationId) {
         Instant now = clock.instant();
         AuthenticatorRecord row = repository.lock(sub).orElse(null);
-        if (row == null || row.pendingId == null || !row.pendingId.equals(enrollmentId)) {
-            return new ConfirmOutcome.Invalid();
+        if (row == null || row.pendingId == null || !row.pendingId.equals(enrollmentId) || row.state == State.ACTIVE) {
+            return new ConfirmOutcome.Invalid(false);
         }
-        boolean expired = now.isAfter(row.pendingCreatedAt.plus(config.enrollmentTtl()));
-        if (expired || pending == null || !pending.id().equals(enrollmentId)) {
-            destroyPending(row, now);
-            return new ConfirmOutcome.Invalid();
-        }
-        OptionalLong step = Totp.matchingStep(pending.bytes(), code, now, config.windowSteps());
-        if (step.isEmpty()) {
-            row.pendingWrongCodes++;
-            if (row.pendingWrongCodes >= config.enrollmentMaxWrongCodes()) {
-                destroyPending(row, now);
-                return new ConfirmOutcome.Invalid();
-            }
+        if (pendingExpired(row, now) || pending == null || !pending.id().equals(enrollmentId)) {
+            row.clearPending();
             repository.save(row, now);
+            return new ConfirmOutcome.Invalid(true);
+        }
+        OptionalLong step = Totp.matchingStep(pending.bytes(), code, now, AuthenticatorLimits.WINDOW_STEPS);
+        if (step.isPresent() && registrationId != null) {
+            row.state = State.ACTIVE;
+            row.registrationId = registrationId;
+            row.registeredAt = now;
+            row.lastUsedAt = null;
+            row.lastAcceptedStep = step.getAsLong();
+            row.burnedThrough = null;
+            row.disabledAt = null;
+            row.clearPending();
+            repository.deleteFailures(sub);
+            repository.save(row, now);
+            return new ConfirmOutcome.Active(statusOf(row, now));
+        }
+        if (step.isPresent()) {
+            // Valid only because the window moved since the check before the transaction: no seed was written
+            // for it, so ask for the code again without counting a wrong one.
             return new ConfirmOutcome.WrongCode();
         }
-        String registrationId = randomHex(16);
-        seeds.putActive(sub, registrationId, pending.bytes());
-        seeds.deletePending(sub);
-        row.state = State.ACTIVE;
-        row.registrationId = registrationId;
-        row.registeredAt = now;
-        row.lastUsedAt = null;
-        row.lastAcceptedStep = step.getAsLong();
-        row.burnedThrough = null;
-        row.disabledAt = null;
-        row.clearPending();
-        repository.deleteFailures(sub);
+        row.pendingWrongCodes++;
+        if (row.pendingWrongCodes >= AuthenticatorLimits.ENROLLMENT_MAX_WRONG_CODES) {
+            row.clearPending();
+            repository.save(row, now);
+            return new ConfirmOutcome.Invalid(true);
+        }
         repository.save(row, now);
-        return new ConfirmOutcome.Active(statusOf(row, now));
+        return new ConfirmOutcome.WrongCode();
     }
 
-    private void destroyPending(AuthenticatorRecord row, Instant now) {
-        seeds.deletePending(row.sub);
-        row.clearPending();
-        repository.save(row, now);
+    private static boolean pendingExpired(AuthenticatorRecord row, Instant now) {
+        return now.isAfter(row.pendingCreatedAt.plus(AuthenticatorLimits.ENROLLMENT_TTL));
     }
 
     /**
@@ -234,31 +275,59 @@ public class AuthenticatorService {
      * @return how many enrollments were destroyed
      */
     public int sweepExpiredEnrollments() {
-        Instant cutoff = clock.instant().minus(config.enrollmentTtl());
+        Instant cutoff = clock.instant().minus(AuthenticatorLimits.ENROLLMENT_TTL);
         int destroyed = 0;
         for (String sub : repository.findPendingBefore(cutoff, SWEEP_BATCH)) {
             Boolean done = tx.execute(status -> {
                 Instant now = clock.instant();
                 AuthenticatorRecord row = repository.lock(sub).orElse(null);
-                if (row == null || row.pendingId == null || !now.isAfter(row.pendingCreatedAt.plus(config.enrollmentTtl()))) {
+                if (row == null || row.pendingId == null || !pendingExpired(row, now)) {
                     return false;
                 }
-                destroyPending(row, now);
+                row.clearPending();
+                repository.save(row, now);
                 return true;
             });
             if (Boolean.TRUE.equals(done)) {
+                seeds.deletePending(sub);
                 destroyed++;
             }
         }
         return destroyed;
     }
 
+    /**
+     * Removes seeds in the store that no row accounts for: an active seed whose user has no registration, a pending
+     * seed whose user has no enrollment. Such entries come from a write that preceded a transaction which then failed,
+     * or from a delete after a commit that failed. Only entries older than the grace period are touched, because a
+     * seed is written before the transaction that records it commits.
+     *
+     * @return how many entries were removed
+     */
+    public int sweepOrphanSeeds() {
+        Instant cutoff = clock.instant().minus(AuthenticatorLimits.ORPHAN_GRACE);
+        int removed = 0;
+        for (AuthenticatorSeedStore.Entry entry : seeds.list()) {
+            if (entry.updatedAt().isAfter(cutoff)) {
+                continue;
+            }
+            AuthenticatorRecord row = repository.findBySubHash(entry.subHash()).orElse(null);
+            boolean accounted = row != null && (entry.pending() ? row.pendingId != null : row.state != State.NONE);
+            if (!accounted) {
+                seeds.delete(entry);
+                removed++;
+            }
+        }
+        return removed;
+    }
+
     /** Removal by the owner after a fresh MFA (BFF). Idempotent; a lock of the user stays (CC-091). */
     public void remove(Caller.PortalUser user) {
         AuditLog.Entry entry = audit.event("authenticator", user.requestId()).user(user.sub(), user.username(), user.azp());
         try {
-            tx.executeWithoutResult(status -> removeLocked(user.sub()));
-            entry.ok("authenticator_removed");
+            if (removeRegistration(user.sub())) {
+                entry.ok("authenticator_removed");
+            }
         } catch (RuntimeException e) {
             throw failed(entry, e);
         }
@@ -268,23 +337,35 @@ public class AuthenticatorService {
     public void reset(String requestId, String sub) {
         AuditLog.Entry entry = audit.event("authenticator", requestId).user(sub, null, null);
         try {
-            tx.executeWithoutResult(status -> removeLocked(sub));
-            entry.ok("authenticator_reset_by_admin");
+            if (removeRegistration(sub)) {
+                entry.ok("authenticator_reset_by_admin");
+            }
         } catch (RuntimeException e) {
             throw failed(entry, e);
         }
     }
 
-    private void removeLocked(String sub) {
-        AuthenticatorRecord row = repository.lock(sub).orElse(null);
-        if (row == null) {
-            return;
-        }
+    /**
+     * The row goes to "none" first and commits; the seeds are deleted after. A failed delete answers 503 and the
+     * caller repeats the (idempotent) request, which deletes unconditionally, also when no row is left. In between,
+     * a seed without a registration is harmless.
+     *
+     * @return whether a registration or an enrollment existed (only that is worth an audit line)
+     */
+    private boolean removeRegistration(String sub) {
+        boolean existed = Boolean.TRUE.equals(tx.execute(status -> {
+            AuthenticatorRecord row = repository.lock(sub).orElse(null);
+            if (row == null || (row.state == State.NONE && row.pendingId == null)) {
+                return false;
+            }
+            row.clearRegistration();
+            row.clearPending();
+            repository.save(row, clock.instant());
+            return true;
+        }));
         seeds.deleteActive(sub);
         seeds.deletePending(sub);
-        row.clearRegistration();
-        row.clearPending();
-        repository.save(row, clock.instant());
+        return existed;
     }
 
     // Verification (gateway) -----------------------------------------------------------------------------
@@ -327,18 +408,37 @@ public class AuthenticatorService {
                 return locked(peek, now);
             }
             Seed seed = seeds.getActive(sub).orElse(null);
+            if (seed == null) {
+                // Rows go active only after their seed is stored and leave it only before the seed is deleted, so an
+                // active row without a seed means the store lost it. The registration cannot work again: drop it.
+                if (dropRegistrationWithoutSeed(sub, peek.registrationId)) {
+                    throw new AuthenticatorSeedMissingException();
+                }
+                continue;
+            }
             try {
                 Verified verified = tx.execute(status -> verifyLocked(sub, code, seed));
                 if (verified != null) {
                     return verified;
                 }
             } finally {
-                if (seed != null) {
-                    java.util.Arrays.fill(seed.bytes(), (byte) 0);
-                }
+                Arrays.fill(seed.bytes(), (byte) 0);
             }
         }
         throw new SecretStoreUnavailableException("authenticator registration changed repeatedly during verification");
+    }
+
+    /** @return whether the row was still the same active registration and has been set back to "none" */
+    private boolean dropRegistrationWithoutSeed(String sub, String registrationId) {
+        return Boolean.TRUE.equals(tx.execute(status -> {
+            AuthenticatorRecord row = repository.lock(sub).orElse(null);
+            if (row == null || row.state != State.ACTIVE || !Objects.equals(row.registrationId, registrationId)) {
+                return false;
+            }
+            row.clearRegistration();
+            repository.save(row, clock.instant());
+            return true;
+        }));
     }
 
     /** Null when the seed read earlier is not the one of the registration now under lock; the caller re-reads. */
@@ -361,7 +461,7 @@ public class AuthenticatorService {
             row.lockedUntil = null;
             repository.clearShortWindow(sub);
         }
-        OptionalLong step = Totp.matchingStep(seed.bytes(), code, now, config.windowSteps());
+        OptionalLong step = Totp.matchingStep(seed.bytes(), code, now, AuthenticatorLimits.WINDOW_STEPS);
         // A burned step is not a wrong guess (CC-128): it must not count, or a held code could lock the owner out.
         if (step.isPresent() && row.burnedThrough != null && step.getAsLong() <= row.burnedThrough) {
             repository.save(row, now);
@@ -380,12 +480,12 @@ public class AuthenticatorService {
     }
 
     private boolean recordFailure(AuthenticatorRecord row, Instant now) {
-        repository.deleteFailuresBefore(row.sub, now.minus(config.dailyWindow()));
+        repository.deleteFailuresBefore(row.sub, now.minus(AuthenticatorLimits.DAILY_WINDOW));
         repository.addFailure(row.sub, now);
-        if (repository.countFailures(row.sub, now.minus(config.failureWindow()), true) >= config.maxFailures()) {
-            row.lockedUntil = now.plus(config.lockDuration());
+        if (repository.countFailures(row.sub, now.minus(AuthenticatorLimits.FAILURE_WINDOW), true) >= AuthenticatorLimits.MAX_FAILURES) {
+            row.lockedUntil = now.plus(AuthenticatorLimits.LOCK_DURATION);
         }
-        if (repository.countFailures(row.sub, now.minus(config.dailyWindow()), false) >= config.dailyFailureLimit()) {
+        if (repository.countFailures(row.sub, now.minus(AuthenticatorLimits.DAILY_WINDOW), false) >= AuthenticatorLimits.DAILY_FAILURE_LIMIT) {
             row.state = State.DISABLED;
             row.disabledAt = now;
             return true;
@@ -434,7 +534,9 @@ public class AuthenticatorService {
     }
 
     private RuntimeException failed(AuditLog.Entry entry, RuntimeException e) {
-        if (e instanceof SecretStoreUnavailableException) {
+        if (e instanceof AuthenticatorSeedMissingException) {
+            entry.error("authenticator_seed_missing", "upstream_unavailable");
+        } else if (e instanceof SecretStoreUnavailableException) {
             entry.error("secret_store_unavailable", "upstream_unavailable");
         } else {
             log.warn("Authenticator operation failed: {}", e.getClass().getSimpleName());
@@ -465,7 +567,7 @@ public class AuthenticatorService {
             if (c < 0x80 && (Character.isLetterOrDigit(c) || "-_.!~*'()".indexOf(c) >= 0)) {
                 out.append(c);
             } else {
-                out.append('%').append(String.format("%02X", b & 0xff));
+                out.append('%').append(String.format(Locale.ROOT, "%02X", b & 0xff));
             }
         }
         return out.toString();

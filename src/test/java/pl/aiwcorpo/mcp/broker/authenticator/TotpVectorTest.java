@@ -25,6 +25,8 @@ import org.springframework.test.context.DynamicPropertySource;
 
 import pl.aiwcorpo.mcp.broker.auth.Caller;
 import pl.aiwcorpo.mcp.broker.auth.InternalJwtClaims;
+import pl.aiwcorpo.mcp.broker.secret.SecretKey;
+import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
 import pl.aiwcorpo.mcp.broker.support.Contracts;
 import pl.aiwcorpo.mcp.broker.support.MutableClock;
 import pl.aiwcorpo.mcp.broker.support.TestEnvironment;
@@ -166,9 +168,9 @@ class TotpVectorTest {
         String fresh = "totp-sweep-" + UUID.randomUUID();
         CLOCK.set(Instant.parse("2026-10-20T10:00:00Z"));
         for (String sub : List.of(stale, fresh)) {
-            jdbc.sql("insert into authenticator (sub, state, updated_at, pending_id, pending_created_at) "
-                            + "values (:sub, 'none', :now, :id, :created)")
-                    .param("sub", sub).param("now", Timestamp.from(CLOCK.instant())).param("id", PENDING_ID)
+            jdbc.sql("insert into authenticator (sub, sub_hash, state, updated_at, pending_id, pending_created_at) "
+                            + "values (:sub, :hash, 'none', :now, :id, :created)")
+                    .param("sub", sub).param("hash", SecretKey.hashOf(sub)).param("now", Timestamp.from(CLOCK.instant())).param("id", PENDING_ID)
                     .param("created", Timestamp.from(sub.equals(stale) ? CLOCK.instant().minusSeconds(601) : CLOCK.instant().minusSeconds(599)))
                     .update();
             seeds.putPending(sub, PENDING_ID, new byte[20]);
@@ -182,12 +184,91 @@ class TotpVectorTest {
         assertThat(service.sweepExpiredEnrollments()).isZero();
     }
 
+    @Autowired
+    pl.aiwcorpo.mcp.broker.audit.AuditLog audit;
+
+    @Autowired
+    org.springframework.transaction.PlatformTransactionManager transactions;
+
+    @Autowired
+    pl.aiwcorpo.mcp.broker.config.BrokerProperties properties;
+
+    @Test
+    void aFailedSeedDeleteLeavesTheRegistrationRemovedAndTheRetryFinishesTheJob() {
+        String sub = registerDirectly();
+        AuthenticatorSeedStore flaky = org.mockito.Mockito.spy(seeds);
+        org.mockito.Mockito.doThrow(new SecretStoreUnavailableException("simulated")).doCallRealMethod()
+                .when(flaky).deleteActive(sub);
+        AuthenticatorService service = AuthenticatorService.create(jdbc, flaky, audit, CLOCK,
+                new org.springframework.transaction.support.TransactionTemplate(transactions), properties.authenticator());
+        CLOCK.set(Instant.now());
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.remove(portalUser(sub)))
+                .isInstanceOf(SecretStoreUnavailableException.class);
+        assertThat(row(sub).get("state")).isEqualTo("none");
+        assertThat(seeds.getActive(sub)).as("seed left behind by the failed delete").isPresent();
+        assertThat(service.verify(gateway(sub), "123456").result()).isEqualTo(AuthenticatorService.VerifyResult.NOT_REGISTERED);
+
+        service.remove(portalUser(sub));
+        assertThat(seeds.getActive(sub)).isEmpty();
+    }
+
+    @Test
+    void theSweepRemovesSeedsNoRowAccountsForButOnlyAfterTheGracePeriod() {
+        String orphanActive = "totp-orphan-" + UUID.randomUUID();
+        String orphanPending = "totp-orphan-" + UUID.randomUUID();
+        String keptActive = registerDirectly();
+        String keptPending = "totp-orphan-" + UUID.randomUUID();
+        seeds.putActive(orphanActive, "orphan-registration", new byte[20]);
+        seeds.putPending(orphanPending, PENDING_ID, new byte[20]);
+        CLOCK.set(Instant.now());
+        jdbc.sql("insert into authenticator (sub, sub_hash, state, updated_at, pending_id, pending_created_at) "
+                        + "values (:sub, :hash, 'none', :now, :id, :now)")
+                .param("sub", keptPending).param("hash", SecretKey.hashOf(keptPending)).param("now", Timestamp.from(CLOCK.instant()))
+                .param("id", PENDING_ID).update();
+        seeds.putPending(keptPending, PENDING_ID, new byte[20]);
+
+        service.sweepOrphanSeeds();
+        assertThat(seeds.getActive(orphanActive)).as("fresh entries are not touched").isPresent();
+        assertThat(seeds.getPending(orphanPending)).isPresent();
+
+        CLOCK.set(Instant.now().plusSeconds(3600));
+        service.sweepOrphanSeeds();
+        assertThat(seeds.getActive(orphanActive)).isEmpty();
+        assertThat(seeds.getPending(orphanPending)).isEmpty();
+        assertThat(seeds.getActive(keptActive)).isPresent();
+        assertThat(seeds.getPending(keptPending)).isPresent();
+    }
+
+    @Test
+    void aRegistrationWhoseSeedIsGoneIsDroppedAfterOneRefusal() {
+        String sub = registerDirectly();
+        seeds.deleteActive(sub);
+        CLOCK.set(Instant.now());
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.verify(gateway(sub), "123456"))
+                .isInstanceOf(AuthenticatorSeedMissingException.class);
+        assertThat(row(sub).get("state")).isEqualTo("none");
+        assertThat(service.verify(gateway(sub), "123456").result()).isEqualTo(AuthenticatorService.VerifyResult.NOT_REGISTERED);
+    }
+
+    /** An active registration with a stored seed, made without the enrollment flow. */
+    private String registerDirectly() {
+        String sub = "totp-direct-" + UUID.randomUUID();
+        Timestamp created = Timestamp.from(Instant.parse("2026-10-01T00:00:00Z"));
+        jdbc.sql("insert into authenticator (sub, sub_hash, state, registration_id, registered_at, updated_at) "
+                        + "values (:sub, :hash, 'active', 'direct-registration', :created, :created)")
+                .param("sub", sub).param("hash", SecretKey.hashOf(sub)).param("created", created).update();
+        seeds.putActive(sub, "direct-registration", new byte[20]);
+        return sub;
+    }
+
     private static final String PENDING_ID = "enr_vector0123456789";
 
     private void setUp(String sub, byte[] seed, JsonNode vector) {
         Instant created = Instant.parse("2026-10-01T00:00:00Z");
-        jdbc.sql("insert into authenticator (sub, state, updated_at) values (:sub, 'none', :now)")
-                .param("sub", sub).param("now", Timestamp.from(created)).update();
+        jdbc.sql("insert into authenticator (sub, sub_hash, state, updated_at) values (:sub, :hash, 'none', :now)")
+                .param("sub", sub).param("hash", SecretKey.hashOf(sub)).param("now", Timestamp.from(created)).update();
         JsonNode initial = vector.path("initial");
         if (!initial.isMissingNode()) {
             boolean disabled = initial.path("disabled").asBoolean(false);

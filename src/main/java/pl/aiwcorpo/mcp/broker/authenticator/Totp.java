@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.time.Instant;
+import java.util.Locale;
 import java.util.OptionalLong;
 
 import javax.crypto.Mac;
@@ -32,7 +33,7 @@ public final class Totp {
             int offset = hash[hash.length - 1] & 0x0f;
             int binary = ((hash[offset] & 0x7f) << 24) | ((hash[offset + 1] & 0xff) << 16)
                     | ((hash[offset + 2] & 0xff) << 8) | (hash[offset + 3] & 0xff);
-            return String.format("%06d", binary % DIGITS_MODULUS);
+            return String.format(Locale.ROOT, "%06d", binary % DIGITS_MODULUS);
         } catch (GeneralSecurityException e) {
             throw new IllegalStateException("HMAC-SHA-1 is not available", e);
         }

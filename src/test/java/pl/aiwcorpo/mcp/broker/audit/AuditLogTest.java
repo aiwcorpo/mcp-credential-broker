@@ -55,7 +55,8 @@ class AuditLogTest {
     @Test
     void invalidBackendUserIsOmittedWithAWarningThatDoesNotCarryIt(CapturedOutput output) {
         String[] invalid = {"", "zqm".repeat(86), "zqm0\u0000", "zqm1\n", "zqm2\u007f", "zqm3\u0085", "zqm4\u2028", "zqm5\u2029",
-                "zqm6\u202e", "zqm7\u2066", "zqm8\ud800", "zqm9\udc00x"};
+                "zqm6\u202e", "zqm7\u2066", "zqm8\ud800", "zqm9\udc00x", "zero\u200bwidth", "joiner\u200d", "bom\ufeff", "word\u2060joiner", "mark\u061c",
+                "tag\uDB40\uDC41", "grapheme\u034fjoiner", "braille\u2800", "variation\ufe0f", "filler\u3164", "nonchar\ufdd0"};
         for (String value : invalid) {
             audit.event("connection_change", "0192d1b2-7c3a-7d4e-8f10-2a3b4c5d6e7f").user("sub-1", "alice", null)
                     .system("jira").backendUser(value).ok("secret_stored");

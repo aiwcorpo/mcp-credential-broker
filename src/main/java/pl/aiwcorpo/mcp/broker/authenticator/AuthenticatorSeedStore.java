@@ -18,6 +18,10 @@ public interface AuthenticatorSeedStore {
         }
     }
 
+    /** One stored seed as the store sees it, without reading it: whose (hash of sub), which kind, last written when. */
+    record Entry(String subHash, boolean pending, java.time.Instant updatedAt) {
+    }
+
     void putActive(String sub, String registrationId, byte[] seed);
 
     Optional<Seed> getActive(String sub);
@@ -31,4 +35,10 @@ public interface AuthenticatorSeedStore {
 
     /** Idempotent. */
     void deletePending(String sub);
+
+    /** Every seed present, for the sweep that removes those no metadata row accounts for. */
+    java.util.List<Entry> list();
+
+    /** Removes one entry with all its versions. Idempotent. */
+    void delete(Entry entry);
 }

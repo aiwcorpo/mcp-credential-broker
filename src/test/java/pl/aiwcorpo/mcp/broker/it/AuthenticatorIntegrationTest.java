@@ -378,6 +378,102 @@ class AuthenticatorIntegrationTest {
         assertThat(response.body()).doesNotContain("result");
     }
 
+    @Test
+    void aPendingSeedCopiedOverTheActiveOneIsNotUsable() {
+        Registered user = register("rupert");
+        String bffToken = tokens.bffUser(user.sub, "rupert");
+        // A registration cannot be started while active, so take a second user's pending seed and put it on this path.
+        String other = newSub();
+        Enrolled enrolled = startOnly(tokens.bffUser(other, "sybil"));
+        String pendingCiphertext = Contracts.JSON
+                .readTree(env.bao("GET", "secret/data/mcp/authenticators/" + SecretKey.hashOf(other) + "/pending", null).body())
+                .path("data").path("data").path("ciphertext").stringValue();
+        assertThat(enrolled.seed).isNotNull();
+        env.bao("POST", "secret/data/mcp/authenticators/" + SecretKey.hashOf(user.sub),
+                Contracts.JSON.createObjectNode().set("data", Contracts.JSON.createObjectNode().put("ciphertext", pendingCiphertext)).toString());
+
+        assertThat(verify(user.sub, nextCode(user.seed)).status()).isEqualTo(503);
+        assertThat(bff.send("GET", "/v1/authenticator", bffToken, null, null).json().path("state").stringValue()).isEqualTo("active");
+    }
+
+    @Test
+    void aSeedOfAnotherRegistrationOfTheSameUserIsNotUsable() {
+        Registered user = register("trent");
+        String record = Contracts.JSON.createObjectNode().put("v", 1).put("sub", user.sub).put("kind", "active")
+                .put("id", "an-older-registration").put("seed", Base64.getEncoder().encodeToString(user.seed)).toString();
+        String encrypted = Contracts.JSON.readTree(env.bao("POST", "transit/encrypt/mcp-authenticators",
+                Contracts.JSON.createObjectNode().put("plaintext", Base64.getEncoder().encodeToString(record.getBytes())).toString()).body())
+                .path("data").path("ciphertext").stringValue();
+        env.bao("POST", "secret/data/mcp/authenticators/" + SecretKey.hashOf(user.sub),
+                Contracts.JSON.createObjectNode().set("data", Contracts.JSON.createObjectNode().put("ciphertext", encrypted)).toString());
+
+        assertThat(verify(user.sub, nextCode(user.seed)).status()).isEqualTo(503);
+        // Not dropped: the seed exists, it only is not this registration's.
+        assertThat(gatewayStatus(user.sub).json().path("state").stringValue()).isEqualTo("active");
+    }
+
+    @Test
+    void registrationChangesDuringParallelVerificationNeverGiveAnUnexpectedAnswer() throws Exception {
+        Registered user = register("ursula");
+        String bffToken = tokens.bffUser(user.sub, "ursula");
+        String wrong = wrongCode(user.seed);
+        java.util.concurrent.atomic.AtomicBoolean done = new java.util.concurrent.atomic.AtomicBoolean();
+        ExecutorService pool = Executors.newFixedThreadPool(4);
+        try {
+            List<Future<List<Integer>>> readers = new ArrayList<>();
+            for (int i = 0; i < 3; i++) {
+                readers.add(pool.submit(() -> {
+                    List<Integer> statuses = new ArrayList<>();
+                    while (!done.get()) {
+                        BrokerClient.Response response = verify(user.sub, wrong);
+                        statuses.add(response.status());
+                        if (response.status() == 200) {
+                            assertThat(response.json().path("result").stringValue())
+                                    .isIn("invalid", "locked", "disabled", "not_registered");
+                        }
+                    }
+                    return statuses;
+                }));
+            }
+            for (int i = 0; i < 4; i++) {
+                assertThat(bff.send("DELETE", "/v1/authenticator", bffToken, null, null).status()).isEqualTo(204);
+                Enrolled enrolled = startOnly(bffToken);
+                assertThat(confirm(bffToken, enrolled.id, currentCode(enrolled.seed)).status()).isEqualTo(200);
+            }
+            done.set(true);
+            for (Future<List<Integer>> reader : readers) {
+                assertThat(reader.get()).isNotEmpty().allMatch(status -> status == 200 || status == 503);
+            }
+        } finally {
+            done.set(true);
+            pool.shutdownNow();
+        }
+        assertThat(gatewayStatus(user.sub).json().path("state").stringValue()).isEqualTo("active");
+    }
+
+    @Test
+    void startsAreLimitedWithARetryAfter() {
+        String bffToken = tokens.bffUser(newSub(), "victor");
+        for (int i = 0; i < 10; i++) {
+            SEEDS.add(bff.send("POST", "/v1/authenticator/enrollment", bffToken, null, null).json().path("secret").stringValue());
+        }
+        BrokerClient.Response limited = bff.send("POST", "/v1/authenticator/enrollment", bffToken, null, null);
+        assertThat(limited.status()).isEqualTo(429);
+        assertThat(Long.parseLong(limited.header("Retry-After"))).isBetween(3500L, 3600L);
+    }
+
+    @Test
+    void anEmptyRemovalOrResetLeavesNoAuditLine(CapturedOutput output) {
+        String sub = newSub();
+        String removeId = TestTokens.newRequestId();
+        assertThat(bff.send("DELETE", "/v1/authenticator", tokens.bffUser(sub, "walt"), removeId, null).status()).isEqualTo(204);
+        String resetId = TestTokens.newRequestId();
+        assertThat(offboarding.send("POST", "/v1/admin/users/" + sub + "/authenticator/reset", null, resetId, null).status())
+                .isEqualTo(204);
+        assertThat(auditEvents(output, removeId)).isEmpty();
+        assertThat(auditEvents(output, resetId)).isEmpty();
+    }
+
     // Who may call what ----------------------------------------------------------------------------------
 
     @Test

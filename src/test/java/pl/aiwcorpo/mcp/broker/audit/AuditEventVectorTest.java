@@ -17,7 +17,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * C8 vectors of mcp-contracts 2.2.5 against the schema, and the broker's backendUser check against the
+ * C8 vectors of mcp-contracts 3.0.2 against the schema, and the broker's backendUser check against the
  * backendUser vectors. The events the broker really emits are checked in AuditLogTest and the integration tests.
  */
 class AuditEventVectorTest {
@@ -39,7 +39,7 @@ class AuditEventVectorTest {
     void backendUserVectorsArePresent() {
         assertThat(Contracts.vectors("audit-events")).extracting(Resource::getFilename).contains(
                 "broker-connection-change-backend-user.json", "invalid-backend-user-control-char.json",
-                "invalid-backend-user-too-long.json", "invalid-authentication-with-backend-user.json");
+                "invalid-backend-user-too-long.json", "invalid-backend-user-zero-width.json", "invalid-authentication-with-backend-user.json");
     }
 
     @ParameterizedTest(name = "{0}")
@@ -54,7 +54,7 @@ class AuditEventVectorTest {
 
     static Stream<Arguments> backendUserVectors() {
         return Stream.of("broker-connection-change-backend-user.json", "invalid-backend-user-control-char.json",
-                        "invalid-backend-user-too-long.json")
+                        "invalid-backend-user-too-long.json", "invalid-backend-user-zero-width.json")
                 .map(name -> Arguments.of(name, new ClassPathResource(Contracts.ROOT + "test-vectors/audit-events/" + name)));
     }
 

@@ -1,8 +1,8 @@
 # Status ws-06 (mcp-credential-broker)
 
-Kamień: **M3** (strona brokera: Authenticator TOTP, CC-091 ... CC-094, CC-126, CC-128). Kontrakty: `mcp-contracts` **3.0.1**
-(3.0.0 ma lukę poprawioną w 3.0.1). `token-exchange` (OpenSearch) i `service-account` z briefu nie wchodzą w zakres tego
-etapu. Poniżej sekcja M3, dalej M2 (z przeglądem) i M1 bez zmian.
+Kamień: **M3** (strona brokera: Authenticator TOTP, CC-091 ... CC-094, CC-126, CC-128). Kontrakty: `mcp-contracts` **3.0.2**
+(3.0.0 ma lukę poprawioną w 3.0.1, 3.0.1 ma jar wektorów z nadmiarowymi plikami, poprawione w 3.0.2). `token-exchange` (OpenSearch) i `service-account` z briefu są **przeniesione poza M3** (decyzja koordynatora, zakres tego
+etapu to Authenticator); wracają w kolejnym etapie brokera. Poniżej sekcja M3, dalej M2 (z przeglądem) i M1 bez zmian.
 
 ## M3 (2026-10-28)
 
@@ -14,7 +14,7 @@ Kamienie pośrednie:
 2. **K2**: testy integracyjne po HTTP (rejestracja, równoległość, przechowywanie, macierz wywołujących), README.
 3. **K3**: przegląd własny, STATUS, opis potrzeb wobec innych strumieni.
 
-Obrazy: `mcp-credential-broker:m3-543403c` (K1), `m3-0252757` (K2), `m3-6203b4b` (K3; po nim tylko ta poprawka zdania). Compose nie ruszany.
+Obrazy: `mcp-credential-broker:m3-543403c` (K1), `m3-0252757` (K2), `m3-6203b4b` (K3; po nim tylko ta poprawka zdania). K4 (poprawki przeglądu, 3.0.2): `m3-<sha>` z komunikatu ostatniego commitu. Compose nie ruszany.
 
 | Wymaganie M3 | Stan |
 | --- | --- |
@@ -33,20 +33,34 @@ Obrazy: `mcp-credential-broker:m3-543403c` (K1), `m3-0252757` (K2), `m3-6203b4b`
 
 ```
 ./mvnw -B verify
-Tests run: 301, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS, mcp-contracts 3.0.1; przed M3 było 199)
-  TotpVectorTest 47, AuthenticatorIntegrationTest 13, InternalJwtVectorTest 61, AuditEventVectorTest 83, ...
+Tests run: 328, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS, mcp-contracts 3.0.2; przed M3 było 199)
+  TotpVectorTest 50, AuthenticatorIntegrationTest 18, InternalJwtVectorTest 61, AuditEventVectorTest 83, ...
 ```
+
+### Przegląd M3 (Opus, 0 CRITICAL/HIGH/MEDIUM, 8 LOW): poprawki
+
+| # | Znalezisko | Status |
+| --- | --- | --- |
+| 3.0.2 | czysty jar wektorów; wzorzec `backendUser` w C8 wyklucza `\p{Cc}`, `\p{Cf}`, `\p{Cs}` i kilka znaków niewidocznych | `pom.xml`, `AuditLog.validBackendUser` wg schematu (wektor `invalid-backend-user-zero-width` i 11 dodatkowych znaków w `AuditLogTest`); lista pomijanych wektorów usunięta |
+| L1 | spójność OpenBao z bazą | zapis ziarna przed commitem zostaje (start: rezerwacja w bazie, potem zapis `pending`; potwierdzenie: zapis `active` przed transakcją), kasowanie po commicie (usunięcie, reset, `pending` po aktywacji), zadanie w tle sprząta wpisy bez wiersza po 15 min (`sweepOrphanSeeds`, kolumna `sub_hash`, migracja V5). Wiersz `active` bez ziarna: `503` raz, audyt `authenticator_seed_missing`, rejestracja wraca do `none` (bezpieczne, bo niezmiennik "active => ziarno istnieje" wynika z kolejności operacji; wariant ostrożniejszy, ręczne odzyskiwanie, zostawiałby użytkownika w `503` do `DELETE`). Testy: nieudane kasowanie przy usunięciu, sprzątanie z karencją, utrata ziarna |
+| L2 | blokada wiersza przez wywołania OpenBao | brak wywołań OpenBao pod blokadą (zmiana kolejności jak wyżej), `lock_timeout` 2 s, poprawiony Javadoc i README; test równoległych zmian rejestracji i `verify` |
+| L3 | parametry kontraktu konfigurowalne | okno, limity, blokada, TTL i liczba prób rejestracji to stałe (`AuthenticatorLimits`); w konfiguracji zostały tylko klucz Transit, prefiks, limit startów i interwały zadań |
+| L4 | limit startów w stałym oknie | zostaje stałe okno 1 h, `429` ma `Retry-After` do końca okna (test) |
+| L5 | audyt pustego usunięcia/resetu | linia `authenticator_removed` / `authenticator_reset_by_admin` tylko gdy coś istniało (test); `invalidate-codes` dla użytkownika bez rejestracji nadal bez linii (świadomie: nic się nie dzieje, `204`) |
+| L6 | historia KV starego ziarna | przed zapisem nowego aktywnego ziarna `deleteActive` (wszystkie wersje) |
+| L7 | `Locale` w `String.format` | `Locale.ROOT` w `Totp` i `AuthenticatorService` |
+| L8 | luki testów | dopisane: `pending` pod ścieżką `active`, ziarno innej rejestracji tego samego użytkownika (nie jest usuwane: ziarno istnieje), wyścig zmian rejestracji z `verify`, nieudane kasowanie, sprzątanie, utrata ziarna, `Retry-After`, pusty audyt; start z `disabled` po HTTP już był w teście limitu dziennego |
+
+Zostaje (świadomie): rzadki wyścig dwóch równoległych startów tego samego użytkownika może zostawić `pending` z ziarnem
+pierwszego startu, wtedy `confirm` daje `enrollment_invalid` i użytkownik startuje ponownie. Sprzątanie wpisów przegląda
+cały prefiks (`list`), co przy bardzo wielu użytkownikach trzeba będzie stronicować (M4). Polityka OpenBao dla `list` na
+`secret/metadata/mcp/authenticators/*` jest już w zestawie dla ws-01.
 
 ### Odstępstwa i decyzje M3
 
 - **Zakres:** brief przewiduje w M3 także `token-exchange` (OpenSearch) i `service-account`; zadanie tego etapu objęło tylko
-  Authenticatora, więc oba typy zostają niezrobione (README i `SystemRegistry` bez zmian).
-- **Wektory w jarze 3.0.1:** `mcp-contracts-3.0.1-test-vectors.jar` w `~/.m2` zawiera 49 plików usuniętych z 3.0.1 w
-  źródłach i w tarballu npm (m.in. `whoami-identity/` w całości, stare `confirmation-binding/invalid-*`,
-  `audit-events/gateway-authentication-denied-replay-store-unavailable.json`, który sprzecznie z schematem 3.0.1 jest "valid",
-  `totp/burn-held-code-is-replayed-and-not-counted.json`). Jar został zbudowany z niewyczyszczonego katalogu `target`.
-  `Contracts.vectors` pomija trzy pliki, które wpadają w katalogi czytane przez ten komponent (lista z komentarzem);
-  poprawka u źródła: wydać jar z czystego builda (3.0.2). Dotyczy wszystkich strumieni czytających te katalogi.
+  Authenticatora, więc oba typy są przeniesione poza M3 (README i `SystemRegistry` bez zmian).
+- **Wektory w jarze 3.0.1** miały 49 nadmiarowych plików; 3.0.2 jest czysty, pomijanie w `Contracts.vectors` usunięte.
 - **Zegar OpenBao:** `OpenBaoClient` dostaje `Clock.systemUTC()`, nie beana `Clock` aplikacji: dzierżawa tokenu biegnie
   w czasie rzeczywistym OpenBao, a `Clock` jest szwem testów biznesowych (wektory ustawiają go na daty z października).
 - **Dwa wiersze na użytkownika w OpenBao**, a nie jeden: aktywne ziarno pod ścieżką z kontraktu, rejestracja w toku pod
