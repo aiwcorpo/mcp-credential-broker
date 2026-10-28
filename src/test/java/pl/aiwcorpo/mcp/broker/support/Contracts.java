@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.springframework.core.io.Resource;
@@ -57,12 +58,24 @@ public final class Contracts {
         }
     }
 
+    /**
+     * Vectors that the 3.0.1 test-vectors jar still carries from earlier builds although 3.0.1 removed them from the
+     * sources and the npm tarball (the jar was assembled from a target directory that was not cleaned). Some now
+     * contradict the schema. Remove this list when a jar without them is released.
+     */
+    private static final Set<String> STALE_IN_TEST_VECTORS_JAR = Set.of(
+            "audit-events/gateway-authentication-denied-replay-store-unavailable.json",
+            "audit-events/gateway-confirmation-preview-not-viewed.json",
+            "totp/burn-held-code-is-replayed-and-not-counted.json");
+
     /** Resources under test-vectors/&lt;dir&gt;, sorted by name. */
     public static List<Resource> vectors(String dir) {
         try {
             Resource[] found = new PathMatchingResourcePatternResolver()
                     .getResources("classpath*:" + ROOT + "test-vectors/" + dir + "/*.json");
-            return Arrays.stream(found).sorted(Comparator.comparing(Resource::getFilename)).toList();
+            return Arrays.stream(found)
+                    .filter(resource -> !STALE_IN_TEST_VECTORS_JAR.contains(dir + "/" + resource.getFilename()))
+                    .sorted(Comparator.comparing(Resource::getFilename)).toList();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

@@ -97,6 +97,12 @@ public class CallerAuthenticationFilter extends OncePerRequestFilter {
             write(response, 400, "invalid_request");
             return;
         }
+        if (operation.tokenless()) {
+            // The authority of this channel is the client certificate alone (CC-091); a token sent along proves nothing.
+            request.setAttribute(CALLER, new Caller.Offboarding(requestId));
+            chain.doFilter(new LimitedBodyRequest(request, maxRequestBytes), response);
+            return;
+        }
         Caller caller;
         try {
             String token = bearer(request.getHeader("Authorization"));

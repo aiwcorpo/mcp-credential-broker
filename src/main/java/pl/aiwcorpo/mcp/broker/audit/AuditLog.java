@@ -84,6 +84,7 @@ public class AuditLog {
         private String tool;
         private String policyRevision;
         private String credentialType;
+        private String decision;
         private String reason;
         private String errorCode;
 
@@ -136,6 +137,12 @@ public class AuditLog {
             return this;
         }
 
+        /** allow or deny, for events that decide something (the check of a TOTP code, CC-094). */
+        public Entry decision(String decision) {
+            this.decision = decision;
+            return this;
+        }
+
         public void ok(String reason) {
             this.reason = reason;
             emit("ok");
@@ -157,7 +164,7 @@ public class AuditLog {
             Instant now = clock.instant();
             AuditEvent line = new AuditEvent(TS.format(now.truncatedTo(ChronoUnit.MILLIS)), requestId, "broker",
                     componentId, event, sub, username, backendUser, client, virtualServer, server, tool, policyRevision,
-                    credentialType, null, reason, outcome, errorCode,
+                    credentialType, decision, reason, outcome, errorCode,
                     Math.max(0, now.toEpochMilli() - start.toEpochMilli()));
             audit.info(serialize(line));
         }

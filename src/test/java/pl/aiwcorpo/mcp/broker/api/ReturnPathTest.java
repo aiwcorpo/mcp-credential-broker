@@ -23,7 +23,7 @@ class ReturnPathTest {
     @Test
     void patternMatchesTheOpenApi() {
         JsonNode schema = Contracts.brokerOpenApi().path("components").path("schemas").path("ReturnPath");
-        assertThat(schema.path("pattern").stringValue()).isEqualTo("^/(?!/)[A-Za-z0-9._~!$&'()*+,;=:@/?-]*$");
+        assertThat(schema.path("pattern").stringValue()).isEqualTo("^(?![^?]*/\\.\\.?(?:[/?]|$))(?!/(?:api|s|v|\\.well-known)(?:[/?]|$))/(?!/)[A-Za-z0-9._~!$&'()*+,=:@/?-]*$");
         assertThat(schema.path("maxLength").asInt()).isEqualTo(512);
         assertThat(ReturnPath.isValid("/" + "a".repeat(511))).isTrue();
         assertThat(ReturnPath.isValid("/" + "a".repeat(512))).isFalse();

@@ -1,9 +1,18 @@
 # Status ws-06 (mcp-credential-broker)
 
-Kamień: **M2** ("Połącz konto i portal", strona brokera): PAT (whoami tylko dla ważności i `backendUser`, bez porównania tożsamości, CC-101), "Połącz przez OAuth" dla
-GitLaba (PKCE, jednorazowy `state` związany z użytkownikiem, tokeny w OpenBao, odświeżanie, odwołanie grantu).
-Kontrakty: `mcp-contracts` `v2.2.5` (od 2026-10-28; wcześniej 2.2.3, 2.2.2, 2.2.1, 2.1.1, 2.0.0, 1.1.0). M3-M4 nie są zaczęte.
-Poniżej sekcja M2, przegląd M2 z poprawkami, dalej M1 bez zmian.
+Kamień: **M3** (strona brokera: Authenticator TOTP, CC-091 ... CC-094, CC-126, CC-128). Kontrakty: `mcp-contracts` **3.0.1**
+(3.0.0 ma lukę poprawioną w 3.0.1). `token-exchange` (OpenSearch) i `service-account` z briefu nie wchodzą w zakres tego
+etapu. Poniżej sekcja M3, dalej M2 (z przeglądem) i M1 bez zmian.
+
+## M3 (2026-10-28)
+
+Kamienie pośrednie:
+
+1. **K1**: przejście na 3.0.1 (`identity_mismatch` nie istnieje w kodzie ani testach, `returnPath` bez zarezerwowanych
+   prefiksów, CC-099), cały Authenticator: migracja V4, magazyn ziarna w OpenBao Transit, serwis, API C4 `/v1/authenticator*`
+   i reset, audyt, wektory `totp/`.
+2. **K2**: testy integracyjne po HTTP (rejestracja, równoległość, przechowywanie, macierz wywołujących), README.
+3. **K3**: przegląd własny i poprawki, STATUS, opis potrzeb wobec ws-01, obraz.
 
 ## M2 (2026-10-28)
 

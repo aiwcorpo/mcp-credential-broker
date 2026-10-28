@@ -53,6 +53,10 @@ public final class TestEnvironment {
             path "secret/data/mcp/oauth-clients-it/*" { capabilities = ["read"] }
             path "transit/encrypt/mcp-credential-broker" { capabilities = ["update"] }
             path "transit/decrypt/mcp-credential-broker" { capabilities = ["update"] }
+            path "secret/data/mcp/authenticators/*"     { capabilities = ["create", "read", "update", "delete"] }
+            path "secret/metadata/mcp/authenticators/*" { capabilities = ["read", "list", "delete"] }
+            path "transit/encrypt/mcp-authenticators" { capabilities = ["update"] }
+            path "transit/decrypt/mcp-authenticators" { capabilities = ["update"] }
             """;
 
     private static TestEnvironment instance;
@@ -234,6 +238,7 @@ public final class TestEnvironment {
     private void configureOpenBao() {
         requireOk(bao("POST", "sys/mounts/transit", "{\"type\":\"transit\"}"));
         requireOk(bao("POST", "transit/keys/mcp-credential-broker", "{\"type\":\"aes256-gcm96\"}"));
+        requireOk(bao("POST", "transit/keys/mcp-authenticators", "{\"type\":\"aes256-gcm96\"}"));
         requireOk(bao("PUT", "sys/policies/acl/mcp-credential-broker",
                 Contracts.JSON.createObjectNode().put("policy", BAO_POLICY).toString()));
         requireOk(bao("POST", "sys/auth/approle", "{\"type\":\"approle\"}"));

@@ -24,6 +24,7 @@ import pl.aiwcorpo.mcp.broker.audit.AuditLog;
 import pl.aiwcorpo.mcp.broker.auth.Caller;
 import pl.aiwcorpo.mcp.broker.auth.CallerAuthenticationFilter;
 import pl.aiwcorpo.mcp.broker.auth.Operation;
+import pl.aiwcorpo.mcp.broker.authenticator.AuthenticatorRefusedException;
 import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
 import pl.aiwcorpo.mcp.broker.credential.CredentialRequiredException;
 import pl.aiwcorpo.mcp.broker.credential.InvalidRequestException;
@@ -59,6 +60,12 @@ public class ApiExceptionHandler {
     @ExceptionHandler(SecretRejectedException.class)
     ResponseEntity<Map<String, String>> secretRejected(SecretRejectedException e) {
         return ResponseEntity.status(422).body(Map.of("error", e.error()));
+    }
+
+    /** Raised and audited by the authenticator service: 409, 422 and 429 bodies of C4. */
+    @ExceptionHandler(AuthenticatorRefusedException.class)
+    ResponseEntity<Map<String, String>> authenticatorRefused(AuthenticatorRefusedException e) {
+        return ResponseEntity.status(e.status()).body(Map.of("error", e.error()));
     }
 
     /** Raised and audited by the service. */

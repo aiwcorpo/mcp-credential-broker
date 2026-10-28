@@ -17,6 +17,8 @@ import org.springframework.core.Ordered;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import pl.aiwcorpo.mcp.broker.audit.AuditLog;
 import pl.aiwcorpo.mcp.broker.auth.BffTokenVerifier;
@@ -26,6 +28,10 @@ import pl.aiwcorpo.mcp.broker.auth.InternalJwtVerifier;
 import pl.aiwcorpo.mcp.broker.auth.JwksGatewayKeys;
 import pl.aiwcorpo.mcp.broker.auth.RedisReplayGuard;
 import pl.aiwcorpo.mcp.broker.auth.ReplayGuard;
+import pl.aiwcorpo.mcp.broker.authenticator.AuthenticatorSeedStore;
+import pl.aiwcorpo.mcp.broker.authenticator.AuthenticatorSweepJob;
+import pl.aiwcorpo.mcp.broker.authenticator.AuthenticatorService;
+import pl.aiwcorpo.mcp.broker.authenticator.OpenBaoAuthenticatorSeedStore;
 import pl.aiwcorpo.mcp.broker.credential.ConnectionRepository;
 import pl.aiwcorpo.mcp.broker.credential.ConnectionStore;
 import pl.aiwcorpo.mcp.broker.credential.CredentialService;
@@ -112,10 +118,11 @@ public class BrokerConfiguration {
     }
 
     @Bean
-    OpenBaoClient openBaoClient(BrokerProperties properties, SslBundles sslBundles, JsonMapper json, Clock clock) {
+    OpenBaoClient openBaoClient(BrokerProperties properties, SslBundles sslBundles, JsonMapper json) {
         BrokerProperties.OpenBao config = properties.openbao();
         requireTls(config.address(), "broker.openbao.address", properties.allowPlainHttp());
-        return new OpenBaoClient(config, internalClient(sslBundles), json, clock);
+        // The token lease runs on OpenBao's wall clock; the application Clock bean is a seam for business time only.
+        return new OpenBaoClient(config, internalClient(sslBundles), json, Clock.systemUTC());
     }
 
     @Bean
@@ -182,6 +189,23 @@ public class BrokerConfiguration {
     @Bean
     OAuthRefreshJob oauthRefreshJob(OAuthService oauth) {
         return new OAuthRefreshJob(oauth);
+    }
+
+    @Bean
+    AuthenticatorSeedStore authenticatorSeedStore(BrokerProperties properties, OpenBaoClient client, JsonMapper json) {
+        return new OpenBaoAuthenticatorSeedStore(client, properties.openbao(), properties.authenticator(), json);
+    }
+
+    @Bean
+    AuthenticatorService authenticatorService(JdbcClient jdbc, AuthenticatorSeedStore seeds, AuditLog audit, Clock clock,
+            PlatformTransactionManager transactions, BrokerProperties properties) {
+        return AuthenticatorService.create(jdbc, seeds, audit, clock, new TransactionTemplate(transactions),
+                properties.authenticator());
+    }
+
+    @Bean
+    AuthenticatorSweepJob authenticatorSweepJob(AuthenticatorService authenticator) {
+        return new AuthenticatorSweepJob(authenticator);
     }
 
     @Bean

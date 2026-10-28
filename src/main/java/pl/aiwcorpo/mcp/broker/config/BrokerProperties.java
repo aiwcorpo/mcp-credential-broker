@@ -33,6 +33,7 @@ public record BrokerProperties(
         @Valid @NotNull OpenBao openbao,
         @Valid @NotNull Redis redis,
         @Valid @NotNull OAuthFlow oauthFlow,
+        @DefaultValue @Valid @NotNull Authenticator authenticator,
         @NotEmpty Map<String, @Valid SystemConfig> systems) {
 
     /** Internal JWT from the gateway (C2). Exactly one of jwksUri and jwksFile is set. */
@@ -74,6 +75,25 @@ public record BrokerProperties(
     public record Redis(
             @DefaultValue("jti:mcp-credential-broker:") @NotBlank String jtiPrefix,
             @DefaultValue("credential.invalidated") @NotBlank String invalidationChannel) {
+    }
+
+    /**
+     * TOTP authenticator (C4, CC-091, CC-092, CC-126). Seeds are encrypted by the Transit key {@code transitKey}
+     * (same mount as the credentials) and stored under {@code pathPrefix}; the limits are the contract defaults.
+     */
+    public record Authenticator(
+            @DefaultValue("mcp-authenticators") @NotBlank String transitKey,
+            @DefaultValue("mcp/authenticators") @NotBlank String pathPrefix,
+            @DefaultValue("1") @Min(0) @Max(2) int windowSteps,
+            @DefaultValue("5") @Min(1) int maxFailures,
+            @DefaultValue("15m") @NotNull Duration failureWindow,
+            @DefaultValue("15m") @NotNull Duration lockDuration,
+            @DefaultValue("20") @Min(1) int dailyFailureLimit,
+            @DefaultValue("24h") @NotNull Duration dailyWindow,
+            @DefaultValue("10m") @NotNull Duration enrollmentTtl,
+            @DefaultValue("3") @Min(1) int enrollmentMaxWrongCodes,
+            @DefaultValue("10") @Min(1) int enrollmentStartsPerHour,
+            @DefaultValue("1m") @NotNull Duration sweepInterval) {
     }
 
     /**

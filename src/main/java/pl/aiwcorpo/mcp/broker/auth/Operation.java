@@ -12,10 +12,16 @@ import java.util.regex.Pattern;
  * Anything not listed is answered 404 before any token is looked at.
  */
 public record Operation(String operationId, String method, Pattern path, Set<String> allowedCns,
-        boolean serviceVariantAllowed, InternalJwtVerifier.ToolClaim toolClaim, String auditEvent) {
+        boolean serviceVariantAllowed, InternalJwtVerifier.ToolClaim toolClaim, String auditEvent, boolean tokenless) {
 
     public static final String GATEWAY = "mcp-gateway";
     public static final String PORTAL_BFF = "mcp-portal-bff";
+    public static final String OFFBOARDING = "mcp-offboarding";
+
+    public Operation(String operationId, String method, Pattern path, Set<String> allowedCns,
+            boolean serviceVariantAllowed, InternalJwtVerifier.ToolClaim toolClaim, String auditEvent) {
+        this(operationId, method, path, allowedCns, serviceVariantAllowed, toolClaim, auditEvent, false);
+    }
 
     public static final Operation RESOLVE = new Operation("resolveCredential", "POST",
             Pattern.compile("^/v1/credentials/resolve$"), Set.of(GATEWAY), false, InternalJwtVerifier.ToolClaim.REQUIRED, "credential_resolve");
@@ -37,8 +43,29 @@ public record Operation(String operationId, String method, Pattern path, Set<Str
             Pattern.compile("^/v1/connections/[^/]+/oauth/complete$"), Set.of(PORTAL_BFF), false, InternalJwtVerifier.ToolClaim.FORBIDDEN,
             "connection_change");
 
+    /** Gateway and BFF both read the state; the gateway's token names the tool being confirmed (CC-092). */
+    public static final Operation GET_AUTHENTICATOR = new Operation("getAuthenticator", "GET",
+            Pattern.compile("^/v1/authenticator$"), Set.of(GATEWAY, PORTAL_BFF), false, InternalJwtVerifier.ToolClaim.REQUIRED, null);
+    public static final Operation DELETE_AUTHENTICATOR = new Operation("deleteAuthenticator", "DELETE",
+            Pattern.compile("^/v1/authenticator$"), Set.of(PORTAL_BFF), false, InternalJwtVerifier.ToolClaim.FORBIDDEN, "authenticator");
+    public static final Operation START_ENROLLMENT = new Operation("startAuthenticatorEnrollment", "POST",
+            Pattern.compile("^/v1/authenticator/enrollment$"), Set.of(PORTAL_BFF), false, InternalJwtVerifier.ToolClaim.FORBIDDEN,
+            "authenticator");
+    public static final Operation CONFIRM_ENROLLMENT = new Operation("confirmAuthenticatorEnrollment", "POST",
+            Pattern.compile("^/v1/authenticator/enrollment/confirm$"), Set.of(PORTAL_BFF), false,
+            InternalJwtVerifier.ToolClaim.FORBIDDEN, "authenticator");
+    public static final Operation VERIFY_CODE = new Operation("verifyAuthenticatorCode", "POST",
+            Pattern.compile("^/v1/authenticator/verify$"), Set.of(GATEWAY), false, InternalJwtVerifier.ToolClaim.REQUIRED, "authenticator");
+    public static final Operation INVALIDATE_CODES = new Operation("invalidateAuthenticatorCodes", "POST",
+            Pattern.compile("^/v1/authenticator/invalidate-codes$"), Set.of(GATEWAY), false, InternalJwtVerifier.ToolClaim.REQUIRED,
+            "authenticator");
+    public static final Operation RESET_AUTHENTICATOR = new Operation("resetUserAuthenticator", "POST",
+            Pattern.compile("^/v1/admin/users/[^/]+/authenticator/reset$"), Set.of(OFFBOARDING), false,
+            InternalJwtVerifier.ToolClaim.FORBIDDEN, "authenticator", true);
+
     public static final List<Operation> ALL = List.of(RESOLVE, PUT_SECRET, LIST_SYSTEMS, LIST_CONNECTIONS, DELETE_CONNECTION,
-            START_OAUTH, COMPLETE_OAUTH);
+            START_OAUTH, COMPLETE_OAUTH, GET_AUTHENTICATOR, DELETE_AUTHENTICATOR, START_ENROLLMENT, CONFIRM_ENROLLMENT,
+            VERIFY_CODE, INVALIDATE_CODES, RESET_AUTHENTICATOR);
 
     private static final Pattern SYSTEM_IN_PATH = Pattern.compile("^/v1/connections/([^/;]+)(?:/|$)");
 

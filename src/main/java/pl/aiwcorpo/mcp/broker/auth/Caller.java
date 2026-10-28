@@ -14,6 +14,10 @@ public sealed interface Caller {
     record Gateway(String requestId, InternalJwtClaims claims) implements Caller {
     }
 
+    /** Helpdesk or IGA with the client certificate CN mcp-offboarding and no token (C4 admin operations). */
+    record Offboarding(String requestId) implements Caller {
+    }
+
     /** Portal BFF with the user's token exchanged for aud=mcp-credential-broker. */
     record PortalUser(String requestId, String sub, String username, String azp, Map<String, Object> claims) implements Caller {
 

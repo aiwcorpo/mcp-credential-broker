@@ -31,6 +31,10 @@ public record SecretKey(String sub, String system, String version) {
      * that are not safe in a secret store path; the hash also keeps raw user ids out of store listings.
      */
     public String subHash() {
+        return hashOf(sub);
+    }
+
+    public static String hashOf(String sub) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(sub.getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(digest);
