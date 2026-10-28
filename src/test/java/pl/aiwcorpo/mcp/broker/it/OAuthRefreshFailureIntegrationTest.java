@@ -40,9 +40,18 @@ class OAuthRefreshFailureIntegrationTest {
     private static final TestEnvironment env = TestEnvironment.get();
     private static final GitLabStub gitlab = env.gitlab;
 
+    private static final String CLIENT_SECRET_IN_OPENBAO = "client-secret-from-openbao";
+
+    /** This context has no client secret in its configuration: the broker has to take it from OpenBao. */
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
         env.registerProperties(registry);
+        registry.add("broker.systems.gitlab.oauth.client-secret", () -> "");
+        registry.add("broker.openbao.oauth-clients-prefix", () -> "mcp/oauth-clients-it");
+        var stored = env.bao("POST", "secret/data/mcp/oauth-clients-it/gitlab",
+                "{\"data\":{\"client_id\":\"" + TestEnvironment.GITLAB_CLIENT_ID + "\",\"client_secret\":\""
+                        + CLIENT_SECRET_IN_OPENBAO + "\"}}");
+        assertThat(stored.statusCode()).isLessThan(300);
     }
 
     @LocalServerPort
@@ -122,6 +131,14 @@ class OAuthRefreshFailureIntegrationTest {
         int spent = gitlab.tokenRequests("refresh_token", "refresh_token", aliceFirst.refreshToken()).size()
                 + gitlab.tokenRequests("refresh_token", "refresh_token", bobFirst.refreshToken()).size();
         assertThat(spent).as("the second refresh token is still unspent").isEqualTo(1);
+    }
+
+    @Test
+    void theClientSecretComesFromOpenBao() {
+        GitLabStub.Grant grant = gitlab.issueCode("alice", 7200);
+        connect(newSub(), "alice", grant);
+        assertThat(gitlab.tokenRequests("authorization_code", "code", grant.code()).getFirst())
+                .containsEntry("client_secret", CLIENT_SECRET_IN_OPENBAO);
     }
 
     private String state(String sub) {

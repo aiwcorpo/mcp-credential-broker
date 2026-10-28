@@ -7,9 +7,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Supplier;
 
 import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
 import pl.aiwcorpo.mcp.broker.credential.CredentialType;
+import pl.aiwcorpo.mcp.broker.secret.OAuthClientSecrets;
+import pl.aiwcorpo.mcp.broker.secret.SecretValue;
 import tools.jackson.databind.json.JsonMapper;
 
 /** Target systems configured in the broker, with their adapters. */
@@ -35,7 +38,8 @@ public class SystemRegistry {
 
     private final Map<String, ConfiguredSystem> systems;
 
-    public SystemRegistry(Map<String, BrokerProperties.SystemConfig> config, HttpClient whoamiClient, JsonMapper json) {
+    public SystemRegistry(Map<String, BrokerProperties.SystemConfig> config, HttpClient whoamiClient, JsonMapper json,
+            OAuthClientSecrets clientSecrets) {
         Map<String, ConfiguredSystem> configured = new LinkedHashMap<>();
         config.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry -> {
             String id = entry.getKey();
@@ -52,7 +56,7 @@ public class SystemRegistry {
                             + " is not implemented in this version");
                 }
             }
-            SystemAdapter adapter = adapter(id, system, whoamiClient, json);
+            SystemAdapter adapter = adapter(id, system, whoamiClient, json, clientSecrets);
             if (system.supportedTypes().contains(CredentialType.USER_OAUTH)
                     && (system.oauth() == null || !(adapter instanceof OAuthProvider))) {
                 throw new IllegalArgumentException("broker.systems." + id + ": user-oauth needs an oauth client and an adapter that speaks OAuth");
@@ -62,13 +66,17 @@ public class SystemRegistry {
         this.systems = Collections.unmodifiableMap(configured);
     }
 
-    private static SystemAdapter adapter(String id, BrokerProperties.SystemConfig system, HttpClient http, JsonMapper json) {
+    private static SystemAdapter adapter(String id, BrokerProperties.SystemConfig system, HttpClient http, JsonMapper json,
+            OAuthClientSecrets clientSecrets) {
         return switch (system.adapter()) {
             case "gitlab" -> {
                 if (!"gitlab".equals(id)) {
                     throw new IllegalArgumentException("broker.systems." + id + ": adapter gitlab serves only gitlab");
                 }
-                yield new GitLabAdapter(system.baseUrl(), system.timeout(), system.oauth(), http, json);
+                Supplier<SecretValue> clientSecret = system.oauth() == null ? () -> {
+                    throw new IllegalStateException("no OAuth client");
+                } : () -> clientSecrets.clientSecret(id, system.oauth().clientSecret());
+                yield new GitLabAdapter(system.baseUrl(), system.timeout(), system.oauth(), clientSecret, http, json);
             }
             case "atlassian-dc" -> new AtlassianDcAdapter(atlassianProduct(id), system.baseUrl(), system.timeout(), http, json);
             default -> throw new IllegalArgumentException("broker.systems." + id + ": unknown adapter " + system.adapter());

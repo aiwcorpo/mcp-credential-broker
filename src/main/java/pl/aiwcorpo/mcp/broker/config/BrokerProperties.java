@@ -65,6 +65,7 @@ public record BrokerProperties(
             @NotBlank String secretId,
             @DefaultValue("secret") @NotBlank String kvMount,
             @DefaultValue("mcp/connections") @NotBlank String pathPrefix,
+            @DefaultValue("mcp/oauth-clients") @NotBlank String oauthClientsPrefix,
             @DefaultValue("transit") @NotBlank String transitMount,
             @DefaultValue("mcp-credential-broker") @NotBlank String transitKey,
             @DefaultValue("5s") @NotNull Duration timeout) {
@@ -92,13 +93,15 @@ public record BrokerProperties(
     }
 
     /**
-     * OAuth client of a system. Endpoints default to the standard paths under the system's base URL;
+     * OAuth client of a system. The client secret is read from OpenBao ({@code openbao.oauth-clients-prefix});
+     * {@code clientSecret} here is a fallback for local development only and is refused unless
+     * {@code allow-plain-http} is set. Endpoints default to the standard paths under the system's base URL;
      * {@code authorizeUrl} is the address the user's browser opens, which can differ from the one the broker
      * reaches the system on.
      */
     public record OAuth(
             @NotBlank String clientId,
-            @NotBlank String clientSecret,
+            String clientSecret,
             URI authorizeUrl,
             URI tokenUrl,
             URI revokeUrl) {

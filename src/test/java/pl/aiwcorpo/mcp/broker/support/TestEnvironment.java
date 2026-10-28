@@ -49,6 +49,8 @@ public final class TestEnvironment {
     private static final String BAO_POLICY = """
             path "secret/data/mcp/connections/*"     { capabilities = ["create", "read", "update", "delete"] }
             path "secret/metadata/mcp/connections/*" { capabilities = ["read", "list", "delete"] }
+            path "secret/data/mcp/oauth-clients/*"   { capabilities = ["read"] }
+            path "secret/data/mcp/oauth-clients-it/*" { capabilities = ["read"] }
             path "transit/encrypt/mcp-credential-broker" { capabilities = ["update"] }
             path "transit/decrypt/mcp-credential-broker" { capabilities = ["update"] }
             """;

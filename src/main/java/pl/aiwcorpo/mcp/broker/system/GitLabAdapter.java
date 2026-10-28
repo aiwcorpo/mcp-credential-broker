@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
@@ -32,12 +33,15 @@ public class GitLabAdapter implements SystemAdapter, OAuthProvider {
     private final URI baseUrl;
     private final Duration timeout;
     private final BrokerProperties.OAuth oauth;
+    private final Supplier<SecretValue> clientSecret;
     private final UpstreamHttp http;
 
-    public GitLabAdapter(URI baseUrl, Duration timeout, BrokerProperties.OAuth oauth, HttpClient http, JsonMapper json) {
+    public GitLabAdapter(URI baseUrl, Duration timeout, BrokerProperties.OAuth oauth, Supplier<SecretValue> clientSecret,
+            HttpClient http, JsonMapper json) {
         this.baseUrl = baseUrl;
         this.timeout = timeout;
         this.oauth = oauth;
+        this.clientSecret = clientSecret;
         this.http = new UpstreamHttp(http, json);
     }
 
@@ -153,7 +157,7 @@ public class GitLabAdapter implements SystemAdapter, OAuthProvider {
     private HttpRequest post(URI uri, Map<String, String> body) {
         Map<String, String> withClient = new LinkedHashMap<>(body);
         withClient.put("client_id", oauth.clientId());
-        withClient.put("client_secret", oauth.clientSecret());
+        withClient.put("client_secret", clientSecret.get().reveal());
         return HttpRequest.newBuilder(uri)
                 .timeout(timeout)
                 .header("Accept", "application/json")

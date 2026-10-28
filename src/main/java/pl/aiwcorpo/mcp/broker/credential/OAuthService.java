@@ -421,7 +421,7 @@ public class OAuthService {
         }
         try {
             provider.revoke(token);
-        } catch (UpstreamUnavailableException e) {
+        } catch (UpstreamUnavailableException | SecretStoreUnavailableException e) {
             log.warn("Token not revoked at the provider: {}", e.getMessage());
         }
     }

@@ -162,7 +162,8 @@ class CredentialServiceTest {
     }
 
     private static SystemRegistry registry(String identityClaim) {
-        return new SystemRegistry(Map.of("jira", config(identityClaim)), HttpClient.newHttpClient(), JsonMapper.builder().build());
+        return new SystemRegistry(Map.of("jira", config(identityClaim)), HttpClient.newHttpClient(), JsonMapper.builder().build(),
+                mock(pl.aiwcorpo.mcp.broker.secret.OAuthClientSecrets.class));
     }
 
     private static BrokerProperties.SystemConfig config(String identityClaim) {

@@ -36,6 +36,7 @@ import pl.aiwcorpo.mcp.broker.event.RedisInvalidationPublisher;
 import pl.aiwcorpo.mcp.broker.oauth.OAuthFlowStore;
 import pl.aiwcorpo.mcp.broker.oauth.RedisOAuthFlowStore;
 import pl.aiwcorpo.mcp.broker.oauth.RefreshLock;
+import pl.aiwcorpo.mcp.broker.secret.OAuthClientSecrets;
 import pl.aiwcorpo.mcp.broker.secret.OpenBaoClient;
 import pl.aiwcorpo.mcp.broker.secret.OpenBaoSecretStore;
 import pl.aiwcorpo.mcp.broker.secret.SecretStore;
@@ -111,24 +112,40 @@ public class BrokerConfiguration {
     }
 
     @Bean
-    SecretStore secretStore(BrokerProperties properties, SslBundles sslBundles, JsonMapper json, Clock clock) {
+    OpenBaoClient openBaoClient(BrokerProperties properties, SslBundles sslBundles, JsonMapper json, Clock clock) {
         BrokerProperties.OpenBao config = properties.openbao();
         requireTls(config.address(), "broker.openbao.address", properties.allowPlainHttp());
-        return new OpenBaoSecretStore(new OpenBaoClient(config, internalClient(sslBundles), json, clock), config, json);
+        return new OpenBaoClient(config, internalClient(sslBundles), json, clock);
     }
 
     @Bean
-    SystemRegistry systemRegistry(BrokerProperties properties, SslBundles sslBundles, JsonMapper json) {
+    SecretStore secretStore(BrokerProperties properties, OpenBaoClient client, JsonMapper json) {
+        return new OpenBaoSecretStore(client, properties.openbao(), json);
+    }
+
+    @Bean
+    OAuthClientSecrets oauthClientSecrets(BrokerProperties properties, OpenBaoClient client, Clock clock) {
+        return new OAuthClientSecrets(client, properties.openbao().kvMount(), properties.openbao().oauthClientsPrefix(), clock);
+    }
+
+    @Bean
+    SystemRegistry systemRegistry(BrokerProperties properties, SslBundles sslBundles, JsonMapper json,
+            OAuthClientSecrets clientSecrets) {
         requireTls(properties.portalBaseUrl(), "broker.portal-base-url", properties.allowPlainHttp());
         properties.systems().forEach((id, system) -> {
             requireTls(system.baseUrl(), "broker.systems." + id + ".base-url", properties.allowPlainHttp());
             if (system.oauth() != null) {
+                if (system.oauth().clientSecret() != null && !system.oauth().clientSecret().isBlank() && !properties.allowPlainHttp()) {
+                    throw new IllegalStateException("broker.systems." + id + ".oauth.client-secret is for local development only"
+                            + " (broker.allow-plain-http); the client secret belongs in OpenBao under "
+                            + properties.openbao().oauthClientsPrefix() + "/" + id);
+                }
                 requireTls(system.oauth().authorizeUrl(), "broker.systems." + id + ".oauth.authorize-url", properties.allowPlainHttp());
                 requireTls(system.oauth().tokenUrl(), "broker.systems." + id + ".oauth.token-url", properties.allowPlainHttp());
                 requireTls(system.oauth().revokeUrl(), "broker.systems." + id + ".oauth.revoke-url", properties.allowPlainHttp());
             }
         });
-        return new SystemRegistry(properties.systems(), internalClient(sslBundles), json);
+        return new SystemRegistry(properties.systems(), internalClient(sslBundles), json, clientSecrets);
     }
 
     @Bean
