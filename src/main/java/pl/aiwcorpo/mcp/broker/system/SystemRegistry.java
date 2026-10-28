@@ -18,12 +18,18 @@ public class SystemRegistry {
     /** SystemId of the contracts (common.schema.json); anything else is rejected before configuration is consulted. */
     public static final Set<String> KNOWN_SYSTEMS = Set.of("jira", "confluence", "gitlab", "servicedesk", "opensearch");
 
-    private static final Set<CredentialType> IMPLEMENTED_TYPES = Set.of(CredentialType.USER_SECRET);
+    private static final Set<CredentialType> IMPLEMENTED_TYPES = Set.of(CredentialType.USER_SECRET, CredentialType.USER_OAUTH);
 
     public record ConfiguredSystem(String id, BrokerProperties.SystemConfig config, SystemAdapter adapter) {
 
         public boolean supports(CredentialType type) {
             return config.supportedTypes().contains(type);
+        }
+
+        /** The OAuth client of the system; present for every system that supports user-oauth. */
+        public Optional<OAuthProvider> oauth() {
+            return supports(CredentialType.USER_OAUTH) && adapter instanceof OAuthProvider provider
+                    ? Optional.of(provider) : Optional.empty();
         }
     }
 
@@ -46,13 +52,24 @@ public class SystemRegistry {
                             + " is not implemented in this version");
                 }
             }
-            configured.put(id, new ConfiguredSystem(id, system, adapter(id, system, whoamiClient, json)));
+            SystemAdapter adapter = adapter(id, system, whoamiClient, json);
+            if (system.supportedTypes().contains(CredentialType.USER_OAUTH)
+                    && (system.oauth() == null || !(adapter instanceof OAuthProvider))) {
+                throw new IllegalArgumentException("broker.systems." + id + ": user-oauth needs an oauth client and an adapter that speaks OAuth");
+            }
+            configured.put(id, new ConfiguredSystem(id, system, adapter));
         });
         this.systems = Collections.unmodifiableMap(configured);
     }
 
     private static SystemAdapter adapter(String id, BrokerProperties.SystemConfig system, HttpClient http, JsonMapper json) {
         return switch (system.adapter()) {
+            case "gitlab" -> {
+                if (!"gitlab".equals(id)) {
+                    throw new IllegalArgumentException("broker.systems." + id + ": adapter gitlab serves only gitlab");
+                }
+                yield new GitLabAdapter(system.baseUrl(), system.timeout(), system.oauth(), http, json);
+            }
             case "atlassian-dc" -> new AtlassianDcAdapter(atlassianProduct(id), system.baseUrl(), system.timeout(), http, json);
             default -> throw new IllegalArgumentException("broker.systems." + id + ": unknown adapter " + system.adapter());
         };

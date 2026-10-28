@@ -30,7 +30,15 @@ public record Operation(String operationId, String method, Pattern path, Set<Str
             Pattern.compile("^/v1/connections/[^/]+$"), Set.of(PORTAL_BFF), false, InternalJwtVerifier.ToolClaim.FORBIDDEN,
             "connection_change");
 
-    public static final List<Operation> ALL = List.of(RESOLVE, PUT_SECRET, LIST_SYSTEMS, LIST_CONNECTIONS, DELETE_CONNECTION);
+    public static final Operation START_OAUTH = new Operation("startOAuth", "POST",
+            Pattern.compile("^/v1/connections/[^/]+/oauth/start$"), Set.of(PORTAL_BFF), false, InternalJwtVerifier.ToolClaim.FORBIDDEN,
+            "connection_change");
+    public static final Operation COMPLETE_OAUTH = new Operation("completeOAuth", "POST",
+            Pattern.compile("^/v1/connections/[^/]+/oauth/complete$"), Set.of(PORTAL_BFF), false, InternalJwtVerifier.ToolClaim.FORBIDDEN,
+            "connection_change");
+
+    public static final List<Operation> ALL = List.of(RESOLVE, PUT_SECRET, LIST_SYSTEMS, LIST_CONNECTIONS, DELETE_CONNECTION,
+            START_OAUTH, COMPLETE_OAUTH);
 
     private static final Pattern SYSTEM_IN_PATH = Pattern.compile("^/v1/connections/([^/;]+)(?:/|$)");
 

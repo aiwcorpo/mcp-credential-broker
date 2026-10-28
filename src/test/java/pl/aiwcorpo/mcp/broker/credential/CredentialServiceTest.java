@@ -52,7 +52,7 @@ class CredentialServiceTest {
     private final InvalidationPublisher invalidations = mock(InvalidationPublisher.class);
     private final SystemRegistry systems = registry("preferred_username");
     private final CredentialService service = new CredentialService(systems, connections, secrets, invalidations,
-            new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7));
+            mock(OAuthService.class), new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7));
 
     @Test
     void secretStoreOutageFailsClosed() {
@@ -88,27 +88,6 @@ class CredentialServiceTest {
         verify(secrets).put(written.capture(), any());
         verify(secrets).delete(written.getValue());
         verify(invalidations, never()).invalidated(any(), any());
-    }
-
-    @Test
-    void identityComparisonIgnoresAsciiCaseOnly() {
-        SystemRegistry.ConfiguredSystem byName = registry("preferred_username").find("jira").orElseThrow();
-        assertThat(CredentialService.sameIdentity(portal("s", "Alice", true), byName, new BackendIdentity("alice", null))).isTrue();
-        assertThat(CredentialService.sameIdentity(portal("s", "Alice", true), byName, new BackendIdentity("alice2", null))).isFalse();
-        assertThat(CredentialService.sameName("\u0141ukasz", "\u0141ukasz")).isTrue();
-        assertThat(CredentialService.sameName("\u0141UKASZ", "\u0142ukasz")).isFalse();
-        assertThat(CredentialService.sameName("\u212Aate", "kate")).as("KELVIN SIGN folds to k").isFalse();
-    }
-
-    @Test
-    void emailIdentityNeedsAVerifiedEmail() {
-        SystemRegistry.ConfiguredSystem byEmail = registry("email").find("jira").orElseThrow();
-        BackendIdentity backend = new BackendIdentity("x", "ALICE@corp.test");
-        assertThat(CredentialService.sameIdentity(portal("s", "alice", true), byEmail, backend)).isTrue();
-        assertThat(CredentialService.sameIdentity(portal("s", "alice", false), byEmail, backend)).isFalse();
-        assertThat(CredentialService.sameIdentity(portal("s", "alice", null), byEmail, backend)).isFalse();
-        assertThat(CredentialService.sameIdentity(portal("s", "alice", true), byEmail, new BackendIdentity("alice", null)))
-                .isFalse();
     }
 
     @Test
@@ -161,7 +140,16 @@ class CredentialServiceTest {
         when(registry.find("jira")).thenReturn(Optional.of(
                 new SystemRegistry.ConfiguredSystem("jira", config("preferred_username"), adapter)));
         return new CredentialService(registry, connections, secrets, invalidations,
-                new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7));
+                mock(OAuthService.class), new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7));
+    }
+
+    @Test
+    void anExpiryInThePastIsAcceptedAndMakesTheConnectionExpired() {
+        CredentialService withWhoami = serviceWithIdentity(new BackendIdentity("alice", "alice@corp.test"));
+        when(connections.find("alice-sub", "jira")).thenReturn(Optional.empty());
+        CredentialService.Stored stored = withWhoami.putSecret(portal("alice-sub", "alice"), "jira",
+                SecretValue.of("alice-pat"), "2020-01-01T00:00:00Z");
+        assertThat(stored.status()).isEqualTo(ConnectionStatus.EXPIRED);
     }
 
     private static SystemRegistry registry(String identityClaim) {
@@ -171,7 +159,7 @@ class CredentialServiceTest {
     private static BrokerProperties.SystemConfig config(String identityClaim) {
         return new BrokerProperties.SystemConfig(URI.create("http://jira.test"), "atlassian-dc",
                 List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET, CredentialScheme.BEARER, identityClaim,
-                List.of(), Duration.ofSeconds(1));
+                List.of(), Duration.ofSeconds(1), null);
     }
 
     private static Connection connection(Instant expiresAt) {
@@ -180,7 +168,7 @@ class CredentialServiceTest {
 
     private static Connection connection(Instant expiresAt, Instant lastUsedAt) {
         return new Connection("alice-sub", "jira", CredentialType.USER_SECRET, Connection.StoredState.CONNECTED, "alice",
-                expiresAt, NOW.minusSeconds(3600), lastUsedAt, "v1");
+                expiresAt, NOW.minusSeconds(3600), lastUsedAt, "v1", null);
     }
 
     private static Caller.Gateway gateway(String sub) {

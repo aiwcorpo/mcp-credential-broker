@@ -32,6 +32,8 @@ public final class TestEnvironment {
 
     public static final String REDIS_BROKER_PASSWORD = "test-only-redis-broker";
     public static final String REDIS_ADMIN_PASSWORD = "test-only-redis-admin";
+    public static final String GITLAB_CLIENT_ID = "mcp-broker";
+    public static final String GITLAB_CLIENT_SECRET = "test-only-gitlab-client-secret";
     public static final String BAO_ROOT_TOKEN = "test-only-root";
     public static final String BAO_ROLE_ID = "test-only-role-id";
     public static final String BAO_SECRET_ID = "test-only-secret-id";
@@ -59,6 +61,7 @@ public final class TestEnvironment {
     public final HttpServer upstream;
     public final AtomicInteger whoamiCalls = new AtomicInteger();
     public final AtomicInteger confluenceWhoamiCalls = new AtomicInteger();
+    public final GitLabStub gitlab = new GitLabStub();
     public final TestPki pki = new TestPki("mcp-test-ca");
     public final TestPki foreignPki = new TestPki("mcp-foreign-ca");
     public final TestTokens tokens = new TestTokens();
@@ -196,6 +199,17 @@ public final class TestEnvironment {
         registry.add("broker.systems.confluence.adapter", () -> "atlassian-dc");
         registry.add("broker.systems.confluence.supported-types", () -> "user-secret");
         registry.add("broker.systems.confluence.default-type", () -> "user-secret");
+        registry.add("broker.systems.gitlab.base-url", gitlab::url);
+        registry.add("broker.systems.gitlab.adapter", () -> "gitlab");
+        registry.add("broker.systems.gitlab.supported-types", () -> "user-oauth,user-secret");
+        registry.add("broker.systems.gitlab.default-type", () -> "user-oauth");
+        registry.add("broker.systems.gitlab.oauth-scopes", () -> "read_api,api");
+        registry.add("broker.systems.gitlab.timeout", () -> "1s");
+        registry.add("broker.systems.gitlab.oauth.client-id", () -> GITLAB_CLIENT_ID);
+        registry.add("broker.systems.gitlab.oauth.client-secret", () -> GITLAB_CLIENT_SECRET);
+        registry.add("broker.systems.gitlab.oauth.authorize-url", () -> "https://gitlab.test/oauth/authorize");
+        registry.add("broker.oauth-flow.sweep-interval", () -> "PT1H");
+        registry.add("broker.oauth-flow.refresh-lock-wait", () -> "3s");
         registry.add("MCP_PORTAL_URL", () -> "https://mcp-portal.test");
         registry.add("MCP_ALLOW_PLAIN_HTTP", () -> "true");
     }

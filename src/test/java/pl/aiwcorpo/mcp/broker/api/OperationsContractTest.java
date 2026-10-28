@@ -17,7 +17,7 @@ import tools.jackson.databind.JsonNode;
 class OperationsContractTest {
 
     /** C4 operations not served before M2-M4; the filter answers them 404. */
-    private static final Set<String> NOT_YET_IMPLEMENTED = Set.of("startOAuth", "completeOAuth", "purgeUser");
+    private static final Set<String> NOT_YET_IMPLEMENTED = Set.of("purgeUser");
 
     @Test
     void everyServedOperationHasTheContractMethodPathAndClientCns() {

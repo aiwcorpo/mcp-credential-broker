@@ -19,7 +19,6 @@ import pl.aiwcorpo.mcp.broker.audit.AuditLog;
 import pl.aiwcorpo.mcp.broker.auth.Caller;
 import pl.aiwcorpo.mcp.broker.auth.InternalJwtClaims;
 import pl.aiwcorpo.mcp.broker.event.InvalidationPublisher;
-import pl.aiwcorpo.mcp.broker.secret.SecretKey;
 import pl.aiwcorpo.mcp.broker.secret.SecretStore;
 import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
 import pl.aiwcorpo.mcp.broker.secret.SecretValue;
@@ -57,17 +56,22 @@ public class CredentialService {
     private final ConnectionRepository connections;
     private final SecretStore secrets;
     private final InvalidationPublisher invalidations;
+    private final ConnectionStore store;
+    private final OAuthService oauth;
     private final AuditLog audit;
     private final Clock clock;
     private final int cacheTtlSeconds;
     private final Duration expiringThreshold;
 
     public CredentialService(SystemRegistry systems, ConnectionRepository connections, SecretStore secrets,
-            InvalidationPublisher invalidations, AuditLog audit, Clock clock, int cacheTtlSeconds, Duration expiringThreshold) {
+            InvalidationPublisher invalidations, OAuthService oauth, AuditLog audit, Clock clock, int cacheTtlSeconds,
+            Duration expiringThreshold) {
         this.systems = systems;
         this.connections = connections;
         this.secrets = secrets;
         this.invalidations = invalidations;
+        this.store = new ConnectionStore(connections, secrets, invalidations, clock);
+        this.oauth = oauth;
         this.audit = audit;
         this.clock = clock;
         this.cacheTtlSeconds = cacheTtlSeconds;
@@ -106,11 +110,17 @@ public class CredentialService {
             if (stored.type() != found.type()) {
                 throw new SecretStoreUnavailableException("stored credential type differs from connection metadata");
             }
+            if (found.type() == CredentialType.USER_OAUTH) {
+                OAuthService.Fresh fresh = oauth.ensureFresh(caller.requestId(), found, stored);
+                found = fresh.connection();
+                stored = fresh.credential();
+            }
             if (found.lastUsedAt() == null || found.lastUsedAt().isBefore(now.minus(LAST_USED_PRECISION))) {
                 connections.touch(user.sub(), system.id(), now);
             }
+            Instant expiry = found.type() == CredentialType.USER_OAUTH ? found.accessExpiresAt() : found.expiresAt();
             Resolved resolved = new Resolved(system.config().secretScheme(), stored.value(), found.type(),
-                    found.expiresAt(), ttl(now, found.expiresAt()));
+                    expiry, ttl(clock.instant(), expiry));
             entry.ok("resolved");
             return resolved;
         } catch (CredentialRequiredException e) {
@@ -139,43 +149,25 @@ public class CredentialService {
                     .orElseThrow(() -> new InvalidRequestException("system does not accept user secrets"));
             Instant now = clock.instant();
             Instant expiresAt = parseTimestamp(expiresAtText);
-            if (expiresAt != null && !expiresAt.isAfter(now)) {
-                throw new InvalidRequestException("expiresAt is in the past");
-            }
             BackendIdentity identity = switch (system.adapter().whoami(system.config().secretScheme(), secret)) {
                 case WhoamiResult.Rejected rejected -> throw new SecretRejectedException("secret_invalid");
                 case WhoamiResult.Identified identified -> identified.identity();
             };
-            if (!sameIdentity(caller, system, identity)) {
+            if (!IdentityRule.matches(system.config().identityClaim(), caller.claims(), identity)) {
                 throw new SecretRejectedException("identity_mismatch");
             }
 
-            // Each stored value gets its own path; the connection row points at it. A replacement is written
-            // next to the old value and only the row switches, so a failure in between leaves the previous
-            // credential intact, and the old path (all KV versions) is deleted only after the switch.
             Optional<Connection> previous = connections.find(caller.sub(), system.id());
-            SecretKey key = SecretKey.newVersion(caller.sub(), system.id());
-            secrets.put(key, StoredCredential.of(CredentialType.USER_SECRET, secret));
             Instant expires = expiresAt == null ? null : expiresAt.truncatedTo(ChronoUnit.SECONDS);
-            Connection connection = new Connection(caller.sub(), system.id(), CredentialType.USER_SECRET,
-                    Connection.StoredState.CONNECTED, identity.username(), expires, now.truncatedTo(ChronoUnit.SECONDS),
-                    null, key.version());
-            try {
-                connections.upsert(connection, now);
-            } catch (RuntimeException e) {
-                deleteQuietly(key);
-                throw e;
-            }
-            if (previous.isPresent()) {
-                deleteQuietly(previous.get().secretKey());
-                invalidations.invalidated(caller.sub(), system.id());
-            }
-            boolean replaced = previous.isPresent();
+            Connection connection = store.replace(
+                    new Connection(caller.sub(), system.id(), CredentialType.USER_SECRET, Connection.StoredState.CONNECTED,
+                            identity.username(), expires, now.truncatedTo(ChronoUnit.SECONDS), null, null, null),
+                    StoredCredential.of(CredentialType.USER_SECRET, secret), previous, true);
             Stored stored = new Stored(connection.status(now, expiringThreshold), identity.username(), expires);
-            entry.ok(replaced ? "secret_replaced" : "secret_stored");
+            entry.ok(previous.isPresent() ? "secret_replaced" : "secret_stored");
             return stored;
         } catch (SecretRejectedException e) {
-            entry.denied(e.error(), null);
+            entry.denied(e.reason(), null);
             throw e;
         } catch (InvalidRequestException e) {
             entry.denied("invalid_request", "invalid_argument");
@@ -204,8 +196,8 @@ public class CredentialService {
     /**
      * Disconnects the calling user's system. Idempotent. The secret goes first (all KV versions), then the
      * row: if the store fails, the connection stays usable and the call can be repeated; if the row delete
-     * fails after that, resolve already answers credential_required. Revocation at the provider applies to
-     * user-oauth (M2), not to user-secret.
+     * fails after that, resolve already answers credential_required. The tokens of a user-oauth connection are
+     * revoked at the provider first, best effort; a user-secret PAT is revoked by its owner in the system.
      */
     public boolean disconnect(Caller.PortalUser caller, String systemId) {
         AuditLog.Entry entry = audit.event("connection_change", caller.requestId())
@@ -221,6 +213,7 @@ public class CredentialService {
                 return false;
             }
             entry.credentialType(existing.get().type().wire());
+            oauth.revokeAtProvider(existing.get());
             secrets.delete(existing.get().secretKey());
             connections.delete(caller.sub(), systemId);
             invalidations.invalidated(caller.sub(), systemId);
@@ -254,50 +247,11 @@ public class CredentialService {
         }
     }
 
-    /**
-     * C4.1: the backend account must be the SSO user's own. E-mail is used only when the IdP vouches for it
-     * (email_verified true), because users can change their e-mail in some IdPs.
-     */
-    static boolean sameIdentity(Caller.PortalUser caller, ConfiguredSystem system, BackendIdentity identity) {
-        String claim = system.config().identityClaim();
-        boolean byEmail = "email".equals(claim);
-        if (byEmail && !Boolean.TRUE.equals(caller.claims().get("email_verified"))) {
-            return false;
-        }
-        String expected = caller.identity(claim);
-        String actual = byEmail ? identity.email() : identity.username();
-        return expected != null && actual != null && sameName(expected, actual);
-    }
-
-    /**
-     * Exact match, or case-insensitive when both names are plain ASCII (Jira user names are case-insensitive).
-     * Case folding outside ASCII is not used: it maps distinct characters together (e.g. KELVIN SIGN to k).
-     */
-    static boolean sameName(String a, String b) {
-        if (a.equals(b)) {
-            return true;
-        }
-        return isAscii(a) && isAscii(b) && a.equalsIgnoreCase(b);
-    }
-
-    private static boolean isAscii(String value) {
-        return value.chars().allMatch(c -> c < 0x80);
-    }
-
     private int ttl(Instant now, Instant expiresAt) {
         if (expiresAt == null) {
             return cacheTtlSeconds;
         }
         long remaining = Duration.between(now, expiresAt).toSeconds();
         return (int) Math.max(0, Math.min(cacheTtlSeconds, remaining));
-    }
-
-    private void deleteQuietly(SecretKey key) {
-        try {
-            secrets.delete(key);
-        } catch (RuntimeException e) {
-            log.error("Unreferenced secret for system {} could not be removed ({})", key.system(),
-                    e.getClass().getSimpleName());
-        }
     }
 }

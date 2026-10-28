@@ -5,7 +5,11 @@ import java.time.Instant;
 
 import pl.aiwcorpo.mcp.broker.secret.SecretKey;
 
-/** Metadata of one (sub, system) connection; the value itself is in the secret store. */
+/**
+ * Metadata of one (sub, system) connection; the value itself is in the secret store. {@code expiresAt} is the
+ * date the user gave for a token (informational, user-secret only). {@code accessExpiresAt} is when the
+ * current OAuth access token stops working; the broker renews it, so it never shows up as a C4 expiry.
+ */
 public record Connection(
         String sub,
         String system,
@@ -15,10 +19,19 @@ public record Connection(
         Instant expiresAt,
         Instant connectedAt,
         Instant lastUsedAt,
-        String secretVersion) {
+        String secretVersion,
+        Instant accessExpiresAt) {
 
     public SecretKey secretKey() {
         return new SecretKey(sub, system, secretVersion);
+    }
+
+    public Connection withSecretVersion(String version) {
+        return new Connection(sub, system, type, state, backendUser, expiresAt, connectedAt, lastUsedAt, version, accessExpiresAt);
+    }
+
+    public Connection withAccessExpiresAt(Instant accessExpiry) {
+        return new Connection(sub, system, type, state, backendUser, expiresAt, connectedAt, lastUsedAt, secretVersion, accessExpiry);
     }
 
     public enum StoredState {

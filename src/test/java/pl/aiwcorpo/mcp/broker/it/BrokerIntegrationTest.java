@@ -289,10 +289,20 @@ class BrokerIntegrationTest {
     }
 
     @Test
-    void pastExpiryIsRejected() {
-        BrokerClient.Response put = putSecret(newSub(), "bob", "{\"secret\":\"bob-pat\",\"expiresAt\":\"2020-01-01T00:00:00Z\"}");
-        assertThat(put.status()).isEqualTo(400);
-        assertThat(put.json().path("error").stringValue()).isEqualTo("invalid_request");
+    void anExpiryInThePastIsOnlyInformation() {
+        String sub = newSub();
+        BrokerClient.Response put = putSecret(sub, "bob", "{\"secret\":\"bob-pat\",\"expiresAt\":\"2020-01-01T00:00:00Z\"}");
+        assertThat(put.status()).isEqualTo(200);
+        assertThat(Contracts.brokerSchemaErrors("PutSecretResponse", put.json())).isEmpty();
+        assertThat(put.json().path("status").stringValue()).isEqualTo("expired");
+        assertThat(resolve(sub, "bob", TestTokens.newRequestId(), "{\"system\":\"jira\"}").status()).isEqualTo(409);
+    }
+
+    @Test
+    void withoutAnExpiryTheStatusNeverBecomesExpiring() {
+        BrokerClient.Response put = putSecret(newSub(), "bob", "{\"secret\":\"bob-pat\"}");
+        assertThat(put.json().path("status").stringValue()).isEqualTo("connected");
+        assertThat(put.json().path("expiresAt").isNull()).isTrue();
     }
 
     @Test
@@ -477,9 +487,9 @@ class BrokerIntegrationTest {
         for (JsonNode system : fromGateway.json()) {
             assertThat(Contracts.brokerSchemaErrors("SystemInfo", system)).isEmpty();
         }
-        assertThat(fromGateway.json().get(0).path("system").stringValue()).isEqualTo("confluence");
-        assertThat(fromGateway.json().get(1).path("system").stringValue()).isEqualTo("jira");
-        assertThat(fromGateway.json().get(1).path("supportedTypes").get(0).stringValue()).isEqualTo("user-secret");
+        assertThat(fromGateway.json()).extracting(system -> system.path("system").stringValue())
+                .containsExactly("confluence", "gitlab", "jira");
+        assertThat(fromGateway.json().get(2).path("supportedTypes").get(0).stringValue()).isEqualTo("user-secret");
 
         BrokerClient.Response fromPortal = bff.send("GET", "/v1/systems", tokens.bffUser(newSub(), "alice"), null, null);
         assertThat(fromPortal.status()).isEqualTo(200);
@@ -494,7 +504,7 @@ class BrokerIntegrationTest {
         BrokerClient.Response notJson = putSecret(sub, "alice", "{\"secret\": alice-pat");
         assertThat(notJson.status()).isEqualTo(400);
         assertThat(notJson.body()).isEqualTo("{\"error\":\"invalid_request\"}");
-        BrokerClient.Response notConfigured = putSecret(sub, "alice", "{\"secret\":\"alice-pat\"}", "gitlab");
+        BrokerClient.Response notConfigured = putSecret(sub, "alice", "{\"secret\":\"alice-pat\"}", "servicedesk");
         assertThat(notConfigured.status()).isEqualTo(400);
         String rid = TestTokens.newRequestId();
         assertThat(gateway.send("POST", "/v1/credentials/resolve", tokens.gatewayUser(sub, "alice", rid), rid,

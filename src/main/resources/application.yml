@@ -90,6 +90,12 @@ broker:
   redis:
     jti-prefix: "jti:mcp-credential-broker:"
     invalidation-channel: credential.invalidated
+  oauth-flow:
+    flow-ttl: 10m
+    refresh-margin: 2m
+    sweep-window: 5m
+    sweep-interval: PT1M
+    refresh-lock-wait: 5s
   systems:
     jira:
       base-url: ${MCP_JIRA_URL}

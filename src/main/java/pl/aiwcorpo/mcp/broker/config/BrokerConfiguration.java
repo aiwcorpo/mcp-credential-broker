@@ -16,6 +16,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.core.Ordered;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 import pl.aiwcorpo.mcp.broker.audit.AuditLog;
 import pl.aiwcorpo.mcp.broker.auth.BffTokenVerifier;
@@ -26,9 +27,15 @@ import pl.aiwcorpo.mcp.broker.auth.JwksGatewayKeys;
 import pl.aiwcorpo.mcp.broker.auth.RedisReplayGuard;
 import pl.aiwcorpo.mcp.broker.auth.ReplayGuard;
 import pl.aiwcorpo.mcp.broker.credential.ConnectionRepository;
+import pl.aiwcorpo.mcp.broker.credential.ConnectionStore;
 import pl.aiwcorpo.mcp.broker.credential.CredentialService;
+import pl.aiwcorpo.mcp.broker.credential.OAuthRefreshJob;
+import pl.aiwcorpo.mcp.broker.credential.OAuthService;
 import pl.aiwcorpo.mcp.broker.event.InvalidationPublisher;
 import pl.aiwcorpo.mcp.broker.event.RedisInvalidationPublisher;
+import pl.aiwcorpo.mcp.broker.oauth.OAuthFlowStore;
+import pl.aiwcorpo.mcp.broker.oauth.RedisOAuthFlowStore;
+import pl.aiwcorpo.mcp.broker.oauth.RefreshLock;
 import pl.aiwcorpo.mcp.broker.secret.OpenBaoClient;
 import pl.aiwcorpo.mcp.broker.secret.OpenBaoSecretStore;
 import pl.aiwcorpo.mcp.broker.secret.SecretStore;
@@ -36,6 +43,7 @@ import pl.aiwcorpo.mcp.broker.system.SystemRegistry;
 import tools.jackson.databind.json.JsonMapper;
 
 @Configuration(proxyBeanMethods = false)
+@EnableScheduling
 @EnableConfigurationProperties(BrokerProperties.class)
 public class BrokerConfiguration {
 
@@ -111,8 +119,14 @@ public class BrokerConfiguration {
 
     @Bean
     SystemRegistry systemRegistry(BrokerProperties properties, SslBundles sslBundles, JsonMapper json) {
-        properties.systems().forEach((id, system) ->
-                requireTls(system.baseUrl(), "broker.systems." + id + ".base-url", properties.allowPlainHttp()));
+        properties.systems().forEach((id, system) -> {
+            requireTls(system.baseUrl(), "broker.systems." + id + ".base-url", properties.allowPlainHttp());
+            if (system.oauth() != null) {
+                requireTls(system.oauth().authorizeUrl(), "broker.systems." + id + ".oauth.authorize-url", properties.allowPlainHttp());
+                requireTls(system.oauth().tokenUrl(), "broker.systems." + id + ".oauth.token-url", properties.allowPlainHttp());
+                requireTls(system.oauth().revokeUrl(), "broker.systems." + id + ".oauth.revoke-url", properties.allowPlainHttp());
+            }
+        });
         return new SystemRegistry(properties.systems(), internalClient(sslBundles), json);
     }
 
@@ -127,10 +141,42 @@ public class BrokerConfiguration {
     }
 
     @Bean
+    OAuthFlowStore oauthFlowStore(StringRedisTemplate redis, BrokerProperties properties, JsonMapper json) {
+        return new RedisOAuthFlowStore(redis, properties.oauthFlow().redisPrefix(), json);
+    }
+
+    @Bean
+    RefreshLock refreshLock(StringRedisTemplate redis, BrokerProperties properties) {
+        return new RefreshLock(redis, properties.oauthFlow().redisPrefix());
+    }
+
+    @Bean
+    OAuthService oauthService(SystemRegistry systems, ConnectionRepository connections, SecretStore secrets,
+            InvalidationPublisher invalidations, OAuthFlowStore flows, RefreshLock lock, AuditLog audit, Clock clock,
+            BrokerProperties properties) {
+        if (properties.oauthFlow().refreshMargin().compareTo(Duration.ofSeconds(properties.cacheTtlSeconds())) <= 0) {
+            throw new IllegalStateException("broker.oauth-flow.refresh-margin must exceed broker.cache-ttl-seconds");
+        }
+        return new OAuthService(systems, connections, secrets, new ConnectionStore(connections, secrets, invalidations, clock),
+                flows, lock, audit, clock, portalCallback(properties), properties.oauthFlow());
+    }
+
+    @Bean
+    OAuthRefreshJob oauthRefreshJob(OAuthService oauth) {
+        return new OAuthRefreshJob(oauth);
+    }
+
+    @Bean
     CredentialService credentialService(SystemRegistry systems, ConnectionRepository connections, SecretStore secrets,
-            InvalidationPublisher invalidations, AuditLog audit, Clock clock, BrokerProperties properties) {
-        return new CredentialService(systems, connections, secrets, invalidations, audit, clock,
+            InvalidationPublisher invalidations, OAuthService oauth, AuditLog audit, Clock clock, BrokerProperties properties) {
+        return new CredentialService(systems, connections, secrets, invalidations, oauth, audit, clock,
                 properties.cacheTtlSeconds(), properties.expiringThreshold());
+    }
+
+    /** redirect_uri registered at the providers: the BFF callback (C12) on the portal's public address. */
+    static URI portalCallback(BrokerProperties properties) {
+        String base = properties.portalBaseUrl().toString();
+        return URI.create((base.endsWith("/") ? base.substring(0, base.length() - 1) : base) + "/api/v1/oauth/callback");
     }
 
     /**
@@ -138,6 +184,9 @@ public class BrokerConfiguration {
      * keys from JWKS), so plain HTTP is refused unless broker.allow-plain-http is set for a local stack.
      */
     static void requireTls(URI uri, String property, boolean allowPlainHttp) {
+        if (uri == null) {
+            return;
+        }
         String scheme = uri.getScheme();
         if ("https".equals(scheme) || ("http".equals(scheme) && allowPlainHttp)) {
             return;

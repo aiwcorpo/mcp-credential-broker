@@ -32,6 +32,7 @@ public record BrokerProperties(
         @Valid @NotNull BffToken bffToken,
         @Valid @NotNull OpenBao openbao,
         @Valid @NotNull Redis redis,
+        @Valid @NotNull OAuthFlow oauthFlow,
         @NotEmpty Map<String, @Valid SystemConfig> systems) {
 
     /** Internal JWT from the gateway (C2). Exactly one of jwksUri and jwksFile is set. */
@@ -75,6 +76,39 @@ public record BrokerProperties(
     }
 
     /**
+     * Authorization code flow (C4 oauth/start, oauth/complete) and token refresh. A token is refreshed when it
+     * has less than {@code refreshMargin} left, which must exceed {@code cacheTtlSeconds} so that a token
+     * handed to the gateway outlives the gateway's cache. The background sweep refreshes tokens that would
+     * need it within {@code sweepWindow}.
+     */
+    public record OAuthFlow(
+            @DefaultValue("10m") @NotNull Duration flowTtl,
+            @DefaultValue("2m") @NotNull Duration refreshMargin,
+            @DefaultValue("5m") @NotNull Duration sweepWindow,
+            @DefaultValue("1m") @NotNull Duration sweepInterval,
+            @DefaultValue("5s") @NotNull Duration refreshLockWait,
+            @DefaultValue("broker:oauth:") @NotBlank String redisPrefix) {
+    }
+
+    /**
+     * OAuth client of a system. Endpoints default to the standard paths under the system's base URL;
+     * {@code authorizeUrl} is the address the user's browser opens, which can differ from the one the broker
+     * reaches the system on.
+     */
+    public record OAuth(
+            @NotBlank String clientId,
+            @NotBlank String clientSecret,
+            URI authorizeUrl,
+            URI tokenUrl,
+            URI revokeUrl) {
+
+        @Override
+        public String toString() {
+            return "OAuth[clientId=" + clientId + "]";
+        }
+    }
+
+    /**
      * One target system. {@code identityClaim} names the SSO claim compared with the backend identity
      * (C4.1): {@code preferred_username} against the backend user name, {@code email} against its e-mail.
      */
@@ -86,6 +120,12 @@ public record BrokerProperties(
             @DefaultValue("Bearer") @NotNull CredentialScheme secretScheme,
             @DefaultValue("preferred_username") @NotBlank String identityClaim,
             @DefaultValue("") List<String> oauthScopes,
-            @DefaultValue("5s") @NotNull Duration timeout) {
+            @DefaultValue("5s") @NotNull Duration timeout,
+            @Valid OAuth oauth) {
+
+        /** An unset list binds as one empty string; C4 wants an empty list. */
+        public SystemConfig {
+            oauthScopes = oauthScopes == null ? List.of() : oauthScopes.stream().filter(scope -> !scope.isBlank()).toList();
+        }
     }
 }
