@@ -2,7 +2,7 @@
 
 Kamień: **M2** ("Połącz konto i portal", strona brokera): PAT (whoami tylko dla ważności i `backendUser`, bez porównania tożsamości, CC-101), "Połącz przez OAuth" dla
 GitLaba (PKCE, jednorazowy `state` związany z użytkownikiem, tokeny w OpenBao, odświeżanie, odwołanie grantu).
-Kontrakty: `mcp-contracts` `v2.2.3` (od 2026-10-28; wcześniej 2.2.2, 2.2.1, 2.1.1, 2.0.0, 1.1.0). M3-M4 nie są zaczęte.
+Kontrakty: `mcp-contracts` `v2.2.5` (od 2026-10-28; wcześniej 2.2.3, 2.2.2, 2.2.1, 2.1.1, 2.0.0, 1.1.0). M3-M4 nie są zaczęte.
 Poniżej sekcja M2, przegląd M2 z poprawkami, dalej M1 bez zmian.
 
 ## M2 (2026-10-28)
@@ -25,6 +25,7 @@ zielone dopiero po całości):
 | odświeżanie | przy `resolve` (margines 2 min > `cacheTtlSeconds`) i zadaniem w tle (okno 5 min, co minutę); blokada Redis `SET NX PX` z właścicielem; rotacja refresh tokenu; `invalid_grant` -> `revoked` + `credential.invalidated` + `resolve` 409 |
 | `ConnectErrorCode` / `cancelled` (CC-086) | po stronie BFF; broker zwraca `flow_invalid` (422) albo `503` (od 2.2.3 bez `identity_mismatch`); patrz "Propozycje CC" |
 | PAT (`PUT secret`, CC-090/CC-084) | bez porównania tożsamości (CC-101): whoami tylko dla ważności (`422 secret_invalid`) i `backendUser`; whoami Jira/Confluence/GitLab wg tabeli; `expiresAt` opcjonalny i bez walidacji (przeszłość daje `expired`); `expiring` tylko przy podanej dacie |
+| `backendUser` w audycie (CC-117, 2.2.5) | zdarzenie `connection_change` niesie `backendUser` (z whoami) przy zapisie PAT, połączeniu OAuth i rozłączeniu (z zapisanego wiersza, jeśli jest); wartość niepoprawna (poza 1..255 znaków lub ze znakami sterującymi, DEL, U+2028/2029, bidi) jest pomijana, a w logu aplikacji ląduje ostrzeżenie bez wartości; zdarzenie `authentication` pola nie dostaje. Odświeżanie tokenu nie wywołuje whoami, więc nie zmienia konta i `backendUser` w jego zdarzeniu nie występuje. Testy: `AuditEventVectorTest` (wszystkie 42 wektory `audit-events/`), `AuditLogTest`, test integracyjny "mallory" (PAT konta mallory podpięty przez alice: `sub` alice, `backendUser` mallory) |
 | `X-Request-Id` | na każdej odpowiedzi (test na wszystkich odpowiedziach obu klas integracyjnych) |
 | dane dla katalogu (CC-080) | `GET /v1/systems`: `supportedTypes`, `defaultType`, `oauthScopes` (pusta lista zamiast `[""]`, poprawka błędu z M1); `GET /v1/connections`: `type`, `status`, `backendUser`, `lastUsedAt`; dla `user-oauth` `expiresAt` = `null` |
 | niezmienniki | `resolve` tylko CN `mcp-gateway`; portal tylko dla `sub` z tokenu (test: `flowId`/`sub` obcego użytkownika); żadna odpowiedź poza `resolve` nie zawiera tokenu/PAT/`client_secret` (`@AfterAll` obu klas na wszystkich zarejestrowanych odpowiedziach); brak tokenów, kodu, verifiera, `state`, `client_secret` w logach (grep na `CapturedOutput` w testach OAuth) |
@@ -33,7 +34,7 @@ zielone dopiero po całości):
 
 ```
 ./mvnw -B verify          (stan po poprawkach przeglądu M2)
-Tests run: 147, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS, mcp-contracts 2.2.3; po M2 było 145, po M1 109)
+Tests run: 197, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS, mcp-contracts 2.2.5; przed CC-117 było 147)
   OAuthIntegrationTest 31, BrokerIntegrationTest 30, InternalJwtVectorTest 55,
   OAuthRefreshFailureIntegrationTest 4, CredentialServiceTest 9, OperationsContractTest 3, OpenBaoClientTest 3,
   OAuthClientSecretsTest 2, KeySourceTest 3, ...

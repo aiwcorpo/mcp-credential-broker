@@ -187,7 +187,10 @@ class OAuthIntegrationTest {
             assertThat(e.path("reason").stringValue()).isEqualTo("oauth_connected");
             assertThat(e.path("outcome").stringValue()).isEqualTo("ok");
             assertThat(e.path("sub").stringValue()).isEqualTo(sub);
+            assertThat(e.path("backendUser").stringValue()).isEqualTo("alice");
         });
+        assertThat(auditEvents(output, startRid)).singleElement()
+                .satisfies(e -> assertThat(e.has("backendUser")).isFalse());
         assertNothingSecretLogged(output, started);
     }
 

@@ -163,7 +163,7 @@ public class OAuthService {
                 return previous.isPresent();
             });
             stored = true;
-            entry.ok(replaced ? "oauth_replaced" : "oauth_connected");
+            entry.backendUser(identity.username()).ok(replaced ? "oauth_replaced" : "oauth_connected");
             return new Completed(ConnectionStatus.CONNECTED, identity.username());
         } catch (SecretRejectedException e) {
             entry.denied(e.reason(), null);

@@ -3,7 +3,7 @@
 Credential broker platformy MCP (strumień ws-06): jedyne miejsce, w którym leżą poświadczenia użytkowników
 do systemów docelowych, per (`sub`, system). Gateway pobiera z niego poświadczenie przy wywołaniu
 narzędzia (`resolve`), portal BFF zapisuje je w imieniu zalogowanego użytkownika. Kontrakt: C4 z
-`mcp-contracts` 2.2.3 (`openapi/credential-broker.v1.yaml`), audyt C8, zdarzenie C4.3.
+`mcp-contracts` 2.2.5 (`openapi/credential-broker.v1.yaml`), audyt C8, zdarzenie C4.3.
 
 Stan: kamień M2 (PAT oraz "Połącz przez OAuth" dla GitLaba). Co działa, czego jeszcze nie ma i odstępstwa od briefu: [STATUS.md](STATUS.md).
 
@@ -188,7 +188,7 @@ docker build -t mcp-credential-broker:dev .
 
 | Test | Co sprawdza |
 | --- | --- |
-| `InternalJwtVectorTest` | wszystkie wektory C2 z `mcp-contracts` 2.2.3 (wynik i powód, `allowTestKeys` z wektora), klucz testowy pod produkcyjnym `kid` (SPKI), replay |
+| `InternalJwtVectorTest` | wszystkie wektory C2 z `mcp-contracts` 2.2.5 (wynik i powód, `allowTestKeys` z wektora), klucz testowy pod produkcyjnym `kid` (SPKI), replay |
 | `ReturnPathTest` | walidator `returnPath` (CC-032) na wektorach `return-paths/`, używany przez `oauth/start` |
 | `OAuthIntegrationTest` | przepływ GitLaba na stubie WireMock: PKCE, state jednorazowy i związany z użytkownikiem, cudzy `flowId`/`state` (zły `state` nie spala przepływu), ponowne użycie, konto o innym loginie (połączone, widoczne jako `backendUser`), błąd i timeout dostawcy, wygasły przepływ, zapis w OpenBao, odświeżanie (rotacja, równoległe, odwołany grant, awaria dostawcy, `DELETE` w trakcie odświeżania, utrata blokady, odwołanie zastąpionego grantu), limit rozmiaru i czasu odpowiedzi dostawcy, zadanie w tle, `DELETE` z odwołaniem, PAT GitLaba; brak tokenów w odpowiedziach poza `resolve` i w logach |
 | `OperationsContractTest` | tabela operacji filtra == metody, ścieżki i `x-allowed-client-cn` z OpenAPI C4 |

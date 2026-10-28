@@ -167,7 +167,7 @@ public class CredentialService {
             });
             Optional<Connection> previous = replaced.previous();
             Stored stored = new Stored(replaced.connection().status(now, expiringThreshold), identity.username(), expires);
-            entry.ok(previous.isPresent() ? "secret_replaced" : "secret_stored");
+            entry.backendUser(identity.username()).ok(previous.isPresent() ? "secret_replaced" : "secret_stored");
             return stored;
         } catch (SecretRejectedException e) {
             entry.denied(e.reason(), null);
@@ -219,7 +219,7 @@ public class CredentialService {
                     entry.ok("nothing_to_disconnect");
                     return false;
                 }
-                entry.credentialType(existing.get().type().wire());
+                entry.credentialType(existing.get().type().wire()).backendUser(existing.get().backendUser());
                 oauth.revokeAtProvider(existing.get());
                 secrets.delete(existing.get().secretKey());
                 connections.delete(caller.sub(), systemId);

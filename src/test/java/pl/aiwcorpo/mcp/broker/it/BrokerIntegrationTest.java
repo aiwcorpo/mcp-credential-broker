@@ -133,6 +133,42 @@ class BrokerIntegrationTest {
     }
 
     @Test
+    void connectionChangeNamesTheAccountThatWasConnected(CapturedOutput output) {
+        String alice = newSub();
+        String rid = TestTokens.newRequestId();
+        BrokerClient.Response put = bff.send("PUT", "/v1/connections/jira/secret", tokens.bffUser(alice, "alice"), rid,
+                "{\"secret\":\"mallory-pat\"}");
+        assertThat(put.status()).isEqualTo(200);
+        assertThat(auditEvents(output, rid)).singleElement().satisfies(e -> {
+            assertThat(e.path("event").stringValue()).isEqualTo("connection_change");
+            assertThat(e.path("sub").stringValue()).isEqualTo(alice);
+            assertThat(e.path("username").stringValue()).isEqualTo("alice");
+            assertThat(e.path("backendUser").stringValue()).isEqualTo("mallory");
+            assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", e)).isEmpty();
+        });
+
+        String rejected = TestTokens.newRequestId();
+        assertThat(bff.send("PUT", "/v1/connections/jira/secret", tokens.bffUser(alice, "alice"), rejected,
+                "{\"secret\":\"invalid-pat\"}").status()).isEqualTo(422);
+        assertThat(auditEvents(output, rejected)).singleElement()
+                .satisfies(e -> assertThat(e.has("backendUser")).as("no account was identified").isFalse());
+
+        String disconnect = TestTokens.newRequestId();
+        assertThat(bff.send("DELETE", "/v1/connections/jira", tokens.bffUser(alice, "alice"), disconnect, null).status())
+                .isEqualTo(204);
+        assertThat(auditEvents(output, disconnect)).singleElement().satisfies(e -> {
+            assertThat(e.path("reason").stringValue()).isEqualTo("disconnected");
+            assertThat(e.path("backendUser").stringValue()).isEqualTo("mallory");
+        });
+
+        String nothing = TestTokens.newRequestId();
+        assertThat(bff.send("DELETE", "/v1/connections/jira", tokens.bffUser(alice, "alice"), nothing, null).status())
+                .isEqualTo(204);
+        assertThat(auditEvents(output, nothing)).singleElement()
+                .satisfies(e -> assertThat(e.has("backendUser")).isFalse());
+    }
+
+    @Test
     void portalRequestIdIsUsedForAuditAndEchoed(CapturedOutput output) {
         String rid = TestTokens.newRequestId();
         BrokerClient.Response put = bff.send("PUT", "/v1/connections/jira/secret", tokens.bffUser(newSub(), "alice"), rid,

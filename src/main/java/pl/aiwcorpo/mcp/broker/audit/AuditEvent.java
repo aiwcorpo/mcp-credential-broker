@@ -9,7 +9,7 @@ import com.fasterxml.jackson.annotation.JsonPropertyOrder;
  * into {@code server} as mcp-&lt;system&gt; (CC-009).
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
-@JsonPropertyOrder({"ts", "requestId", "component", "componentId", "event", "sub", "username", "client",
+@JsonPropertyOrder({"ts", "requestId", "component", "componentId", "event", "sub", "username", "backendUser", "client",
         "virtualServer", "server", "tool", "policyRevision", "credentialType", "decision", "reason", "outcome",
         "errorCode", "latencyMs"})
 public record AuditEvent(
@@ -20,6 +20,7 @@ public record AuditEvent(
         String event,
         String sub,
         String username,
+        String backendUser,
         String client,
         String virtualServer,
         String server,
