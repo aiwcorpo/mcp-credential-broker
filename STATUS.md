@@ -14,6 +14,77 @@ Kamienie pośrednie:
 2. **K2**: testy integracyjne po HTTP (rejestracja, równoległość, przechowywanie, macierz wywołujących), README.
 3. **K3**: przegląd własny i poprawki, STATUS, opis potrzeb wobec ws-01, obraz.
 
+| Wymaganie M3 | Stan |
+| --- | --- |
+| mcp-contracts 3.0.1 | `pom.xml`; `identity_mismatch` nie występuje w kodzie ani testach (od M2 nie był zwracany; opis w README zostaje jako informacja); `ReturnPath` wg CC-099 (zarezerwowane prefiksy `/api`, `/s`, `/v`, `/.well-known`, segmenty `.`/`..`, bez `;`), 33 wektory `return-paths/` zielone |
+| rejestracja (start, potwierdzenie, status, usunięcie) | tylko CN `mcp-portal-bff`; ziarno 20 bajtów `SecureRandom`, w `201` raz (`Cache-Control: no-store`, `Pragma: no-cache`), `otpauthUri` w stałej formie; rejestracja w toku zaszyfrowana, TTL 10 min, 3 próby, ponowny start zastępuje, `409 already_registered`, `429` po 10 startach na godzinę (wartość własna, kontrakt mówi tylko "limit brokera"); zadanie w tle kasuje ziarna niepotwierdzonych rejestracji |
+| weryfikacja kodu | tylko CN `mcp-gateway`; RFC 6238, okno t-1..t+1, `lastAcceptedStep`, `replayed`, `burned`; zły format = 400 bez skutku |
+| limity 5/15 min i 20/24 h | blokada 15 min jako własność użytkownika (przeżywa usunięcie, reset i nową rejestrację), `disabled` do ponownej rejestracji; aktywacja zeruje liczniki i `disabled` |
+| atomowość na `sub` | wiersz `authenticator` z `select ... for update`; ziarno czytane przed blokadą i dopasowywane przez `registration_id`; testy: 50 równoległych błędnych kodów = 5 `invalid` + 45 `locked` (po HTTP, mTLS), dobowy limit dokładnie raz (jedno zdarzenie `authenticator_disabled`), ten sam kod w 20 żądaniach = jeden `ok` |
+| `invalidate-codes` | tylko CN `mcp-gateway`, idempotentne, `burnedThrough`; `burned` nie liczy się do limitów (10 spalonych kodów pod rząd, brak blokady i brak wierszy błędów) |
+| reset | `POST /v1/admin/users/{sub}/authenticator/reset`, CN `mcp-offboarding`, bez tokenu (token dołączony jest ignorowany); blokada zostaje |
+| przechowywanie | Transit bez envelope, KV v2 `secret/data/mcp/authenticators/<sha256(sub)>` (aktywne) i `.../pending`, rekord z `sub` i rodzajem sprawdzany przy odczycie; baza tylko metadane; test: szyfrogram Alice pod ścieżką Mallory -> 503; ziarna nie ma w bazie, odpowiedziach poza `201` rejestracji ani w logach |
+| audyt | `event: authenticator`, powody z kontraktu, każda linia walidowana schematem C8 w testach |
+| wektory `totp/` | 44 scenariusze + RFC 6238 + `otpauth-uri` zielone (`TotpVectorTest`, 47 przypadków z testem sprzątania) |
+
+### Dowody (K1-K2)
+
+```
+./mvnw -B verify
+Tests run: 314, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS, mcp-contracts 3.0.1; przed M3 było 199)
+  TotpVectorTest 47, AuthenticatorIntegrationTest 13, InternalJwtVectorTest 61, AuditEventVectorTest 83, ...
+```
+
+### Odstępstwa i decyzje M3
+
+- **Zakres:** brief przewiduje w M3 także `token-exchange` (OpenSearch) i `service-account`; zadanie tego etapu objęło tylko
+  Authenticatora, więc oba typy zostają niezrobione (README i `SystemRegistry` bez zmian).
+- **Wektory w jarze 3.0.1:** `mcp-contracts-3.0.1-test-vectors.jar` w `~/.m2` zawiera 49 plików usuniętych z 3.0.1 w
+  źródłach i w tarballu npm (m.in. `whoami-identity/` w całości, stare `confirmation-binding/invalid-*`,
+  `audit-events/gateway-authentication-denied-replay-store-unavailable.json`, który sprzecznie z schematem 3.0.1 jest "valid",
+  `totp/burn-held-code-is-replayed-and-not-counted.json`). Jar został zbudowany z niewyczyszczonego katalogu `target`.
+  `Contracts.vectors` pomija trzy pliki, które wpadają w katalogi czytane przez ten komponent (lista z komentarzem);
+  poprawka u źródła: wydać jar z czystego builda (3.0.2). Dotyczy wszystkich strumieni czytających te katalogi.
+- **Zegar OpenBao:** `OpenBaoClient` dostaje `Clock.systemUTC()`, nie beana `Clock` aplikacji: dzierżawa tokenu biegnie
+  w czasie rzeczywistym OpenBao, a `Clock` jest szwem testów biznesowych (wektory ustawiają go na daty z października).
+- **Dwa wiersze na użytkownika w OpenBao**, a nie jeden: aktywne ziarno pod ścieżką z kontraktu, rejestracja w toku pod
+  `.../pending`, żeby usunięcie jednego nie wymagało odczytu i zapisu drugiego (kontrakt wymaga ścieżki dla "aktywnego i w toku").
+- **`authenticator_removed` także z brokera:** wektor kontraktu ma je z komponentu `portal`; broker zapisuje własną linię,
+  bo tylko on wie, że usunięcie się udało.
+- **Wiersz `authenticator` bez rejestracji** (stan `none`) istnieje, dopóki jest blokada lub wiersze błędów; nie ma
+  jeszcze sprzątania takich wierszy (M4, razem z `purge`, który usunie wiersz razem z blokadą użytkownika).
+
+### Czego broker potrzebuje od innych (M3)
+
+**ws-01 (OpenBao w `mcp-platform-dev`, `openbao/init.sh`):**
+
+```sh
+bao read transit/keys/mcp-authenticators >/dev/null 2>&1 \
+  || bao write -f transit/keys/mcp-authenticators type=aes256-gcm96
+```
+
+i w polityce `mcp-credential-broker` (obok dotychczasowych ścieżek):
+
+```hcl
+path "secret/data/mcp/authenticators/*"     { capabilities = ["create", "read", "update", "delete"] }
+path "secret/metadata/mcp/authenticators/*" { capabilities = ["read", "list", "delete"] }
+path "transit/encrypt/mcp-authenticators"   { capabilities = ["update"] }
+path "transit/decrypt/mcp-authenticators"   { capabilities = ["update"] }
+```
+
+Do czasu zmiany start brokera działa, ale `POST /v1/authenticator/enrollment` i `verify` dają `503` (brak klucza i ścieżek).
+Testy własne używają OpenBao w Testcontainers z tym samym kształtem (`TestEnvironment.configureOpenBao`). Klucz mógłby
+też wykorzystać istniejący `mcp-credential-broker` (`BROKER_AUTHENTICATOR_TRANSITKEY`), ale osobny klucz pozwala go
+rotować i odwołać niezależnie od poświadczeń; rekomenduję osobny.
+
+**ws-05 (gateway):** wywołania `GET /v1/authenticator`, `verify`, `invalidate-codes` muszą nieść wewnętrzny JWT, wariant
+użytkownika, z `tool` (bez `tool` broker odpowiada `401`, wariant serwisowy też `401`) i `X-Request-Id` równym `rid`. Każdy
+status inny niż 200 (verify) lub 204 (invalidate) to odmowa po stronie gateway'a. `locked` niesie `retryAfterSeconds` >= 1.
+
+**ws-07 (BFF):** tokeny po token exchange jak dla połączeń; nazwa użytkownika w `otpauthUri` pochodzi z claimu
+`preferred_username` tokenu. Broker nie sprawdza świeżości MFA (kontrakt), więc step-up przed `POST enrollment` i
+`DELETE` jest wyłącznie po stronie BFF. Reset przez helpdesk wymaga klienta z certyfikatem CN `mcp-offboarding`.
+
 ## M2 (2026-10-28)
 
 Kamienie pośrednie (wszystkie w jednym commicie kodu, bo `CredentialService` zależy od `OAuthService`; testy

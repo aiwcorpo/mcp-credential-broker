@@ -3,9 +3,9 @@
 Credential broker platformy MCP (strumień ws-06): jedyne miejsce, w którym leżą poświadczenia użytkowników
 do systemów docelowych, per (`sub`, system). Gateway pobiera z niego poświadczenie przy wywołaniu
 narzędzia (`resolve`), portal BFF zapisuje je w imieniu zalogowanego użytkownika. Kontrakt: C4 z
-`mcp-contracts` 2.2.5 (`openapi/credential-broker.v1.yaml`), audyt C8, zdarzenie C4.3.
+`mcp-contracts` 3.0.1 (`openapi/credential-broker.v1.yaml`), audyt C8, zdarzenie C4.3.
 
-Stan: kamień M2 (PAT oraz "Połącz przez OAuth" dla GitLaba). Co działa, czego jeszcze nie ma i odstępstwa od briefu: [STATUS.md](STATUS.md).
+Stan: kamień M3 w zakresie Authenticatora TOTP (poza tym PAT oraz "Połącz przez OAuth" dla GitLaba z M1-M2). Co działa, czego jeszcze nie ma i odstępstwa od briefu: [STATUS.md](STATUS.md).
 
 ## API w tej wersji
 
@@ -20,9 +20,16 @@ Wszystko po HTTPS z wymaganym certyfikatem klienta z wewnętrznego CA (port 8443
 | `DELETE /v1/connections/{system}` | `mcp-portal-bff` | jak wyżej | `204`; usuwa sekret (wszystkie wersje KV) i metadane, publikuje `credential.invalidated`; idempotentne |
 | `POST /v1/connections/{system}/oauth/start` | `mcp-portal-bff` | jak wyżej | `200 {authorizeUrl, flowId}`; `400` dla złego `returnPath` albo systemu bez `user-oauth` |
 | `POST /v1/connections/{system}/oauth/complete` | `mcp-portal-bff` | jak wyżej | `200 {status, backendUser}`, `422 flow_invalid`, `503` przy awarii dostawcy |
+| `GET /v1/authenticator` | `mcp-portal-bff`, `mcp-gateway` | token użytkownika; od gateway'a wewnętrzny JWT z `tool` | `200 {state, registeredAt, lastUsedAt, lockedUntil, disabledAt, disabledReason}`, bez ziarna |
+| `DELETE /v1/authenticator` | `mcp-portal-bff` | token użytkownika | `204`, idempotentne; usuwa ziarno (aktywne i w toku), nie zdejmuje blokady |
+| `POST /v1/authenticator/enrollment` | `mcp-portal-bff` | token użytkownika | `201 {enrollmentId, otpauthUri, secret, expiresAt}` z `no-store` (jedyny wyjątek poza `resolve`), `409 already_registered`, `429 rate_limited` |
+| `POST /v1/authenticator/enrollment/confirm` | `mcp-portal-bff` | jak wyżej | `200` status `active`, `422 invalid_code` albo `enrollment_invalid` |
+| `POST /v1/authenticator/verify` | `mcp-gateway` | wewnętrzny JWT z `tool` | `200 {result[, retryAfterSeconds]}`: `ok`, `invalid`, `replayed`, `burned`, `locked`, `disabled`, `not_registered`; `400` dla kodu spoza `^[0-9]{6}$` (nie liczy się nigdzie) |
+| `POST /v1/authenticator/invalidate-codes` | `mcp-gateway` | wewnętrzny JWT z `tool` | `204`, idempotentne |
+| `POST /v1/admin/users/{sub}/authenticator/reset` | `mcp-offboarding` | brak (autoryzacja certyfikatem) | `204`, idempotentne; `sub` z ścieżki to jedyny taki przypadek w C4 |
 | `GET /actuator/health` | dowolny z wewnętrznego CA | brak | `UP`/`DOWN` |
 
-Pozostała operacja C4 (`purge`) odpowiada
+Pozostała operacja C4 (`purge`, która w M4 usunie też rejestrację Authenticatora) odpowiada
 `404 not_found_or_denied` do czasu M4, tak samo jak każda nieznana ścieżka i metoda. C4 nie ma 500:
 nieoczekiwany błąd i niedostępna zależność (OpenBao, PostgreSQL, Redis, JWKS gateway'a lub IdP) dają
 `503 upstream_unavailable`.
@@ -118,6 +125,46 @@ Konfiguracja GitLaba (opcjonalna, jak Confluence; zmienne Spring relaxed binding
 `scripts/run-dev-host.sh` ustawia powyższe, gdy podano `MCP_GITLAB_URL` (opcjonalnie `MCP_GITLAB_CLIENT_ID`,
 `MCP_GITLAB_AUTHORIZE_URL`, `MCP_GITLAB_SCOPES`, `MCP_GITLAB_CLIENT_SECRET`).
 
+## Authenticator TOTP (M3)
+
+Potwierdzenie akcji `DESTRUCTIVE` to kod z aplikacji Authenticator (CC-091), który weryfikuje broker. BFF zakłada i
+usuwa rejestrację po świeżym MFA w IdP; broker ufa BFF co do tej świeżości (CN `mcp-portal-bff`, CC-092). Weryfikację,
+spalanie kodów i odczyt stanu dla gateway'a wolno wołać tylko z CN `mcp-gateway` i wewnętrznym JWT z `tool`.
+
+- **Algorytm:** RFC 6238, HMAC-SHA-1, 6 cyfr, krok 30 s, okno t-1..t+1 zegara brokera, porównanie kodu w stałym czasie
+  po wszystkich krokach okna. Krok przyjmowany raz: `lastAcceptedStep` rośnie jednym warunkowym zapisem pod blokadą
+  wiersza, kod kroku nie nowszego to `replayed`.
+- **Limity** (domyślne, `broker.authenticator.*`): 5 błędnych (`invalid` lub `replayed`) w 15 min -> blokada 15 min;
+  20 błędnych w 24 h (okno kroczące, sukces licznika nie zeruje) -> `state: disabled` do ponownej rejestracji.
+  `locked`, `disabled`, `burned` i zły format nie są błędnymi kodami. Blokada należy do użytkownika: usunięcie, reset i
+  nowa rejestracja jej nie zdejmują, tylko upływ czasu. Aktywacja nowej rejestracji zeruje oba liczniki i stan `disabled`.
+- **Atomowość:** każda zmiana liczników, blokady i rejestracji jednego `sub` to jedna transakcja z `select ... for update`
+  na wierszu `authenticator`. Ziarno jest czytane z OpenBao przed blokadą i porównywane z rejestracją po jej wzięciu
+  (`registration_id`), więc blokada nie czeka na Transit, a wymiana rejestracji w międzyczasie powoduje ponowny odczyt.
+  50 równoległych błędnych kodów po HTTP daje dokładnie 5 sprawdzeń (`invalid`) i resztę `locked`; ten sam poprawny kod
+  w 20 równoległych żądaniach przyjmuje jedno żądanie.
+- **`invalidate-codes` (CC-128):** `burnedThrough = max(burnedThrough, krok zegara + 1)`, `lastAcceptedStep = max(..., burnedThrough)`.
+  Kod spalonego kroku daje `burned`, nie jest błędem i nie rusza limitów. Użytkownik bez aktywnej rejestracji: `204`.
+- **Rejestracja:** ziarno 20 bajtów z `SecureRandom`, w odpowiedzi `201` jako Base32 (`secret`) i w `otpauthUri` w stałej
+  formie z kontraktu. Rejestracja w toku żyje 10 min, trzy błędne kody ją niszczą (`enrollment_invalid`), ponowny start ją
+  zastępuje, najwyżej 10 startów na godzinę (`429`). Zadanie w tle (co minutę) kasuje ziarna rejestracji, której nikt nie
+  potwierdził. Błędne kody rejestracji nie liczą się do blokady weryfikacji. Ze stanu `disabled` start jest dozwolony.
+- **Przechowywanie ziarna:** wyłącznie OpenBao Transit bez envelope (klucz `mcp-authenticators`, nie opuszcza OpenBao),
+  szyfrogram w KV v2 pod `secret/data/mcp/authenticators/<sha256(sub)>` (aktywne) i `.../<sha256(sub)>/pending` (w toku).
+  Odszyfrowany rekord ma `sub` i rodzaj; niezgodność (szyfrogram przeniesiony pod cudzą ścieżkę albo z `pending` na
+  aktywne) daje 503. PostgreSQL trzyma metadane (tabele `authenticator`, `authenticator_failure`): stan, czasy, krok,
+  liczniki, blokadę. Ziarna nie ma w Redisie, bazie, logach, audycie ani w odpowiedziach poza `201` rejestracji (sprawdza
+  to `@AfterAll` testu integracyjnego na wszystkich zarejestrowanych odpowiedziach). Niedostępny OpenBao -> 503, nigdy
+  `ok`.
+- **Audyt:** `event: authenticator` z powodami z kontraktu: `authenticator_enrollment_started`, `authenticator_registered`,
+  `authenticator_enrollment_failed`, `authenticator_removed`, `authenticator_reset_by_admin`, `totp_verified`, `totp_invalid`,
+  `totp_replayed`, `totp_burned`, `totp_locked` (z `errorCode: rate_limited`), `totp_disabled`, `totp_not_registered`,
+  `totp_steps_burned` i `authenticator_disabled` (osobna linia przy błędzie, który wyłączył Authenticator). Wywołania
+  gateway'a niosą `client`, `tool`, `virtualServer`, `policyRevision` z JWT. Kodu, ziarna ani `otpauthUri` nie ma w zdarzeniu.
+- **OpenBao:** wymaga klucza Transit `mcp-authenticators` i polityki na `secret/data/mcp/authenticators/*`,
+  `secret/metadata/mcp/authenticators/*` oraz `transit/encrypt|decrypt/mcp-authenticators` dla AppRole brokera
+  (szczegóły w [STATUS.md](STATUS.md), sekcja "Czego broker potrzebuje od innych").
+
 ## Przechowywanie
 
 - OpenBao (D6): wartość jest szyfrowana Transit (`transit/encrypt/mcp-credential-broker`), a szyfrogram
@@ -177,6 +224,11 @@ Zmienne środowiska (nazwy z `mcp-platform-dev`, profil `full`). Pełna lista w
 | `MCP_PORTAL_URL` | baza `connectUrl` w `409 credential_required`, wymagany |
 | `MCP_ALLOW_PLAIN_HTTP` | domyślnie `false`; `true` dopuszcza `http` do OpenBao, JWKS i whoami (tylko dev) |
 
+Limity Authenticatora (`broker.authenticator.*`, w środowisku np. `BROKER_AUTHENTICATOR_MAXFAILURES`): `transit-key`
+(`mcp-authenticators`), `path-prefix` (`mcp/authenticators`), `window-steps` (1), `max-failures` (5), `failure-window` i
+`lock-duration` (15 min), `daily-failure-limit` (20), `daily-window` (24 h), `enrollment-ttl` (10 min),
+`enrollment-max-wrong-codes` (3), `enrollment-starts-per-hour` (10), `sweep-interval` (1 min).
+
 Systemy i typy poświadczeń są w `broker.systems` (YAML). Znane są `user-secret` (Jira, Confluence, GitLab) i
 `user-oauth` (GitLab); konfiguracja typu, którego ta wersja nie obsługuje, zatrzymuje start.
 
@@ -192,16 +244,18 @@ docker build -t mcp-credential-broker:dev .
 
 | Test | Co sprawdza |
 | --- | --- |
-| `InternalJwtVectorTest` | wszystkie wektory C2 z `mcp-contracts` 2.2.5 (wynik i powód, `allowTestKeys` z wektora), klucz testowy pod produkcyjnym `kid` (SPKI), replay |
+| `InternalJwtVectorTest` | wszystkie wektory C2 z `mcp-contracts` 3.0.1 (także wywołania `authenticator` z `tool`) (wynik i powód, `allowTestKeys` z wektora), klucz testowy pod produkcyjnym `kid` (SPKI), replay |
 | `ReturnPathTest` | walidator `returnPath` (CC-032) na wektorach `return-paths/`, używany przez `oauth/start` |
 | `OAuthIntegrationTest` | przepływ GitLaba na stubie WireMock: PKCE, state jednorazowy i związany z użytkownikiem, cudzy `flowId`/`state` (zły `state` nie spala przepływu), ponowne użycie, konto o innym loginie (połączone, widoczne jako `backendUser`), błąd i timeout dostawcy, wygasły przepływ, zapis w OpenBao, odświeżanie (rotacja, równoległe, odwołany grant, awaria dostawcy, `DELETE` w trakcie odświeżania, utrata blokady, odwołanie zastąpionego grantu), limit rozmiaru i czasu odpowiedzi dostawcy, zadanie w tle, `DELETE` z odwołaniem, PAT GitLaba; brak tokenów w odpowiedziach poza `resolve` i w logach |
+| `TotpVectorTest` | wszystkie scenariusze `test-vectors/totp/` (RFC 6238, okno, jednorazowość kroku, blokada 5/15, limit dzienny, rejestracja, spalanie) na prawdziwym serwisie, PostgreSQL i OpenBao Transit z zegarem ustawianym na `at` kroku; przykłady `rfc6238-sha1` i `otpauth-uri`; sprzątanie nieudanych rejestracji |
+| `AuthenticatorIntegrationTest` | rejestracja po HTTP (nagłówki, schematy, ziarno raz), przechowywanie (szyfrogram w KV, `sub` w rekordzie, baza bez ziarna), 50 równoległych błędnych kodów = 5 sprawdzeń, dobowy limit raz i jedno zdarzenie `authenticator_disabled`, ten sam kod równolegle = jeden `ok`, spalanie, usunięcie i reset (blokada zostaje), ziarno pod cudzą ścieżką = 503, macierz CN i tokenów, `sub` zawsze z tokenu |
 | `OperationsContractTest` | tabela operacji filtra == metody, ścieżki i `x-allowed-client-cn` z OpenAPI C4 |
 | `BrokerIntegrationTest` | mTLS, PostgreSQL, Redis z ACL jak w dev, OpenBao (AppRole, KV v2, Transit), fałszywa Jira; odpowiedzi walidowane schematami OpenAPI, audyt schematem C8, zdarzenie schematem C4.3; brak sekretu w odpowiedziach poza `resolve` i w logach |
 | `BrokerIntegrationTest` (awarie) | Redis i PostgreSQL wstrzymane (`docker pause`) -> 503 z audytem; szyfrogram przeniesiony pod cudzą ścieżkę -> 503; ciało chunked 200 KB -> 400 bez whoami; sondy ścieżek -> 404 |
 | `OpenBaoClientTest` | `renew-self`, ponowne logowanie przy `token_max_ttl`, praca na ważnym tokenie po nieudanym logowaniu |
 | `KeySourceTest` | JWKS gateway'a przeterminowany -> 503, niedostępny JWKS IdP -> 503 zamiast 401 |
 | `CredentialServiceTest`, `ConnectionTest`, `AuditLogTest`, `TransportSecurityTest` | fail-closed, wersje sekretów, `email_verified`, porównanie ASCII, `subjectToken`, TTL, `lastUsedAt`, escapowanie audytu, `backendUser` w audycie (poprawny, odrzucany, surogaty, błąd zapisu po whoami), wymóg https |
-| `AuditEventVectorTest` | wszystkie wektory `audit-events/` z `mcp-contracts` 2.2.5 względem schematu C8 i zgodność `AuditLog.validBackendUser` z wektorami `backendUser` |
+| `AuditEventVectorTest` | wszystkie wektory `audit-events/` z `mcp-contracts` 3.0.1 względem schematu C8 i zgodność `AuditLog.validBackendUser` z wektorami `backendUser` |
 
 ## Uruchomienie lokalne w `mcp-platform-dev` (ws-01)
 
@@ -270,6 +324,7 @@ pl.aiwcorpo.mcp.broker
 ├── api/         kontrolery C4, DTO, mapowanie błędów
 ├── credential/  CredentialService (resolve, PUT secret), OAuthService (start, complete, odświeżanie), IdentityRule (C4.1), metadane połączeń (JDBC)
 ├── oauth/       przepływy w Redisie (jednorazowe), blokada odświeżania
+├── authenticator/ TOTP (RFC 6238), serwis rejestracji i weryfikacji, magazyn ziarna w OpenBao Transit, metadane (JDBC)
 ├── secret/      SecretStore + OpenBao (AppRole, KV v2, Transit), SecretValue
 ├── system/      SystemRegistry, SystemAdapter (whoami), OAuthProvider, AtlassianDcAdapter, GitLabAdapter
 ├── audit/       zdarzenia C8
