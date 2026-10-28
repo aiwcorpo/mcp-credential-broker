@@ -227,15 +227,42 @@ kontener trzeba usunąć (ostatnia komenda).
 
 ### Na hoście
 
+Wymaga działającego stosu `mcp-platform-dev` (Keycloak, Redis, OpenBao, mocki), JDK 25 i Dockera.
+
 ```bash
 ./mvnw -B package -DskipTests
-JAVA_HOME=... scripts/run-dev-host.sh     # https://localhost:18100, sekrety z ../mcp-platform-dev/.secrets/dev.env
+export JAVA_HOME=/opt/homebrew/Cellar/openjdk@25/25.0.4.1/libexec/openjdk.jdk/Contents/Home
+export MCP_PLATFORM_DEV=/ścieżka/do/mcp-platform-dev     # domyślnie ../mcp-platform-dev obok tego repo
+scripts/run-dev-host.sh                                  # https://localhost:18710
 ```
 
-Skrypt bierze sekrety i certyfikaty z `mcp-platform-dev` przy starcie (nic nie kopiuje do tego repo). Bez
-`MCP_GATEWAY_JWKS_URI` używa testowego JWKS z `../mcp-contracts/test-vectors/keys/test-gateway-jwks.json` i
-ustawia `MCP_ALLOW_TEST_KEYS=true`, żeby `resolve` dało się wywołać tokenem podpisanym kluczem testowym A
-(`test-gateway-jwt-a`). To tylko do pracy lokalnej.
+Skrypt:
+
+- Startuje własny PostgreSQL w kontenerze `mcp-broker-host-pg-18711` (port 18711, hasło losowe na ten start) i usuwa go
+  przy wyjściu. Z bazą stosu (`localhost:15432/broker`) się nie łączy: migracje brokera (V3) nie mogą trafić do bazy,
+  którą współdzieli obraz brokera ze stosu. Własną bazę podaje się przez `MCP_DB_URL`, `MCP_DB_USER`, `MCP_DB_PASSWORD`
+  (wtedy kontener nie powstaje).
+- Słucha na `MCP_BROKER_PORT` (domyślnie 18710; zakres brokera w fali M2 to 18710-18719, port 18100 zajmuje broker ze
+  stosu). Zajęty port kończy start z komunikatem.
+- Sekrety i certyfikaty bierze z `$MCP_PLATFORM_DEV/.secrets/dev.env` i `certs/` przy starcie, nic nie kopiuje do tego
+  repo. Brak katalogu albo pliku daje czytelny błąd z nazwą zmiennej.
+- Redis i OpenBao są wspólne ze stosem (klucze `broker:*`, `jti:mcp-credential-broker:*`, ścieżki
+  `secret/mcp/connections/...` z unikalną wersją), więc nie kolidują z brokerem ze stosu.
+- Bez `MCP_GATEWAY_JWKS_URI` używa testowego JWKS z `../mcp-contracts/test-vectors/keys/test-gateway-jwks.json` i
+  ustawia `MCP_ALLOW_TEST_KEYS=true`, żeby `resolve` dało się wywołać tokenem podpisanym kluczem testowym A
+  (`test-gateway-jwt-a`). To tylko do pracy lokalnej.
+- GitLab (opcjonalnie): `MCP_GITLAB_URL=http://localhost:18741` (mock ze stosu). `client_secret` broker czyta z OpenBao
+  (`secret/mcp/oauth-clients/gitlab`); `MCP_GITLAB_CLIENT_SECRET` to zapas wyłącznie dla developmentu.
+
+Szybkie sprawdzenie (z drugiego terminala; broker wymaga mTLS, więc zdrowie sprawdza się certyfikatem klienta z CA stosu):
+
+```bash
+d=$MCP_PLATFORM_DEV/certs
+curl -s --cacert $d/ca/ca.crt --cert $d/mcp-gateway/tls.crt --key $d/mcp-gateway/tls.key \
+  https://localhost:18710/actuator/health                                   # {"status":"UP"}
+curl -s -o /dev/null -w '%{http_code}\n' --cacert $d/ca/ca.crt -X POST \
+  https://localhost:18710/v1/credentials/resolve                            # bez certyfikatu: błąd TLS, kod 000
+```
 
 ## Struktura
 
