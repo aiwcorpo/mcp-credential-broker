@@ -14,7 +14,7 @@ Kamienie pośrednie:
 2. **K2**: testy integracyjne po HTTP (rejestracja, równoległość, przechowywanie, macierz wywołujących), README.
 3. **K3**: przegląd własny, STATUS, opis potrzeb wobec innych strumieni.
 
-Obrazy: `mcp-credential-broker:m3-543403c` (K1), `m3-0252757` (K2), `m3-<sha K3>` (K3, ostatni commit). Compose nie ruszany.
+Obrazy: `mcp-credential-broker:m3-543403c` (K1), `m3-0252757` (K2), `m3-6203b4b` (K3; po nim tylko ta poprawka zdania). Compose nie ruszany.
 
 | Wymaganie M3 | Stan |
 | --- | --- |
