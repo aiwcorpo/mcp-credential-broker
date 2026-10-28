@@ -1,8 +1,151 @@
 # Status ws-06 (mcp-credential-broker)
 
-Kamień: **M1** (`PUT secret` + `resolve` dla `user-secret` Jira, OpenBao KV v2 + Transit, audyt C8, mTLS + JWT
-z `x-allowed-client-cn`). Kontrakty: `mcp-contracts` `v2.1.1` (od 2026-10-27, wcześniej 2.0.0 i 1.1.0). M2-M4 nie są
-zaczęte.
+Kamień: **M2** ("Połącz konto i portal", strona brokera): PAT z regułą tożsamości C4.1, "Połącz przez OAuth" dla
+GitLaba (PKCE, jednorazowy `state` związany z użytkownikiem, tokeny w OpenBao, odświeżanie, odwołanie grantu).
+Kontrakty: `mcp-contracts` `v2.2.1` (od 2026-10-28; wcześniej 2.1.1, 2.0.0, 1.1.0). M3-M4 nie są zaczęte.
+Poniżej sekcja M2, dalej M1 bez zmian.
+
+## M2 (2026-10-28)
+
+Kamienie pośrednie (wszystkie w jednym commicie kodu, bo `CredentialService` zależy od `OAuthService`; testy
+zielone dopiero po całości):
+
+1. kontrakty 2.2.1 + reguła tożsamości (`IdentityRule`, 12 wektorów) + `expiresAt` bez walidacji + whoami GitLaba dla PAT;
+2. `oauth/start` i `oauth/complete`: przepływy w Redisie, wymiana kodu, tożsamość, zapis w OpenBao;
+3. odświeżanie (przy `resolve` i w tle), blokada, odwołany grant -> `revoked`, odwołanie u dostawcy przy `DELETE`;
+4. dane dla katalogu (`listSystems`/`listConnections` dla `user-oauth`), README, test na żywym stosie (host).
+
+| Wymaganie M2 | Stan |
+| --- | --- |
+| mcp-contracts 2.2.1 | `pom.xml`; wszystkie wektory C2 (55) i `whoami-identity` (12) zielone; harness C2 bez zmian |
+| `startOAuth` / `completeOAuth` | tylko CN `mcp-portal-bff` + token użytkownika; `sub` z tokenu; PKCE S256, `state` 32 bajty, `flowId` w Redisie 10 min, GETDEL; `returnPath` walidowany (CC-032), nie przechowywany |
+| `state` jednorazowy i związany z użytkownikiem | cudzy `sub` -> `422 flow_invalid` bez zużycia przepływu właściciela; zły `state`, ponowne użycie, wygasły przepływ, wcześniejszy `start` tego samego użytkownika -> `flow_invalid`. Związanie z **sesją** przeglądarki jest po stronie BFF (broker nie widzi sesji): patrz "Co musi wiedzieć ws-07" |
+| wymiana kodu, tożsamość | whoami GitLaba (`/api/v4/user`, `username`) + `IdentityRule`; inne konto -> `identity_mismatch`, nic nie zapisane, tokeny odwołane u dostawcy; `invalid_grant` -> `flow_invalid`; 5xx/timeout/`invalid_client` -> `503` |
+| tokeny w OpenBao | access + refresh razem, Transit + KV v2 jak PAT, nowa wersja przy każdym odnowieniu, stara usuwana po przełączeniu wiersza |
+| odświeżanie | przy `resolve` (margines 2 min > `cacheTtlSeconds`) i zadaniem w tle (okno 5 min, co minutę); blokada Redis `SET NX EX`; rotacja refresh tokenu; `invalid_grant` -> `revoked` + `credential.invalidated` + `resolve` 409 |
+| `ConnectErrorCode` / `cancelled` (CC-086) | po stronie BFF; broker zwraca `flow_invalid`, `identity_mismatch` (422) albo `503`; patrz "Propozycje CC" |
+| PAT (`PUT secret`, CC-090/CC-084) | reguła C4.1 z wektorów (NFC + małe litery, bez przycinania/podciągu/odcinania domeny, e-mail tylko z `email_verified=true`); whoami Jira/Confluence/GitLab wg tabeli; `expiresAt` opcjonalny i bez walidacji (przeszłość daje `expired`); `expiring` tylko przy podanej dacie |
+| `X-Request-Id` | na każdej odpowiedzi (test na wszystkich odpowiedziach obu klas integracyjnych) |
+| dane dla katalogu (CC-080) | `GET /v1/systems`: `supportedTypes`, `defaultType`, `oauthScopes` (pusta lista zamiast `[""]`, poprawka błędu z M1); `GET /v1/connections`: `type`, `status`, `backendUser`, `lastUsedAt`; dla `user-oauth` `expiresAt` = `null` |
+| niezmienniki | `resolve` tylko CN `mcp-gateway`; portal tylko dla `sub` z tokenu (test: `flowId`/`sub` obcego użytkownika); żadna odpowiedź poza `resolve` nie zawiera tokenu/PAT/`client_secret` (`@AfterAll` obu klas na wszystkich zarejestrowanych odpowiedziach); brak tokenów, kodu, verifiera, `state`, `client_secret` w logach (grep na `CapturedOutput` w testach OAuth) |
+
+### Dowody
+
+```
+./mvnw -B -o verify
+Tests run: 145, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS, mcp-contracts 2.2.1; było 109)
+  OAuthIntegrationTest 23, BrokerIntegrationTest 29, InternalJwtVectorTest 55, IdentityRuleVectorTest 13,
+  CredentialServiceTest 9, OperationsContractTest 3, OpenBaoClientTest 3, KeySourceTest 3, ...
+```
+
+Test na żywym stosie (broker jako proces hosta na `https://localhost:18710`, prawdziwy Keycloak z token
+exchange `aud=mcp-credential-broker`/`azp=mcp-portal-bff`, OpenBao z AppRole i Redis z ACL `broker` ze stosu
+M1 przez `scripts/run-dev-host.sh`; GitLab jako WireMock standalone na 18711; własny PostgreSQL w kontenerze
+`ws06-pg` na 18719, usunięty po teście, bo migracja V3 nie może trafić do bazy, którą współdzieli kontener brokera
+ze stosu: jego obraz nie zna V3 i nie wystartowałby po restarcie). Wynik:
+
+```
+start            200  authorizeUrl .../oauth/authorize?client_id=mcp-broker&response_type=code&redirect_uri=...&state=...&code_challenge=...&code_challenge_method=S256&scope=read_api
+complete         200  {"status":"connected","backendUser":"alice"}
+complete (again) 422  {"error":"flow_invalid"}
+complete (code of bob, flow of alice)  422 {"error":"identity_mismatch"}   (oba tokeny boba odwołane w GitLabie)
+complete (bob with alice's flow)       422 {"error":"flow_invalid"}
+PUT secret gitlab (PAT alice)          200 connected;  z expiresAt 2020-01-01 -> 200 expired
+DELETE gitlab    204, GET /v1/connections -> []
+```
+
+W logu brokera 0 wystąpień tokenów, kodu i `client_secret`. Polityka OpenBao i ACL Redisa ze stosu M1 wystarczają
+(użyte komendy: GET, SET z TTL, GETDEL, DEL, SET NX); nic w `mcp-platform-dev` nie było zmieniane.
+
+### Definition of Done (punkty OAuth)
+
+| Punkt | Test |
+| --- | --- |
+| link A otwarty przez B -> `flow_invalid`/`identity_mismatch`, token B nie trafia do A | `anotherUsersFlowIsRefusedWithoutBurningIt` (obcy `sub`: kod B nigdy nie wymieniony, u B i A brak wiersza, A kończy po tym przepływ), `aCodeOfAnotherAccountIsAnIdentityMismatchAndNothingIsStored` (brak wiersza i wpisu w OpenBao, `resolve` 409, tokeny odwołane), `identityMismatchKeepsTheExistingConnection` |
+| `state` jednorazowy | `aStateWorksOnce`, `aWrongStateRefusesAndConsumesTheFlow`, `aNewStartReplacesThePendingFlowOfTheSameUser`, `anExpiredFlowIsInvalid` |
+| błąd dostawcy, timeout | `providerFailuresAreRefusedAndNothingIsStored` (500, `invalid_grant`, `invalid_client`, opóźnienie 2,5 s przy timeoucie 1 s) |
+| refresh token unieważniony u dostawcy -> `revoked`, `resolve` -> `credential_required` | `aRefreshTokenRevokedAtTheProviderMakesTheConnectionRevoked`, `theSweepMarksARevokedGrantWithoutAResolve` |
+| po `DELETE` publikowane `credential.invalidated`, odwołanie u dostawcy | `disconnectingRevokesTheTokensAtTheProvider`, `disconnectingWorksWhenTheProviderIsDown` |
+| rotacja refresh tokenu, brak podwójnego zużycia | `anAccessTokenNearExpiryIsRenewedOnResolve`, `parallelResolvesRenewOnce` (6 równoległych `resolve`, jedno odnowienie) |
+| PAT innej osoby -> `identity_mismatch` (GitLab, Jira) | `gitLabPersonalAccessTokenFollowsTheIdentityRule`, `anotherPersonsPatIsRejectedAndNothingIsStored` |
+
+Punkty M3-M4 (purge, przypomnienia, rate limit, token-exchange, service-account) dalej poza zakresem.
+
+### Decyzje i odstępstwa M2
+
+- **Przepływy w Redisie, nie w PostgreSQL:** GETDEL daje atomowe zużycie, TTL czyści resztki. Redis przechowuje
+  `code_verifier` jawnie (do 10 min); bez kodu autoryzacji, który trafia tylko do przeglądarki użytkownika i
+  callbacku BFF, jest bezużyteczny. Klucze pod `broker:oauth:` (prefiks ACL `broker:*`).
+- **`client_secret` OAuth z zmiennej środowiska**, nie z OpenBao (brief wspomina OpenBao): polityka AppRole brokera
+  w `mcp-platform-dev` obejmuje tylko `secret/data/mcp/connections/*`. Przeniesienie wymaga wpisu w `openbao/init.sh`
+  (ws-01), np. `secret/data/mcp/oauth-clients/gitlab`, i ~20 linii w brokerze.
+- **Brak lokalnego `returnPath`:** broker waliduje go i nie zapisuje; C4 nie zwraca go w `complete`, więc BFF
+  trzyma go sam.
+- **GitLab tylko jako system `user-oauth`:** "Jira mock" z briefu (OAuth do Jiry) nie powstał; w M2 Jira zostaje
+  przy PAT (decyzja człowieka: "Połącz przez OAuth" = GitLab, "Dodaj PAT" = Jira). Konfiguracja GitLaba przez
+  zmienne środowiskowe (README), nie w `application.yml`, żeby start nie wymagał adresu GitLaba.
+- **Odwołanie u dostawcy** (`DELETE`, `identity_mismatch`) zrobione w M2, choć brief liczy revoke do M4: bez niego
+  zostawałyby żywe granty w GitLabie. Pozostałe elementy M4 (purge, przypomnienia, rate limit) nie ruszone.
+- **Kamienie w jednym commicie kodu** (kolejność w tabeli powyżej odpowiada kolejności prac, nie commitom).
+
+## Propozycje CC (dla ws-00, nie wpisane do `mcp-contracts`)
+
+1. **`oauth/complete`: błędy dostawcy.** `OAuthCompleteError` ma tylko `identity_mismatch`/`flow_invalid`. Broker
+   zwraca `422 flow_invalid` dla `invalid_grant` (kod użyty/wygasły/zły verifier) i `503 upstream_unavailable` dla
+   awarii, timeoutu i odrzucenia klienta (`invalid_client`). Proponuję dopisać do opisu `completeOAuth`, że BFF
+   mapuje `503` na `provider_error` (patch, tylko opis), albo dodać `provider_error` do enum (minor).
+2. **`Connection.expiresAt` dla `user-oauth`.** Broker zwraca `null` (access token odnawia się sam), a przykład
+   `two_connections` w C4 pokazuje `gitlab` z `status: expiring` i datą. Proponuję poprawić przykład (patch) i dopisać
+   w opisie `Connection`, że `expiring`/`expiresAt` dotyczą tylko `user-secret`.
+3. **`400` dla systemu bez `user-oauth`** w `startOAuth`/`completeOAuth` (analogicznie do `putSecret` bez
+   `user-secret` z M1): dopisać odpowiedź `400` z `BadRequest` do obu operacji (dziś `startOAuth` ją ma,
+   `completeOAuth` nie).
+4. **Lokalizacja `client_secret`** klienta OAuth w OpenBao: wpis do D6 i polityki AppRole (ścieżka
+   `secret/data/mcp/oauth-clients/<system>`).
+
+## Czego broker potrzebuje od innych
+
+**ws-01 (mock GitLaba jako dostawca OAuth w `mcp-platform-dev`):**
+
+- adres dla przeglądarki (osobny od adresu sieci compose), np. `http://localhost:<port>/oauth/authorize`, i adres dla
+  brokera w sieci `mcp-dev-core`, np. `http://gitlab.internal:8080`; broker dostaje oba:
+  `BROKER_SYSTEMS_GITLAB_BASEURL` i `BROKER_SYSTEMS_GITLAB_OAUTH_AUTHORIZEURL` (reszta zmiennych w README);
+- `client_id` (proponuję `mcp-broker`, jak w przykładzie C4) i `client_secret` w `.secrets` (broker:
+  `BROKER_SYSTEMS_GITLAB_OAUTH_CLIENTSECRET`), redirect URI klienta = `${MCP_PORTAL_URL}/api/v1/oauth/callback`
+  (jedna domena, CC-089);
+- endpointy: `GET /oauth/authorize` (zalogowanie jako wybrany użytkownik, powrót z `code` i `state`; ścieżka
+  `error=access_denied` dla "Anuluj"), `POST /oauth/token` (`authorization_code` z weryfikacją PKCE S256 i
+  `client_secret` w ciele; `refresh_token` z rotacją; `invalid_grant` dla użytego/obcego), `POST /oauth/revoke`,
+  `GET /api/v4/user` (Bearer: token OAuth lub PAT; `username` = login użytkownika, który się zalogował w mocku);
+  możliwość zalogowania w mocku jako inna osoba niż użytkownik portalu (demo `identity_mismatch`);
+  konfigurowalne `expires_in` (domyślnie 7200, do demonstracji odświeżenia np. 60 s);
+- zmiany w compose brokera: obraz przebudowany na tym repo (migracja V3 w bazie `broker`), `MCP_PORTAL_URL` =
+  publiczny adres portalu, zmienne GitLaba. Polityka OpenBao i ACL Redisa bez zmian.
+
+**ws-07 (BFF) - co musi wiedzieć o przepływie OAuth:**
+
+- po `start` BFF zapisuje w sesji `flowId`, wartość `state` (parametr w `authorizeUrl`) i `returnPath`; w callbacku
+  szuka po `state` w sesji bieżącego użytkownika i **sam** odrzuca (`flow_invalid`), gdy przepływu w tej sesji nie ma.
+  To jest związanie z sesją; broker wiąże z `sub` i `state`. `GET /api/v1/oauth/callback?error=access_denied`
+  -> `connectError=cancelled` bez wołania brokera; inny `error` -> `provider_error`;
+- `complete` dostaje `flowId`, `code`, `state` z callbacku; odpowiedź `422 flow_invalid`/`identity_mismatch` -> te same
+  kody `connectError`; `503` i inne błędy brokera -> `provider_error`; sukces -> `connected=<system>`;
+- `code` i `state` nie mogą trafić do logów BFF ani do nagłówka `Referer` (callback ma je w query); przepływ jest
+  jednorazowy, więc powtórzenie callbacku (odświeżenie strony) da `flow_invalid`;
+- token do brokera: jak przy `PUT secret` (`aud=mcp-credential-broker`, `azp=mcp-portal-bff`), `sub` zawsze z tokenu;
+  `X-Request-Id` jest przyjmowany i zwracany;
+- w katalogu: `credential.oauthScopes` z `GET /v1/systems`; `connection.expiresAt` jest `null` dla `user-oauth`, status
+  `revoked` po odwołaniu grantu u dostawcy (akcja "Połącz ponownie"); PAT do GitLaba idzie tym samym `PUT secret`,
+  `identity_mismatch` wg tej samej reguły;
+- kolejny `start` tego samego użytkownika dla tego samego systemu unieważnia poprzedni link (dwie karty: wygrywa
+  ostatnia); przepływ wygasa po 10 min.
+
+## Otwarte po M2
+
+- Entra: tryb `identity-claim` na niezmiennym claimie (D4), dalej bez zmian.
+- Rate limit `start`/`complete` per `sub` (M4); dziś ogranicza jeden aktywny przepływ na (użytkownik, system).
+- `client_secret` w OpenBao (patrz decyzje).
+- Brak testu na prawdziwym GitLabie; mock od ws-01 jeszcze nie istnieje (testy na WireMock).
 
 ## M1: zrobione
 

@@ -23,7 +23,10 @@ export MCP_BROKER_PORT="${MCP_BROKER_PORT:-18100}"
 export MCP_TLS_KEYSTORE="$dev/certs/mcp-credential-broker/keystore.p12"
 export MCP_TLS_TRUSTSTORE="$dev/certs/ca/truststore.p12"
 export MCP_TLS_STORE_PASSWORD="$TLS_STORE_PASSWORD"
-export MCP_DB_URL=jdbc:postgresql://localhost:15432/broker MCP_DB_USER=broker MCP_DB_PASSWORD="$BROKER_DB_PASSWORD"
+# A broker with newer migrations than the stack's own broker image must not share its database:
+# set MCP_DB_URL, MCP_DB_USER and MCP_DB_PASSWORD to use another one.
+export MCP_DB_URL="${MCP_DB_URL:-jdbc:postgresql://localhost:15432/broker}" MCP_DB_USER="${MCP_DB_USER:-broker}"
+export MCP_DB_PASSWORD="${MCP_DB_PASSWORD:-$BROKER_DB_PASSWORD}"
 export MCP_REDIS_HOST=localhost MCP_REDIS_PORT=16379 MCP_REDIS_USER=broker MCP_REDIS_PASSWORD="$REDIS_BROKER_PASSWORD"
 export MCP_BAO_ADDR=http://localhost:18200 MCP_BAO_ROLE_ID="$BAO_BROKER_ROLE_ID" MCP_BAO_SECRET_ID="$BAO_BROKER_SECRET_ID"
 export MCP_OIDC_ISSUER=http://localhost:18080/realms/corp
@@ -35,6 +38,22 @@ export MCP_ALLOW_PLAIN_HTTP=true
 if [[ -z "${MCP_GATEWAY_JWKS_URI:-}" ]]; then
   export MCP_GATEWAY_JWKS_FILE="${MCP_GATEWAY_JWKS_FILE:-$contracts/test-vectors/keys/test-gateway-jwks.json}"
   export MCP_ALLOW_TEST_KEYS=true
+fi
+
+# GitLab is optional (user-oauth + user-secret). MCP_GITLAB_URL is where the broker reaches GitLab;
+# MCP_GITLAB_AUTHORIZE_URL is the address the user's browser opens (defaults to <MCP_GITLAB_URL>/oauth/authorize).
+if [[ -n "${MCP_GITLAB_URL:-}" ]]; then
+  : "${MCP_GITLAB_CLIENT_ID:?set MCP_GITLAB_CLIENT_ID}" "${MCP_GITLAB_CLIENT_SECRET:?set MCP_GITLAB_CLIENT_SECRET}"
+  export BROKER_SYSTEMS_GITLAB_BASEURL="$MCP_GITLAB_URL"
+  export BROKER_SYSTEMS_GITLAB_ADAPTER=gitlab
+  export BROKER_SYSTEMS_GITLAB_SUPPORTEDTYPES=user-oauth,user-secret
+  export BROKER_SYSTEMS_GITLAB_DEFAULTTYPE=user-oauth
+  export BROKER_SYSTEMS_GITLAB_OAUTHSCOPES="${MCP_GITLAB_SCOPES:-read_api}"
+  export BROKER_SYSTEMS_GITLAB_OAUTH_CLIENTID="$MCP_GITLAB_CLIENT_ID"
+  export BROKER_SYSTEMS_GITLAB_OAUTH_CLIENTSECRET="$MCP_GITLAB_CLIENT_SECRET"
+  if [[ -n "${MCP_GITLAB_AUTHORIZE_URL:-}" ]]; then
+    export BROKER_SYSTEMS_GITLAB_OAUTH_AUTHORIZEURL="$MCP_GITLAB_AUTHORIZE_URL"
+  fi
 fi
 
 exec "${JAVA_HOME:+$JAVA_HOME/bin/}java" -jar "$jar"

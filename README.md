@@ -3,9 +3,9 @@
 Credential broker platformy MCP (strumień ws-06): jedyne miejsce, w którym leżą poświadczenia użytkowników
 do systemów docelowych, per (`sub`, system). Gateway pobiera z niego poświadczenie przy wywołaniu
 narzędzia (`resolve`), portal BFF zapisuje je w imieniu zalogowanego użytkownika. Kontrakt: C4 z
-`mcp-contracts` 2.1.1 (`openapi/credential-broker.v1.yaml`), audyt C8, zdarzenie C4.3.
+`mcp-contracts` 2.2.1 (`openapi/credential-broker.v1.yaml`), audyt C8, zdarzenie C4.3.
 
-Stan: kamień M1 (PAT do Jiry). Co działa, czego jeszcze nie ma i odstępstwa od briefu: [STATUS.md](STATUS.md).
+Stan: kamień M2 (PAT oraz "Połącz przez OAuth" dla GitLaba). Co działa, czego jeszcze nie ma i odstępstwa od briefu: [STATUS.md](STATUS.md).
 
 ## API w tej wersji
 
@@ -18,10 +18,12 @@ Wszystko po HTTPS z wymaganym certyfikatem klienta z wewnętrznego CA (port 8443
 | `GET /v1/systems` | `mcp-gateway`, `mcp-portal-bff` | jak wyżej; od gateway'a także wariant serwisowy C2 (CC-030) | lista systemów z konfiguracji |
 | `GET /v1/connections` | `mcp-portal-bff` | token użytkownika jak przy `PUT secret` | połączenia użytkownika z tokenu, statusy C4, bez wartości sekretu |
 | `DELETE /v1/connections/{system}` | `mcp-portal-bff` | jak wyżej | `204`; usuwa sekret (wszystkie wersje KV) i metadane, publikuje `credential.invalidated`; idempotentne |
+| `POST /v1/connections/{system}/oauth/start` | `mcp-portal-bff` | jak wyżej | `200 {authorizeUrl, flowId}`; `400` dla złego `returnPath` albo systemu bez `user-oauth` |
+| `POST /v1/connections/{system}/oauth/complete` | `mcp-portal-bff` | jak wyżej | `200 {status, backendUser}`, `422 flow_invalid` / `identity_mismatch`, `503` przy awarii dostawcy |
 | `GET /actuator/health` | dowolny z wewnętrznego CA | brak | `UP`/`DOWN` |
 
-Pozostałe operacje C4 (`oauth/*`, `purge`) odpowiadają
-`404 not_found_or_denied` do czasu M2-M4, tak samo jak każda nieznana ścieżka i metoda. C4 nie ma 500:
+Pozostała operacja C4 (`purge`) odpowiada
+`404 not_found_or_denied` do czasu M4, tak samo jak każda nieznana ścieżka i metoda. C4 nie ma 500:
 nieoczekiwany błąd i niedostępna zależność (OpenBao, PostgreSQL, Redis, JWKS gateway'a lub IdP) dają
 `503 upstream_unavailable`.
 
@@ -40,23 +42,83 @@ zabroniony przy `GET /v1/systems` (CC-038), `vsc` według wzorców identyfikator
 z powodem `test_key_not_allowed`, chyba że `MCP_ALLOW_TEST_KEYS=true` (CC-044).
 
 `PUT secret` woła whoami systemu z nowym sekretem (Jira DC: `GET /rest/api/2/myself`, login w `name`; Confluence DC: `GET /rest/api/user/current`,
-login w `username`, CC-073; bez podążania za przekierowaniami, TLS z zaufaniem do wewnętrznego CA) i porównuje użytkownika z claimem SSO. Odrzucony
+login w `username`, CC-073; GitLab: `GET /api/v4/user`, login w `username`; bez podążania za przekierowaniami, TLS z zaufaniem do wewnętrznego CA) i porównuje użytkownika z claimem SSO. Odrzucony
 sekret albo cudzy PAT nie jest nigdzie zapisywany. Zastąpienie istniejącego połączenia publikuje
 `credential.invalidated` (CC-046). `subjectToken` w `resolve` dla systemu, który nie jest `token-exchange`,
 daje 400.
 
-Porównanie tożsamości (C4.1), ustawienie `broker.systems.<system>.identity-claim`:
+`expiresAt` w `PUT secret` jest opcjonalną informacją użytkownika (CC-084 po zmianie w 2.2.1): broker przyjmuje
+każdą poprawną datę UTC albo brak pola i niczego nie sprawdza (data z przeszłości daje od razu `expired`). Status
+`expiring` (mniej niż 7 dni) istnieje tylko przy podanej dacie.
 
-- `preferred_username` (domyślnie): nazwa z whoami musi być równa claimowi; wielkość liter ignorowana tylko
-  wtedy, gdy obie nazwy są w ASCII (składanie wielkości liter poza ASCII skleja różne znaki, np. KELVIN SIGN
-  z `k`).
+Porównanie tożsamości (C4.1, wektory `test-vectors/whoami-identity/`, klasa `IdentityRule`), ustawienie
+`broker.systems.<system>.identity-claim`:
+
+- `preferred_username` (domyślnie): nazwa z whoami musi być równa claimowi po normalizacji Unicode NFC i
+  zamianie na małe litery (`Locale.ROOT`) po obu stronach. Bez przycinania spacji, bez dopasowania podciągu ani
+  prefiksu, bez odcinania domeny z adresu e-mail; pusta wartość po którejkolwiek stronie nie pasuje.
 - `email`: dodatkowo token musi mieć `email_verified: true`; brak claimu albo `false` daje
   `identity_mismatch`. W części IdP użytkownik sam zmienia e-mail, więc niezweryfikowany adres pozwoliłby
-  podpiąć cudze konto.
+  podpiąć cudze konto. Porównanie z polem e-mail z whoami (Jira `emailAddress`, GitLab `email`); Confluence go
+  nie zwraca, więc ten tryb nigdy nie pasuje.
 - Entra ID: `email` bywa zmienny i niezweryfikowany, a Entra domyślnie nie wystawia `email_verified`, więc tryb
   `email` z Entra zawsze da `identity_mismatch`. Zalecenie: oprzeć porównanie na claimie, którego użytkownik
   nie zmienia (`oid` albo UPN z domeny kontrolowanej przez firmę), z mapowaniem na login w Jirze. Takie
   mapowanie to nowy tryb `identity-claim` do dodania razem z konfiguracją produkcyjnego IdP (D4).
+
+## Połącz przez OAuth (user-oauth, GitLab)
+
+`oauth/start` i `oauth/complete` (C4) obsługują authorization code z PKCE (S256) jako klient poufny. Broker nie
+ma żadnego adresu wywoływanego przez przeglądarkę: `redirect_uri` to callback BFF
+`<MCP_PORTAL_URL>/api/v1/oauth/callback`, a BFF przekazuje `code` i `state` do `complete`.
+
+1. `start`: broker losuje `flowId`, `state` (32 bajty) i `code_verifier` (32 bajty), zapisuje je razem z `sub` z
+   tokenu BFF w Redisie (`broker:oauth:flow:<flowId>`, 10 min, GETDEL = jednorazowe) i zwraca `authorizeUrl`
+   (`client_id`, `redirect_uri`, `state`, `code_challenge` S256, `scope` z `oauth-scopes`). Kolejny `start` tego
+   samego użytkownika dla tego samego systemu unieważnia poprzedni niedokończony przepływ (wygrywa ostatni link).
+   `returnPath` jest walidowany (CC-032) i nie jest przechowywany: BFF sam wie, dokąd wrócić.
+2. `complete`: `sub` z tokenu musi być `sub` przepływu (inaczej `422 flow_invalid`, a przepływ właściciela
+   zostaje nietknięty, żeby obcy nie mógł go zużyć); potem przepływ jest zużywany atomowo, `state` porównywany w
+   stałym czasie, kod wymieniany z `code_verifier`, a token sprawdzany whoami (`/api/v4/user`, `username`) i
+   regułą C4.1. Inne konto -> `422 identity_mismatch`, nic nie zapisane, wydane tokeny odwoływane u dostawcy
+   (`/oauth/revoke`, best effort). Kod odrzucony przez dostawcę (`invalid_grant`: użyty, wygasły, zły
+   verifier) -> `422 flow_invalid`. Dostawca niedostępny, timeout, `invalid_client` -> `503 upstream_unavailable`
+   (po stronie BFF to `provider_error`; `cancelled` BFF ustala sam z `error=access_denied`, do brokera wtedy nie
+   dzwoni, a przepływ wygasa po 10 min).
+3. Zapis: access i refresh token razem w OpenBao (Transit + KV v2, jak PAT), metadane w PostgreSQL
+   (`access_expires_at`); `credential.invalidated` przy zastąpieniu istniejącego połączenia (CC-046).
+
+`Connection.expiresAt` dla `user-oauth` jest `null`: access token (GitLab: 2 h) odnawia broker, więc nie jest
+terminem dla użytkownika. Status to `connected`, dopóki dostawca honoruje refresh token, potem `revoked`.
+
+Odświeżanie: `resolve` odnawia token, gdy zostało mu mniej niż `broker.oauth-flow.refresh-margin` (2 min, musi
+być większe od `cache-ttl-seconds`, żeby wydany token przeżył cache gateway'a), a zadanie w tle co minutę odnawia
+te, którym zostało mniej niż `sweep-window` (5 min). Odnowienie pod blokadą w Redisie (`SET NX EX`, jedno naraz
+na (użytkownik, system)), bo dostawcy rotują refresh tokeny i równoległe odnowienia wyglądałyby jak odwołanie
+grantu. Rotowany refresh token jest zapisywany nową wersją sekretu. `invalid_grant` przy odnowieniu ->
+połączenie `revoked`, sekret usunięty, `credential.invalidated`, `resolve` -> `409 credential_required`. Awaria
+dostawcy przy jeszcze ważnym tokenie nie przerywa `resolve`; przy wygasłym -> `503`. Odnowienie nie publikuje
+`credential.invalidated` (ten sam grant).
+
+`DELETE /v1/connections/{system}` odwołuje u dostawcy refresh i access token przed usunięciem lokalnym
+(best effort: awaria dostawcy nie blokuje rozłączenia).
+
+Konfiguracja GitLaba (opcjonalna, jak Confluence; zmienne Spring relaxed binding, `application.yml` go nie zawiera):
+
+| Zmienna | Znaczenie |
+| --- | --- |
+| `BROKER_SYSTEMS_GITLAB_BASEURL` | adres GitLaba, z którego korzysta broker (whoami, token, revoke) |
+| `BROKER_SYSTEMS_GITLAB_ADAPTER` | `gitlab` |
+| `BROKER_SYSTEMS_GITLAB_SUPPORTEDTYPES`, `..._DEFAULTTYPE` | np. `user-oauth,user-secret` i `user-oauth` |
+| `BROKER_SYSTEMS_GITLAB_OAUTHSCOPES` | zakresy w `scope` i w `GET /v1/systems`, np. `read_api` |
+| `BROKER_SYSTEMS_GITLAB_OAUTH_CLIENTID`, `..._CLIENTSECRET` | klient OAuth zarejestrowany w GitLabie (redirect URI = callback BFF) |
+| `BROKER_SYSTEMS_GITLAB_OAUTH_AUTHORIZEURL` | adres autoryzacji otwierany w przeglądarce; domyślnie `<BASEURL>/oauth/authorize` (osobny, gdy GitLab ma inny adres dla przeglądarki niż dla brokera) |
+| `BROKER_SYSTEMS_GITLAB_OAUTH_TOKENURL`, `..._REVOKEURL` | opcjonalnie; domyślnie `<BASEURL>/oauth/token` i `/oauth/revoke` |
+
+`client_secret` jest dziś zmienną środowiska (jak `MCP_BAO_SECRET_ID`); przeniesienie do OpenBao wymaga ścieżki w
+polityce AppRole brokera (`secret/data/mcp/oauth-clients/*`), czyli zmiany w `mcp-platform-dev` (ws-01).
+`scripts/run-dev-host.sh` ustawia powyższe, gdy podano `MCP_GITLAB_URL`, `MCP_GITLAB_CLIENT_ID`,
+`MCP_GITLAB_CLIENT_SECRET` (opcjonalnie `MCP_GITLAB_AUTHORIZE_URL`, `MCP_GITLAB_SCOPES`).
 
 ## Przechowywanie
 
@@ -117,8 +179,8 @@ Zmienne środowiska (nazwy z `mcp-platform-dev`, profil `full`). Pełna lista w
 | `MCP_PORTAL_URL` | baza `connectUrl` w `409 credential_required`, wymagany |
 | `MCP_ALLOW_PLAIN_HTTP` | domyślnie `false`; `true` dopuszcza `http` do OpenBao, JWKS i whoami (tylko dev) |
 
-Systemy i typy poświadczeń są w `broker.systems` (YAML). M1 zna tylko `jira` z `user-secret`; konfiguracja
-typu, którego ta wersja nie obsługuje, zatrzymuje start.
+Systemy i typy poświadczeń są w `broker.systems` (YAML). Znane są `user-secret` (Jira, Confluence, GitLab) i
+`user-oauth` (GitLab); konfiguracja typu, którego ta wersja nie obsługuje, zatrzymuje start.
 
 ## Budowanie i testy
 
@@ -132,8 +194,10 @@ docker build -t mcp-credential-broker:dev .
 
 | Test | Co sprawdza |
 | --- | --- |
-| `InternalJwtVectorTest` | wszystkie wektory C2 z `mcp-contracts` 2.1.1 (wynik i powód, `allowTestKeys` z wektora), klucz testowy pod produkcyjnym `kid` (SPKI), replay |
-| `ReturnPathTest` | walidator `returnPath` (CC-032) na wektorach `return-paths/`, gotowy pod `oauth/start` w M2 |
+| `InternalJwtVectorTest` | wszystkie wektory C2 z `mcp-contracts` 2.2.1 (wynik i powód, `allowTestKeys` z wektora), klucz testowy pod produkcyjnym `kid` (SPKI), replay |
+| `ReturnPathTest` | walidator `returnPath` (CC-032) na wektorach `return-paths/`, używany przez `oauth/start` |
+| `IdentityRuleVectorTest` | wszystkie 12 wektorów `whoami-identity/` (C4.1) |
+| `OAuthIntegrationTest` | przepływ GitLaba na stubie WireMock: PKCE, state jednorazowy i związany z użytkownikiem, cudzy `flowId`/`state`, ponowne użycie, kod innego konta, błąd i timeout dostawcy, wygasły przepływ, zapis w OpenBao, odświeżanie (rotacja, równoległe, odwołany grant, awaria dostawcy), zadanie w tle, `DELETE` z odwołaniem, PAT GitLaba; brak tokenów w odpowiedziach poza `resolve` i w logach |
 | `OperationsContractTest` | tabela operacji filtra == metody, ścieżki i `x-allowed-client-cn` z OpenAPI C4 |
 | `BrokerIntegrationTest` | mTLS, PostgreSQL, Redis z ACL jak w dev, OpenBao (AppRole, KV v2, Transit), fałszywa Jira; odpowiedzi walidowane schematami OpenAPI, audyt schematem C8, zdarzenie schematem C4.3; brak sekretu w odpowiedziach poza `resolve` i w logach |
 | `BrokerIntegrationTest` (awarie) | Redis i PostgreSQL wstrzymane (`docker pause`) -> 503 z audytem; szyfrogram przeniesiony pod cudzą ścieżkę -> 503; ciało chunked 200 KB -> 400 bez whoami; sondy ścieżek -> 404 |
@@ -179,13 +243,13 @@ ustawia `MCP_ALLOW_TEST_KEYS=true`, żeby `resolve` dało się wywołać tokenem
 pl.aiwcorpo.mcp.broker
 ├── auth/        mTLS CN, weryfikacja C2 i tokenu BFF, tabela operacji, jti w Redis
 ├── api/         kontrolery C4, DTO, mapowanie błędów
-├── credential/  CredentialService (resolve, PUT secret), metadane połączeń (JDBC)
+├── credential/  CredentialService (resolve, PUT secret), OAuthService (start, complete, odświeżanie), IdentityRule (C4.1), metadane połączeń (JDBC)
+├── oauth/       przepływy w Redisie (jednorazowe), blokada odświeżania
 ├── secret/      SecretStore + OpenBao (AppRole, KV v2, Transit), SecretValue
-├── system/      SystemRegistry, SystemAdapter (whoami), AtlassianDcAdapter
+├── system/      SystemRegistry, SystemAdapter (whoami), OAuthProvider, AtlassianDcAdapter, GitLabAdapter
 ├── audit/       zdarzenia C8
 └── event/       credential.invalidated (Redis pub/sub)
 ```
 
-Rozszerzenia M2-M4 wchodzą w istniejące miejsca: nowe typy poświadczeń w `CredentialType` i
-`SystemRegistry`, OAuth i revoke w `SystemAdapter`, refresh token w `StoredCredential`, nowe operacje w
-`Operation` (test kontraktowy pilnuje zgodności z OpenAPI).
+Rozszerzenia M3-M4 wchodzą w istniejące miejsca: nowe typy poświadczeń w `CredentialType` i
+`SystemRegistry`, nowe operacje w `Operation` (test kontraktowy pilnuje zgodności z OpenAPI).
