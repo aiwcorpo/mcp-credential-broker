@@ -17,7 +17,7 @@ zielone dopiero po całości):
 
 | Wymaganie M2 | Stan |
 | --- | --- |
-| mcp-contracts 2.2.3 | `pom.xml`; wszystkie wektory C2 (55) zielone; wektory `whoami-identity/` wycofane w 2.2.3, test `IdentityRuleVectorTest` i klasa `IdentityRule` usunięte |
+| mcp-contracts 2.2.5 | `pom.xml` (2.2.3 usunęło porównanie tożsamości, 2.2.5 dodało `backendUser` w C8); wszystkie wektory C2 (55) i C8 (42) zielone; wektory `whoami-identity/` wycofane w 2.2.3, test `IdentityRuleVectorTest` i klasa `IdentityRule` usunięte |
 | `startOAuth` / `completeOAuth` | tylko CN `mcp-portal-bff` + token użytkownika; `sub` z tokenu; PKCE S256, `state` 32 bajty, `flowId` w Redisie 10 min, GETDEL; `returnPath` walidowany (CC-032), nie przechowywany |
 | `state` jednorazowy i związany z użytkownikiem | cudzy `sub` -> `422 flow_invalid` bez zużycia przepływu właściciela; zły `state`, ponowne użycie, wygasły przepływ, wcześniejszy `start` tego samego użytkownika -> `flow_invalid`. Związanie z **sesją** przeglądarki jest po stronie BFF (broker nie widzi sesji): patrz "Co musi wiedzieć ws-07" |
 | wymiana kodu, konto | whoami GitLaba (`/api/v4/user`, `username`) daje `backendUser`; bez porównania z SSO (CC-101), `identity_mismatch` nie jest zwracane; błąd po wymianie kodu bez zapisu -> tokeny odwołane u dostawcy; `invalid_grant` -> `flow_invalid`; 5xx/timeout/`invalid_client` -> `503` |
@@ -25,7 +25,7 @@ zielone dopiero po całości):
 | odświeżanie | przy `resolve` (margines 2 min > `cacheTtlSeconds`) i zadaniem w tle (okno 5 min, co minutę); blokada Redis `SET NX PX` z właścicielem; rotacja refresh tokenu; `invalid_grant` -> `revoked` + `credential.invalidated` + `resolve` 409 |
 | `ConnectErrorCode` / `cancelled` (CC-086) | po stronie BFF; broker zwraca `flow_invalid` (422) albo `503` (od 2.2.3 bez `identity_mismatch`); patrz "Propozycje CC" |
 | PAT (`PUT secret`, CC-090/CC-084) | bez porównania tożsamości (CC-101): whoami tylko dla ważności (`422 secret_invalid`) i `backendUser`; whoami Jira/Confluence/GitLab wg tabeli; `expiresAt` opcjonalny i bez walidacji (przeszłość daje `expired`); `expiring` tylko przy podanej dacie |
-| `backendUser` w audycie (CC-117, 2.2.5) | zdarzenie `connection_change` niesie `backendUser` (z whoami) przy zapisie PAT, połączeniu OAuth i rozłączeniu (z zapisanego wiersza, jeśli jest); wartość niepoprawna (poza 1..255 znaków lub ze znakami sterującymi, DEL, U+2028/2029, bidi) jest pomijana, a w logu aplikacji ląduje ostrzeżenie bez wartości; zdarzenie `authentication` pola nie dostaje. Odświeżanie tokenu nie wywołuje whoami, więc nie zmienia konta i `backendUser` w jego zdarzeniu nie występuje. Testy: `AuditEventVectorTest` (wszystkie 42 wektory `audit-events/`), `AuditLogTest`, test integracyjny "mallory" (PAT konta mallory podpięty przez alice: `sub` alice, `backendUser` mallory) |
+| `backendUser` w audycie (CC-117, 2.2.5) | zdarzenie `connection_change` niesie `backendUser` (login z whoami) przy zapisie PAT, połączeniu OAuth, odświeżeniu tokenu (z zapisanego wiersza, bez whoami: odświeżanie nie zmienia konta) i rozłączeniu (z wiersza, jeśli jest). Pole jest ustawiane od razu po whoami, więc zdarzenie błędu zapisu (503) też je ma. Wartość poza wzorcem schematu (1..255 znaków, bez znaków sterujących, DEL, U+2028/2029, bidi) albo z niesparowanym surogatem jest pomijana, a w logu aplikacji ląduje ostrzeżenie bez wartości (świadoma decyzja: połączenie mimo to powstaje, patrz README). Zdarzenie `authentication` pola nie dostaje. Testy: `AuditEventVectorTest`, `AuditLogTest`, `CredentialServiceTest`, test integracyjny "mallory" (PAT konta mallory podpięty przez alice: `sub` alice, `backendUser` mallory; walidacja schematem każdego zdarzenia, brak sekretów w logu) |
 | `X-Request-Id` | na każdej odpowiedzi (test na wszystkich odpowiedziach obu klas integracyjnych) |
 | dane dla katalogu (CC-080) | `GET /v1/systems`: `supportedTypes`, `defaultType`, `oauthScopes` (pusta lista zamiast `[""]`, poprawka błędu z M1); `GET /v1/connections`: `type`, `status`, `backendUser`, `lastUsedAt`; dla `user-oauth` `expiresAt` = `null` |
 | niezmienniki | `resolve` tylko CN `mcp-gateway`; portal tylko dla `sub` z tokenu (test: `flowId`/`sub` obcego użytkownika); żadna odpowiedź poza `resolve` nie zawiera tokenu/PAT/`client_secret` (`@AfterAll` obu klas na wszystkich zarejestrowanych odpowiedziach); brak tokenów, kodu, verifiera, `state`, `client_secret` w logach (grep na `CapturedOutput` w testach OAuth) |
@@ -34,8 +34,8 @@ zielone dopiero po całości):
 
 ```
 ./mvnw -B verify          (stan po poprawkach przeglądu M2)
-Tests run: 197, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS, mcp-contracts 2.2.5; przed CC-117 było 147)
-  OAuthIntegrationTest 31, BrokerIntegrationTest 30, InternalJwtVectorTest 55,
+Tests run: 199, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS, mcp-contracts 2.2.5; przed CC-117 było 147)
+  OAuthIntegrationTest 31, BrokerIntegrationTest 31, InternalJwtVectorTest 55, AuditEventVectorTest 47, AuditLogTest 5,
   OAuthRefreshFailureIntegrationTest 4, CredentialServiceTest 9, OperationsContractTest 3, OpenBaoClientTest 3,
   OAuthClientSecretsTest 2, KeySourceTest 3, ...
 ```
@@ -122,13 +122,12 @@ startuje własny PostgreSQL (`mcp-broker-host-pg-18711`, usuwany przy wyjściu) 
 klienta -> `UP`, `resolve` bez certyfikatu -> zerwany handshake (kod 000), po zatrzymaniu brak procesów i kontenerów.
 
 Tożsamość: decyzja człowieka z 2026-10-28 w dwóch krokach. Najpierw reguła ASCII/NFC (2.2.2, CC-100), potem, ze względu na różne
-loginy tej samej osoby w różnych systemach, brak porównania w ogóle (2.2.3, CC-101). Broker jest na 2.2.3: whoami daje ważność
+loginy tej samej osoby w różnych systemach, brak porównania w ogóle (2.2.3, CC-101). Broker jest na 2.2.5: whoami daje ważność
 (`secret_invalid`) i `backendUser` (zapisany, zwracany w `GET /v1/connections`, `PUT secret`, `oauth/complete`).
 Konfiguracja `identity-claim` usunięta. Zależności `BackendIdentity.email` (GitLab/Jira) pozostają w adapterach, bez użycia.
 
-**Audyt a `backendUser`:** schemat C8 (`audit-event.schema.json`, `additionalProperties: false`) nie ma pola na login w
-systemie docelowym (`username` to użytkownik SSO), więc broker go w audycie nie zapisuje; wpisy `connection_change` mają
-`sub`, `server` i `credentialType`. Propozycja CC 7 niżej.
+**Audyt a `backendUser`:** od 2.2.5 (CC-117, propozycja 7 niżej przyjęta) zdarzenie `connection_change` niesie
+`backendUser`; szczegóły w tabeli M2 wyżej.
 
 ## Propozycje CC (dla ws-00, nie wpisane do `mcp-contracts`)
 

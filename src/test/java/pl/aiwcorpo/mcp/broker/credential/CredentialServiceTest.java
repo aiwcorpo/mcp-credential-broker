@@ -23,6 +23,9 @@ import java.util.Optional;
 import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DataAccessResourceFailureException;
 
@@ -42,6 +45,7 @@ import pl.aiwcorpo.mcp.broker.system.SystemRegistry;
 import pl.aiwcorpo.mcp.broker.system.WhoamiResult;
 import tools.jackson.databind.json.JsonMapper;
 
+@ExtendWith(OutputCaptureExtension.class)
 class CredentialServiceTest {
 
     private static final Instant NOW = Instant.parse("2026-10-27T12:00:00Z");
@@ -159,6 +163,17 @@ class CredentialServiceTest {
         CredentialService.Stored stored = withWhoami.putSecret(portal("alice-sub", "alice"), "jira",
                 SecretValue.of("alice-pat"), "2020-01-01T00:00:00Z");
         assertThat(stored.status()).isEqualTo(ConnectionStatus.EXPIRED);
+    }
+
+    @Test
+    void failedStoreAfterWhoamiStillNamesTheAccountInTheAuditEvent(CapturedOutput output) {
+        CredentialService withWhoami = serviceWithIdentity(new BackendIdentity("mallory", "mallory@corp.test"));
+        when(connections.find("alice-sub", "jira")).thenThrow(new SecretStoreUnavailableException("down"));
+
+        assertThatThrownBy(() -> withWhoami.putSecret(portal("alice-sub", "alice"), "jira", SecretValue.of("mallory-pat"), null))
+                .isInstanceOf(SecretStoreUnavailableException.class);
+
+        assertThat(output.getAll()).contains("\"outcome\":\"error\"", "\"backendUser\":\"mallory\"");
     }
 
     private static SystemRegistry registry() {

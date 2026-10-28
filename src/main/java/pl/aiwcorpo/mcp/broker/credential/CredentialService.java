@@ -153,6 +153,7 @@ public class CredentialService {
                 case WhoamiResult.Rejected rejected -> throw new SecretRejectedException("secret_invalid");
                 case WhoamiResult.Identified identified -> identified.identity();
             };
+            entry.backendUser(identity.username());
 
             Instant expires = expiresAt == null ? null : expiresAt.truncatedTo(ChronoUnit.SECONDS);
             Replaced replaced = oauth.underRefreshLock(caller.sub(), system.id(), () -> {
@@ -167,7 +168,7 @@ public class CredentialService {
             });
             Optional<Connection> previous = replaced.previous();
             Stored stored = new Stored(replaced.connection().status(now, expiringThreshold), identity.username(), expires);
-            entry.backendUser(identity.username()).ok(previous.isPresent() ? "secret_replaced" : "secret_stored");
+            entry.ok(previous.isPresent() ? "secret_replaced" : "secret_stored");
             return stored;
         } catch (SecretRejectedException e) {
             entry.denied(e.reason(), null);

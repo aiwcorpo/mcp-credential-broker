@@ -147,11 +147,19 @@ class BrokerIntegrationTest {
             assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", e)).isEmpty();
         });
 
+        String smuggled = TestTokens.newRequestId();
+        assertThat(bff.send("PUT", "/v1/connections/jira/secret", tokens.bffUser(alice, "alice"), smuggled,
+                "{\"secret\":\"alice-pat\",\"backendUser\":\"eve\"}").status()).isEqualTo(400);
+        assertThat(output.getAll()).as("a client-supplied backendUser never reaches the log").doesNotContain("eve\"");
+
         String rejected = TestTokens.newRequestId();
         assertThat(bff.send("PUT", "/v1/connections/jira/secret", tokens.bffUser(alice, "alice"), rejected,
                 "{\"secret\":\"invalid-pat\"}").status()).isEqualTo(422);
         assertThat(auditEvents(output, rejected)).singleElement()
-                .satisfies(e -> assertThat(e.has("backendUser")).as("no account was identified").isFalse());
+                .satisfies(e -> {
+                    assertThat(e.has("backendUser")).as("no account was identified").isFalse();
+                    assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", e)).isEmpty();
+                });
 
         String disconnect = TestTokens.newRequestId();
         assertThat(bff.send("DELETE", "/v1/connections/jira", tokens.bffUser(alice, "alice"), disconnect, null).status())
@@ -159,13 +167,18 @@ class BrokerIntegrationTest {
         assertThat(auditEvents(output, disconnect)).singleElement().satisfies(e -> {
             assertThat(e.path("reason").stringValue()).isEqualTo("disconnected");
             assertThat(e.path("backendUser").stringValue()).isEqualTo("mallory");
+            assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", e)).isEmpty();
         });
 
         String nothing = TestTokens.newRequestId();
         assertThat(bff.send("DELETE", "/v1/connections/jira", tokens.bffUser(alice, "alice"), nothing, null).status())
                 .isEqualTo(204);
         assertThat(auditEvents(output, nothing)).singleElement()
-                .satisfies(e -> assertThat(e.has("backendUser")).isFalse());
+                .satisfies(e -> {
+                    assertThat(e.has("backendUser")).isFalse();
+                    assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", e)).isEmpty();
+                });
+        assertNoSecretsLogged(output);
     }
 
     @Test

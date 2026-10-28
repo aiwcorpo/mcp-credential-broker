@@ -148,6 +148,7 @@ public class OAuthService {
                     throw new UpstreamUnavailableException("provider issued a token that its own whoami refuses");
                 case WhoamiResult.Identified identified -> identified.identity();
             };
+            entry.backendUser(identity.username());
             TokenSet issued = tokens;
             boolean replaced = underRefreshLock(caller.sub(), system.id(), () -> {
                 Instant now = clock.instant();
@@ -163,7 +164,7 @@ public class OAuthService {
                 return previous.isPresent();
             });
             stored = true;
-            entry.backendUser(identity.username()).ok(replaced ? "oauth_replaced" : "oauth_connected");
+            entry.ok(replaced ? "oauth_replaced" : "oauth_connected");
             return new Completed(ConnectionStatus.CONNECTED, identity.username());
         } catch (SecretRejectedException e) {
             entry.denied(e.reason(), null);
@@ -309,6 +310,7 @@ public class OAuthService {
             if (current.type() != CredentialType.USER_OAUTH || current.state() != Connection.StoredState.CONNECTED) {
                 throw new CredentialRequiredException(systemId);
             }
+            entry.backendUser(current.backendUser());
             StoredCredential credential = seen != null && current.secretVersion() != null
                     && current.secretVersion().equals(seen.secretVersion()) ? seenCredential
                     : secrets.get(current.secretKey()).orElseThrow(() -> new CredentialRequiredException(systemId));

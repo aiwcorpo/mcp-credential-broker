@@ -58,6 +58,10 @@ uczciwych użytkowników. Whoami służy do dwóch rzeczy: ważność poświadcz
 jako ..."). Użytkownik może więc podpiąć PAT dowolnego konta, do którego ma poświadczenie. `identity_mismatch` nie jest
 zwracane.
 
+To, które konto podpięto, zostaje w audycie: zdarzenie `connection_change` ma `backendUser` (C8, 2.2.5, CC-117), także przy odświeżaniu
+i rozłączeniu. Login, którego schemat C8 by nie przyjął (ponad 255 znaków, znaki sterujące, niesparowany surogat), jest
+pomijany w zdarzeniu z ostrzeżeniem bez wartości w logu aplikacji, a połączenie mimo to powstaje: to świadoma decyzja.
+
 ## Połącz przez OAuth (user-oauth, GitLab)
 
 `oauth/start` i `oauth/complete` (C4) obsługują authorization code z PKCE (S256) jako klient poufny. Broker nie
@@ -196,7 +200,8 @@ docker build -t mcp-credential-broker:dev .
 | `BrokerIntegrationTest` (awarie) | Redis i PostgreSQL wstrzymane (`docker pause`) -> 503 z audytem; szyfrogram przeniesiony pod cudzą ścieżkę -> 503; ciało chunked 200 KB -> 400 bez whoami; sondy ścieżek -> 404 |
 | `OpenBaoClientTest` | `renew-self`, ponowne logowanie przy `token_max_ttl`, praca na ważnym tokenie po nieudanym logowaniu |
 | `KeySourceTest` | JWKS gateway'a przeterminowany -> 503, niedostępny JWKS IdP -> 503 zamiast 401 |
-| `CredentialServiceTest`, `ConnectionTest`, `AuditLogTest`, `TransportSecurityTest` | fail-closed, wersje sekretów, `email_verified`, porównanie ASCII, `subjectToken`, TTL, `lastUsedAt`, escapowanie audytu, wymóg https |
+| `CredentialServiceTest`, `ConnectionTest`, `AuditLogTest`, `TransportSecurityTest` | fail-closed, wersje sekretów, `email_verified`, porównanie ASCII, `subjectToken`, TTL, `lastUsedAt`, escapowanie audytu, `backendUser` w audycie (poprawny, odrzucany, surogaty, błąd zapisu po whoami), wymóg https |
+| `AuditEventVectorTest` | wszystkie wektory `audit-events/` z `mcp-contracts` 2.2.5 względem schematu C8 i zgodność `AuditLog.validBackendUser` z wektorami `backendUser` |
 
 ## Uruchomienie lokalne w `mcp-platform-dev` (ws-01)
 

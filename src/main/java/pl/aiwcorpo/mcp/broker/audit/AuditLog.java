@@ -38,10 +38,27 @@ public class AuditLog {
         this.clock = clock;
     }
 
-    /** The C8 pattern for backendUser: 1..255 characters, no C0/C1 controls, DEL, U+2028/2029 or bidi controls. */
+    /**
+     * The C8 pattern for backendUser: 1..255 characters, no C0/C1 controls, DEL, U+2028/2029 or bidi controls.
+     * Unpaired surrogates are refused on top of the schema: they are not valid Unicode and a SIEM parser may
+     * reject the whole line.
+     */
     static boolean validBackendUser(String value) {
         int length = value.codePointCount(0, value.length());
-        return length >= 1 && length <= 255 && !FORBIDDEN_IN_BACKEND_USER.matcher(value).find();
+        return length >= 1 && length <= 255 && !FORBIDDEN_IN_BACKEND_USER.matcher(value).find()
+                && !hasUnpairedSurrogate(value);
+    }
+
+    private static boolean hasUnpairedSurrogate(String value) {
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (Character.isHighSurrogate(c) && i + 1 < value.length() && Character.isLowSurrogate(value.charAt(i + 1))) {
+                i++;
+            } else if (Character.isSurrogate(c)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public Entry event(String event, String requestId) {
