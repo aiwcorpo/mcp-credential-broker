@@ -12,11 +12,13 @@ Kamienie pośrednie:
    prefiksów, CC-099), cały Authenticator: migracja V4, magazyn ziarna w OpenBao Transit, serwis, API C4 `/v1/authenticator*`
    i reset, audyt, wektory `totp/`.
 2. **K2**: testy integracyjne po HTTP (rejestracja, równoległość, przechowywanie, macierz wywołujących), README.
-3. **K3**: przegląd własny i poprawki, STATUS, opis potrzeb wobec ws-01, obraz.
+3. **K3**: przegląd własny, STATUS, opis potrzeb wobec innych strumieni.
+
+Obrazy: `mcp-credential-broker:m3-543403c` (K1), `m3-0252757` (K2), `m3-<sha K3>` (K3, ostatni commit). Compose nie ruszany.
 
 | Wymaganie M3 | Stan |
 | --- | --- |
-| mcp-contracts 3.0.1 | `pom.xml`; `identity_mismatch` nie występuje w kodzie ani testach (od M2 nie był zwracany; opis w README zostaje jako informacja); `ReturnPath` wg CC-099 (zarezerwowane prefiksy `/api`, `/s`, `/v`, `/.well-known`, segmenty `.`/`..`, bez `;`), 33 wektory `return-paths/` zielone |
+| mcp-contracts 3.0.1 | `pom.xml`; `identity_mismatch` nie występuje w kodzie ani testach (od M2 nie był zwracany; opis w README zostaje jako informacja); `ReturnPath` wg CC-099 (zarezerwowane prefiksy `/api`, `/s`, `/v`, `/.well-known`, segmenty `.`/`..`, bez `;`), wektory `return-paths/` (33) zielone |
 | rejestracja (start, potwierdzenie, status, usunięcie) | tylko CN `mcp-portal-bff`; ziarno 20 bajtów `SecureRandom`, w `201` raz (`Cache-Control: no-store`, `Pragma: no-cache`), `otpauthUri` w stałej formie; rejestracja w toku zaszyfrowana, TTL 10 min, 3 próby, ponowny start zastępuje, `409 already_registered`, `429` po 10 startach na godzinę (wartość własna, kontrakt mówi tylko "limit brokera"); zadanie w tle kasuje ziarna niepotwierdzonych rejestracji |
 | weryfikacja kodu | tylko CN `mcp-gateway`; RFC 6238, okno t-1..t+1, `lastAcceptedStep`, `replayed`, `burned`; zły format = 400 bez skutku |
 | limity 5/15 min i 20/24 h | blokada 15 min jako własność użytkownika (przeżywa usunięcie, reset i nową rejestrację), `disabled` do ponownej rejestracji; aktywacja zeruje liczniki i `disabled` |
@@ -27,11 +29,11 @@ Kamienie pośrednie:
 | audyt | `event: authenticator`, powody z kontraktu, każda linia walidowana schematem C8 w testach |
 | wektory `totp/` | 44 scenariusze + RFC 6238 + `otpauth-uri` zielone (`TotpVectorTest`, 47 przypadków z testem sprzątania) |
 
-### Dowody (K1-K2)
+### Dowody (K1-K3)
 
 ```
 ./mvnw -B verify
-Tests run: 314, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS, mcp-contracts 3.0.1; przed M3 było 199)
+Tests run: 301, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS, mcp-contracts 3.0.1; przed M3 było 199)
   TotpVectorTest 47, AuthenticatorIntegrationTest 13, InternalJwtVectorTest 61, AuditEventVectorTest 83, ...
 ```
 
