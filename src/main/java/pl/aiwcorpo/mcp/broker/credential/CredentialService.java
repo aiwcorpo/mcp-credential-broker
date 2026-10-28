@@ -157,13 +157,19 @@ public class CredentialService {
                 throw new SecretRejectedException("identity_mismatch");
             }
 
-            Optional<Connection> previous = connections.find(caller.sub(), system.id());
             Instant expires = expiresAt == null ? null : expiresAt.truncatedTo(ChronoUnit.SECONDS);
-            Connection connection = store.replace(
-                    new Connection(caller.sub(), system.id(), CredentialType.USER_SECRET, Connection.StoredState.CONNECTED,
-                            identity.username(), expires, now.truncatedTo(ChronoUnit.SECONDS), null, null, null),
-                    StoredCredential.of(CredentialType.USER_SECRET, secret), previous, true);
-            Stored stored = new Stored(connection.status(now, expiringThreshold), identity.username(), expires);
+            Replaced replaced = oauth.underRefreshLock(caller.sub(), system.id(), () -> {
+                Optional<Connection> previous = connections.find(caller.sub(), system.id());
+                StoredCredential oldGrant = previous.map(oauth::grantToRevoke).orElse(null);
+                Connection written = store.replace(
+                        new Connection(caller.sub(), system.id(), CredentialType.USER_SECRET, Connection.StoredState.CONNECTED,
+                                identity.username(), expires, now.truncatedTo(ChronoUnit.SECONDS), null, null, null),
+                        StoredCredential.of(CredentialType.USER_SECRET, secret), previous, true);
+                oauth.revokeReplacedGrant(system.id(), oldGrant);
+                return new Replaced(written, previous);
+            });
+            Optional<Connection> previous = replaced.previous();
+            Stored stored = new Stored(replaced.connection().status(now, expiringThreshold), identity.username(), expires);
             entry.ok(previous.isPresent() ? "secret_replaced" : "secret_stored");
             return stored;
         } catch (SecretRejectedException e) {
@@ -180,6 +186,9 @@ public class CredentialService {
             entry.error(unavailableDatabase(e) ? "database_unavailable" : "internal_error", "upstream_unavailable");
             throw e;
         }
+    }
+
+    private record Replaced(Connection connection, Optional<Connection> previous) {
     }
 
     /** Connections of the calling user with their C4 status; never touches the secret store. */
@@ -207,23 +216,26 @@ public class CredentialService {
             if (!SystemRegistry.KNOWN_SYSTEMS.contains(systemId)) {
                 throw new InvalidRequestException("unknown system");
             }
-            Optional<Connection> existing = connections.find(caller.sub(), systemId);
-            if (existing.isEmpty()) {
-                entry.ok("nothing_to_disconnect");
-                return false;
-            }
-            entry.credentialType(existing.get().type().wire());
-            oauth.revokeAtProvider(existing.get());
-            secrets.delete(existing.get().secretKey());
-            connections.delete(caller.sub(), systemId);
-            invalidations.invalidated(caller.sub(), systemId);
-            entry.ok("disconnected");
-            return true;
+            return oauth.underRefreshLock(caller.sub(), systemId, () -> {
+                Optional<Connection> existing = connections.find(caller.sub(), systemId);
+                if (existing.isEmpty()) {
+                    entry.ok("nothing_to_disconnect");
+                    return false;
+                }
+                entry.credentialType(existing.get().type().wire());
+                oauth.revokeAtProvider(existing.get());
+                secrets.delete(existing.get().secretKey());
+                connections.delete(caller.sub(), systemId);
+                invalidations.invalidated(caller.sub(), systemId);
+                entry.ok("disconnected");
+                return true;
+            });
         } catch (InvalidRequestException e) {
             entry.denied("invalid_request", "invalid_argument");
             throw e;
-        } catch (SecretStoreUnavailableException e) {
-            entry.error("secret_store_unavailable", "upstream_unavailable");
+        } catch (SecretStoreUnavailableException | UpstreamUnavailableException e) {
+            entry.error(e instanceof UpstreamUnavailableException ? "connection_busy" : "secret_store_unavailable",
+                    "upstream_unavailable");
             throw e;
         } catch (RuntimeException e) {
             entry.error(unavailableDatabase(e) ? "database_unavailable" : "internal_error", "upstream_unavailable");

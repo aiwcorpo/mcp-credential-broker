@@ -87,6 +87,7 @@ public record BrokerProperties(
             @DefaultValue("5m") @NotNull Duration sweepWindow,
             @DefaultValue("1m") @NotNull Duration sweepInterval,
             @DefaultValue("5s") @NotNull Duration refreshLockWait,
+            @DefaultValue("60s") @NotNull Duration refreshLockLease,
             @DefaultValue("broker:oauth:") @NotBlank String redisPrefix) {
     }
 

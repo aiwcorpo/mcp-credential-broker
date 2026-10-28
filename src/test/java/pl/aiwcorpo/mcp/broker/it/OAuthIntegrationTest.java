@@ -35,6 +35,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 import pl.aiwcorpo.mcp.broker.credential.OAuthService;
+import pl.aiwcorpo.mcp.broker.oauth.RefreshLock;
 import pl.aiwcorpo.mcp.broker.secret.SecretKey;
 import pl.aiwcorpo.mcp.broker.support.BrokerClient;
 import pl.aiwcorpo.mcp.broker.support.Contracts;
@@ -75,6 +76,9 @@ class OAuthIntegrationTest {
 
     @Autowired
     StringRedisTemplate redis;
+
+    @Autowired
+    RefreshLock refreshLock;
 
     BrokerClient gateway;
     BrokerClient bff;
@@ -221,7 +225,7 @@ class OAuthIntegrationTest {
     }
 
     @Test
-    void aWrongStateRefusesAndConsumesTheFlow() {
+    void aWrongStateIsRefusedAndTheOwnersFlowSurvivesIt() {
         String sub = newSub();
         GitLabStub.Grant grant = grant("alice", 7200);
         Started started = start(sub, "alice");
@@ -230,9 +234,9 @@ class OAuthIntegrationTest {
                 completeBody(started.flowId(), grant.code(), started.state() + "x"));
         assertThat(wrong.status()).isEqualTo(422);
         assertThat(wrong.json().path("error").stringValue()).isEqualTo("flow_invalid");
-        assertThat(complete(sub, "alice", started, grant.code()).status()).as("the flow is gone").isEqualTo(422);
         assertThat(gitlab.tokenRequests("authorization_code", "code", grant.code())).isEmpty();
         assertThat(rows(sub)).isZero();
+        assertThat(complete(sub, "alice", started, grant.code()).status()).as("a forged callback did not burn the flow").isEqualTo(200);
     }
 
     @Test
@@ -467,6 +471,128 @@ class OAuthIntegrationTest {
         }
         assertThat(gitlab.tokenRequests("refresh_token", "refresh_token", first.refreshToken()))
                 .as("a rotated refresh token must not be spent twice").hasSize(1);
+        assertThat(gitlab.tokenRequests("refresh_token", "refresh_token", second.refreshToken()))
+                .as("the renewed token is not renewed again by the callers that waited for the lock").isEmpty();
+    }
+
+    @Test
+    void aDisconnectDuringARefreshWaitsForItAndThenWins() throws Exception {
+        String sub = newSub();
+        GitLabStub.Grant first = grant("alice", 60);
+        connect(sub, "alice", first);
+        GitLabStub.Grant second = gitlab.rotateOnRefresh(first, 7200, 700);
+        SECRETS.addAll(List.of(second.accessToken(), second.refreshToken()));
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<BrokerClient.Response> during = pool.submit(() -> resolve(sub, "alice", "gitlab"));
+            Thread.sleep(250);
+            assertThat(bff.send("DELETE", "/v1/connections/gitlab", tokens.bffUser(sub, "alice"), null, null).status()).isEqualTo(204);
+            assertThat(during.get().status()).isEqualTo(200);
+            assertThat(rows(sub)).as("the connection stays gone").isZero();
+            assertThat(resolve(sub, "alice", "gitlab").status()).isEqualTo(409);
+            assertThat(gitlab.revokeRequests()).extracting(form -> form.get("token"))
+                    .as("the tokens the refresh issued are revoked by the disconnect that followed")
+                    .contains(second.accessToken(), second.refreshToken());
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void aRefreshThatLostItsLockCannotBringADisconnectedConnectionBack() throws Exception {
+        String sub = newSub();
+        GitLabStub.Grant first = grant("alice", 60);
+        connect(sub, "alice", first);
+        GitLabStub.Grant second = gitlab.rotateOnRefresh(first, 7200, 700);
+        SECRETS.addAll(List.of(second.accessToken(), second.refreshToken()));
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<BrokerClient.Response> during = pool.submit(() -> resolve(sub, "alice", "gitlab"));
+            Thread.sleep(250);
+            redis.delete(refreshLockKey(sub));
+            assertThat(bff.send("DELETE", "/v1/connections/gitlab", tokens.bffUser(sub, "alice"), null, null).status()).isEqualTo(204);
+
+            assertThat(during.get().status()).as("the refresh finds the connection gone").isEqualTo(409);
+            assertThat(rows(sub)).isZero();
+            assertThat(resolve(sub, "alice", "gitlab").status()).isEqualTo(409);
+            assertThat(gitlab.revokeRequests()).extracting(form -> form.get("token"))
+                    .as("the new tokens of the lost race are revoked at the provider")
+                    .contains(second.accessToken(), second.refreshToken());
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void aLockIsReleasedOnlyByItsOwner() {
+        String sub = newSub();
+        String first = refreshLock.acquire(sub, "gitlab", java.time.Duration.ZERO).orElseThrow();
+        assertThat(refreshLock.acquire(sub, "gitlab", java.time.Duration.ZERO)).as("taken").isEmpty();
+        redis.delete(refreshLockKey(sub));
+        String second = refreshLock.acquire(sub, "gitlab", java.time.Duration.ZERO).orElseThrow();
+
+        refreshLock.release(sub, "gitlab", first);
+        assertThat(redis.hasKey(refreshLockKey(sub))).as("the late release of the expired holder leaves the new holder's lock").isTrue();
+        refreshLock.release(sub, "gitlab", second);
+        assertThat(redis.hasKey(refreshLockKey(sub))).isFalse();
+    }
+
+    @Test
+    void connectingAgainRevokesTheGrantItReplaces() {
+        String sub = newSub();
+        GitLabStub.Grant first = grant("alice", 7200);
+        connect(sub, "alice", first);
+        GitLabStub.Grant second = grant("alice", 7200);
+        connect(sub, "alice", second);
+
+        assertThat(gitlab.revokeRequests()).extracting(form -> form.get("token")).contains(first.accessToken(), first.refreshToken())
+                .doesNotContain(second.accessToken(), second.refreshToken());
+        assertThat(resolve(sub, "alice", "gitlab").json().path("value").stringValue()).isEqualTo(second.accessToken());
+    }
+
+    @Test
+    void storingAPatOverAnOAuthConnectionRevokesTheGrant() {
+        String sub = newSub();
+        GitLabStub.Grant grant = grant("alice", 7200);
+        connect(sub, "alice", grant);
+        gitlab.pat("glpat-alice-replacement", "alice");
+        SECRETS.add("glpat-alice-replacement");
+
+        assertThat(putSecret(sub, "alice", "{\"secret\":\"glpat-alice-replacement\"}").status()).isEqualTo(200);
+        assertThat(gitlab.revokeRequests()).extracting(form -> form.get("token")).contains(grant.accessToken(), grant.refreshToken());
+    }
+
+    @Test
+    void tokensIssuedForACodeAreRevokedWhenTheIdentityCheckCannotBeDone() {
+        String sub = newSub();
+        GitLabStub.Grant grant = grant("alice", 7200);
+        gitlab.whoamiFails(grant.accessToken(), 500);
+        Started started = start(sub, "alice");
+
+        assertThat(complete(sub, "alice", started, grant.code()).status()).isEqualTo(503);
+        assertThat(rows(sub)).isZero();
+        assertThat(gitlab.revokeRequests()).extracting(form -> form.get("token")).contains(grant.accessToken(), grant.refreshToken());
+    }
+
+    @Test
+    void anOversizedProviderAnswerIsRefusedAsUnavailable() {
+        String sub = newSub();
+        gitlab.oversizedWhoami("glpat-huge");
+        BrokerClient.Response response = putSecret(sub, "alice", "{\"secret\":\"glpat-huge\"}");
+        assertThat(response.status()).isEqualTo(503);
+        assertThat(rows(sub)).isZero();
+    }
+
+    @Test
+    void aProviderThatTricklesItsAnswerIsCutOffAtTheTimeout() {
+        String sub = newSub();
+        gitlab.trickledWhoami("glpat-slow");
+        long started = System.nanoTime();
+        BrokerClient.Response response = putSecret(sub, "alice", "{\"secret\":\"glpat-slow\"}");
+        long seconds = java.time.Duration.ofNanos(System.nanoTime() - started).toSeconds();
+        assertThat(response.status()).isEqualTo(503);
+        assertThat(seconds).as("the system timeout is 1 s, the body would take 8 s").isLessThan(5);
+        assertThat(rows(sub)).isZero();
     }
 
     @Test
@@ -654,6 +780,10 @@ class OAuthIntegrationTest {
         String version = jdbc.sql("select secret_version from connection where sub = ? and system = 'gitlab'").param(sub)
                 .query(String.class).single();
         return "secret/data/mcp/connections/" + new SecretKey(sub, "gitlab", version).relativePath();
+    }
+
+    private static String refreshLockKey(String sub) {
+        return "broker:oauth:refresh:" + new SecretKey(sub, "gitlab", null).subHash() + ":gitlab";
     }
 
     private long rows(String sub) {

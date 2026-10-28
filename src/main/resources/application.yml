@@ -96,6 +96,7 @@ broker:
     sweep-window: 5m
     sweep-interval: PT1M
     refresh-lock-wait: 5s
+    refresh-lock-lease: 60s
   systems:
     jira:
       base-url: ${MCP_JIRA_URL}

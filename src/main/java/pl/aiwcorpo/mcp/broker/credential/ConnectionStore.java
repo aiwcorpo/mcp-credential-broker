@@ -1,7 +1,9 @@
 package pl.aiwcorpo.mcp.broker.credential;
 
 import java.time.Clock;
+import java.time.Instant;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,6 +22,7 @@ import pl.aiwcorpo.mcp.broker.secret.StoredCredential;
 public class ConnectionStore {
 
     private static final Logger log = LoggerFactory.getLogger(ConnectionStore.class);
+    private static final long[] RETRY_BACKOFF_MILLIS = {200, 600};
 
     private final ConnectionRepository connections;
     private final SecretStore secrets;
@@ -54,11 +57,81 @@ public class ConnectionStore {
         return next;
     }
 
-    /** The provider no longer honours the grant: the value is useless, the row stays so the portal shows "revoked". */
-    void markRevoked(Connection connection) {
-        connections.setState(connection.sub(), connection.system(), Connection.StoredState.REVOKED, clock.instant());
+    /**
+     * Stores the tokens of a refresh next to the old value and switches the row only if it still points at the
+     * version the refresh started from. Empty means the row changed in the meantime (disconnected, replaced):
+     * the new value is removed again and the caller must revoke the new tokens at the provider.
+     * The provider has already spent the old refresh token, so both writes are retried before giving up.
+     */
+    Optional<Connection> refresh(Connection current, StoredCredential credential, Instant accessExpiresAt) {
+        SecretKey key = SecretKey.newVersion(current.sub(), current.system());
+        retryingVoid(() -> secrets.put(key, credential));
+        boolean switched;
+        try {
+            switched = retrying(() -> connections.switchSecretVersion(current.sub(), current.system(), current.secretVersion(),
+                    key.version(), accessExpiresAt, clock.instant()));
+        } catch (RuntimeException e) {
+            deleteQuietly(key);
+            throw e;
+        }
+        if (!switched) {
+            deleteQuietly(key);
+            return Optional.empty();
+        }
+        deleteQuietly(current.secretKey());
+        return Optional.of(current.withSecretVersion(key.version()).withAccessExpiresAt(accessExpiresAt));
+    }
+
+    /**
+     * The provider no longer honours the grant: the value is useless, the row stays so the portal shows "revoked".
+     * Returns false when the row is no longer the one the caller read (nothing is changed then).
+     */
+    boolean markRevoked(Connection connection) {
+        return markUnusable(connection, Connection.StoredState.REVOKED);
+    }
+
+    /** The grant is intact at the provider but the broker lost the rotated refresh token: only reconnecting helps. */
+    boolean markError(Connection connection) {
+        return markUnusable(connection, Connection.StoredState.ERROR);
+    }
+
+    private boolean markUnusable(Connection connection, Connection.StoredState state) {
+        if (!connections.setStateIfVersion(connection.sub(), connection.system(), connection.secretVersion(), state, clock.instant())) {
+            return false;
+        }
         invalidations.invalidated(connection.sub(), connection.system());
         deleteQuietly(connection.secretKey());
+        return true;
+    }
+
+    private <T> T retrying(Supplier<T> action) {
+        RuntimeException last = null;
+        for (int attempt = 0; attempt < RETRY_BACKOFF_MILLIS.length + 1; attempt++) {
+            try {
+                return action.get();
+            } catch (RuntimeException e) {
+                last = e;
+                if (attempt < RETRY_BACKOFF_MILLIS.length) {
+                    pause(RETRY_BACKOFF_MILLIS[attempt]);
+                }
+            }
+        }
+        throw last;
+    }
+
+    private void retryingVoid(Runnable action) {
+        retrying(() -> {
+            action.run();
+            return null;
+        });
+    }
+
+    private static void pause(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     void deleteQuietly(SecretKey key) {

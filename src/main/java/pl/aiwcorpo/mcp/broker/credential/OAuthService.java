@@ -6,11 +6,15 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Base64;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -117,19 +121,22 @@ public class OAuthService {
 
     public Completed complete(Caller.PortalUser caller, String systemId, String flowId, SecretValue code, String state) {
         AuditLog.Entry entry = portalEntry(caller, systemId);
+        TokenSet tokens = null;
+        OAuthProvider provider = null;
+        boolean stored = false;
         try {
             ConfiguredSystem system = oauthSystem(systemId);
-            OAuthProvider provider = system.oauth().orElseThrow();
+            provider = system.oauth().orElseThrow();
             OAuthFlowStore.Flow pending = flows.peek(flowId).orElseThrow(() -> new SecretRejectedException("flow_invalid"));
             if (!pending.sub().equals(caller.sub())) {
                 // Not consumed: someone else's request must not be able to burn the owner's flow.
                 throw new SecretRejectedException("flow_invalid", "flow_of_another_user");
             }
-            OAuthFlowStore.Flow flow = flows.take(flowId).orElseThrow(() -> new SecretRejectedException("flow_invalid"));
-            if (!flow.system().equals(system.id()) || !constantTimeEquals(flow.state(), state)) {
+            if (!pending.system().equals(system.id()) || !constantTimeEquals(pending.state(), state)) {
+                // Not consumed either: a callback with a wrong state is not the owner finishing the flow.
                 throw new SecretRejectedException("flow_invalid", "state_mismatch");
             }
-            TokenSet tokens;
+            OAuthFlowStore.Flow flow = flows.take(flowId).orElseThrow(() -> new SecretRejectedException("flow_invalid"));
             try {
                 tokens = provider.exchangeCode(code, flow.codeVerifier(), redirectUri);
             } catch (OAuthGrantRejectedException e) {
@@ -141,19 +148,24 @@ public class OAuthService {
                 case WhoamiResult.Identified identified -> identified.identity();
             };
             if (!IdentityRule.matches(system.config().identityClaim(), caller.claims(), identity)) {
-                revokeQuietly(provider, tokens.accessToken());
-                revokeQuietly(provider, tokens.refreshToken());
                 throw new SecretRejectedException("identity_mismatch");
             }
-            Instant now = clock.instant();
-            Optional<Connection> previous = connections.find(caller.sub(), system.id());
-            store.replace(
-                    new Connection(caller.sub(), system.id(), CredentialType.USER_OAUTH, Connection.StoredState.CONNECTED,
-                            identity.username(), null, now.truncatedTo(ChronoUnit.SECONDS), null, null,
-                            accessExpiry(tokens, now)),
-                    new StoredCredential(CredentialType.USER_OAUTH, tokens.accessToken(), tokens.refreshToken()),
-                    previous, true);
-            entry.ok(previous.isPresent() ? "oauth_replaced" : "oauth_connected");
+            TokenSet issued = tokens;
+            boolean replaced = underRefreshLock(caller.sub(), system.id(), () -> {
+                Instant now = clock.instant();
+                Optional<Connection> previous = connections.find(caller.sub(), system.id());
+                StoredCredential oldGrant = previous.map(this::grantToRevoke).orElse(null);
+                store.replace(
+                        new Connection(caller.sub(), system.id(), CredentialType.USER_OAUTH, Connection.StoredState.CONNECTED,
+                                identity.username(), null, now.truncatedTo(ChronoUnit.SECONDS), null, null,
+                                accessExpiry(issued, now)),
+                        new StoredCredential(CredentialType.USER_OAUTH, issued.accessToken(), issued.refreshToken()),
+                        previous, true);
+                revokeGrantQuietly(system.oauth().orElseThrow(), oldGrant);
+                return previous.isPresent();
+            });
+            stored = true;
+            entry.ok(replaced ? "oauth_replaced" : "oauth_connected");
             return new Completed(ConnectionStatus.CONNECTED, identity.username());
         } catch (SecretRejectedException e) {
             entry.denied(e.reason(), null);
@@ -169,6 +181,29 @@ public class OAuthService {
             entry.error(CredentialService.unavailableDatabase(e) ? "database_unavailable" : "internal_error",
                     "upstream_unavailable");
             throw e;
+        } finally {
+            if (tokens != null && !stored) {
+                // Every way out after the exchange that stores nothing leaves live tokens at the provider.
+                revokeQuietly(provider, tokens.accessToken());
+                revokeQuietly(provider, tokens.refreshToken());
+            }
+        }
+    }
+
+    /**
+     * Runs a change of one connection while holding the lock that refreshes take, so a refresh in flight cannot
+     * write over it and it cannot interleave with another change. Systems without OAuth need no lock.
+     */
+    public <T> T underRefreshLock(String sub, String systemId, Supplier<T> action) {
+        if (systems.find(systemId).filter(s -> s.oauth().isPresent()).isEmpty()) {
+            return action.get();
+        }
+        String owner = lock.acquire(sub, systemId, settings.refreshLockWait())
+                .orElseThrow(() -> new UpstreamUnavailableException("another change of this connection is in progress"));
+        try {
+            return action.get();
+        } finally {
+            lock.release(sub, systemId, owner);
         }
     }
 
@@ -178,24 +213,43 @@ public class OAuthService {
      * is not an error for the caller.
      */
     public Fresh ensureFresh(String requestId, Connection found, StoredCredential stored) {
-        Instant now = clock.instant();
-        if (!due(found, now)) {
+        Instant dueBefore = clock.instant().plus(settings.refreshMargin());
+        if (!due(found, dueBefore)) {
             return new Fresh(found, stored);
         }
-        return renew(requestId, found.sub(), found.system(), found, stored, false);
+        return renew(requestId, found.sub(), found.system(), found, stored, settings.refreshMargin());
     }
 
-    /** Background renewal of tokens that will be due within the sweep window. */
+    /**
+     * Background renewal of tokens that will be due within the sweep window. Stops at the first failure of the
+     * broker's own stores (renewing more would spend refresh tokens it may not be able to save) and skips the
+     * remaining rows of a system whose provider just failed.
+     */
     public int refreshDue() {
-        List<Connection> due = connections.findOAuthExpiringBefore(clock.instant().plus(settings.sweepWindow()), SWEEP_BATCH);
+        List<String> oauthSystems = systems.all().stream().filter(s -> s.oauth().isPresent()).map(ConfiguredSystem::id).toList();
+        List<Connection> due = connections.findOAuthExpiringBefore(clock.instant().plus(settings.sweepWindow()), oauthSystems, SWEEP_BATCH);
+        Set<String> failedProviders = new HashSet<>();
         int renewed = 0;
         for (Connection connection : due) {
+            if (failedProviders.contains(connection.system())) {
+                continue;
+            }
             try {
-                renew(RequestIds.next(clock), connection.sub(), connection.system(), null, null, true);
+                renew(RequestIds.next(clock), connection.sub(), connection.system(), null, null, settings.sweepWindow());
                 renewed++;
             } catch (CredentialRequiredException e) {
                 log.info("Connection to {} no longer renewable", connection.system());
+            } catch (SecretStoreUnavailableException e) {
+                log.warn("Token sweep stopped, the secret store or lock is unavailable: {}", e.getMessage());
+                break;
+            } catch (UpstreamUnavailableException e) {
+                failedProviders.add(connection.system());
+                log.warn("Token renewal for {} failed: {}", connection.system(), e.getMessage());
             } catch (RuntimeException e) {
+                if (CredentialService.unavailableDatabase(e)) {
+                    log.warn("Token sweep stopped, the database is unavailable");
+                    break;
+                }
                 log.warn("Token renewal for {} failed ({})", connection.system(), e.getClass().getSimpleName());
             }
         }
@@ -205,29 +259,45 @@ public class OAuthService {
     /** Best effort: the connection is removed locally whether or not the provider could be reached. */
     public void revokeAtProvider(Connection connection) {
         Optional<ConfiguredSystem> system = systems.find(connection.system());
-        if (connection.type() != CredentialType.USER_OAUTH || connection.state() != Connection.StoredState.CONNECTED
-                || system.isEmpty() || system.get().oauth().isEmpty()) {
+        if (system.isEmpty() || system.get().oauth().isEmpty()) {
             return;
         }
+        revokeGrantQuietly(system.get().oauth().get(), grantToRevoke(connection));
+    }
+
+    /** The stored tokens of a connected user-oauth connection, or null when there is nothing to revoke or the store fails. */
+    StoredCredential grantToRevoke(Connection connection) {
+        if (connection.type() != CredentialType.USER_OAUTH || connection.state() != Connection.StoredState.CONNECTED) {
+            return null;
+        }
         try {
-            StoredCredential stored = secrets.get(connection.secretKey()).orElse(null);
-            if (stored != null) {
-                OAuthProvider provider = system.get().oauth().get();
-                revokeQuietly(provider, stored.refreshToken());
-                revokeQuietly(provider, stored.value());
-            }
+            return secrets.get(connection.secretKey()).orElse(null);
         } catch (SecretStoreUnavailableException e) {
             log.warn("Token for {} not revoked at the provider: {}", connection.system(), e.getMessage());
+            return null;
         }
     }
 
-    /** @param force renew even if the margin is not reached yet: the sweep runs ahead of the margin on purpose */
+    /** Revokes the tokens of a grant that a new connection has just replaced; the first argument names its system. */
+    void revokeReplacedGrant(String systemId, StoredCredential grant) {
+        systems.find(systemId).flatMap(ConfiguredSystem::oauth).ifPresent(provider -> revokeGrantQuietly(provider, grant));
+    }
+
+    private void revokeGrantQuietly(OAuthProvider provider, StoredCredential grant) {
+        if (grant != null) {
+            revokeQuietly(provider, grant.refreshToken());
+            revokeQuietly(provider, grant.value());
+        }
+    }
+
+    /** @param window renew when the access token stops working within this time: the margin for a caller, the sweep window for the sweep */
     private Fresh renew(String requestId, String sub, String systemId, Connection seen, StoredCredential seenCredential,
-            boolean force) {
+            Duration window) {
         ConfiguredSystem system = systems.find(systemId).orElseThrow(() -> new CredentialRequiredException(systemId));
         OAuthProvider provider = system.oauth().orElseThrow(() -> new CredentialRequiredException(systemId));
         Instant start = clock.instant();
-        if (!lock.acquire(sub, systemId, settings.refreshLockWait())) {
+        Optional<String> owner = lock.acquire(sub, systemId, settings.refreshLockWait());
+        if (owner.isEmpty()) {
             if (seen != null && seen.accessExpiresAt() != null && seen.accessExpiresAt().isAfter(start)) {
                 return new Fresh(seen, seenCredential);
             }
@@ -235,6 +305,7 @@ public class OAuthService {
         }
         AuditLog.Entry entry = audit.event("connection_change", requestId).user(sub, null, null).system(systemId)
                 .credentialType(CredentialType.USER_OAUTH.wire());
+        boolean entryClosed = false;
         try {
             Connection current = connections.find(sub, systemId).orElseThrow(() -> new CredentialRequiredException(systemId));
             if (current.type() != CredentialType.USER_OAUTH || current.state() != Connection.StoredState.CONNECTED) {
@@ -243,7 +314,7 @@ public class OAuthService {
             StoredCredential credential = seen != null && current.secretVersion() != null
                     && current.secretVersion().equals(seen.secretVersion()) ? seenCredential
                     : secrets.get(current.secretKey()).orElseThrow(() -> new CredentialRequiredException(systemId));
-            if (!force && !due(current, clock.instant())) {
+            if (!due(current, clock.instant().plus(window))) {
                 return new Fresh(current, credential);
             }
             SecretValue refreshToken = credential.refreshToken();
@@ -254,8 +325,9 @@ public class OAuthService {
                 }
                 tokens = provider.refresh(refreshToken);
             } catch (OAuthGrantRejectedException e) {
-                store.markRevoked(current);
-                entry.denied("oauth_grant_revoked", null);
+                if (store.markRevoked(current)) {
+                    entry.denied("oauth_grant_revoked", null);
+                }
                 throw new CredentialRequiredException(systemId);
             } catch (UpstreamUnavailableException e) {
                 if (current.accessExpiresAt() != null && current.accessExpiresAt().isAfter(clock.instant())) {
@@ -266,22 +338,64 @@ public class OAuthService {
                 throw e;
             }
             Instant now = clock.instant();
+            boolean rotated = tokens.refreshToken() != null && !tokens.refreshToken().reveal().equals(refreshToken.reveal());
             StoredCredential next = new StoredCredential(CredentialType.USER_OAUTH, tokens.accessToken(),
                     tokens.refreshToken() != null ? tokens.refreshToken() : refreshToken);
-            Connection saved = store.replace(current.withAccessExpiresAt(accessExpiry(tokens, now)), next,
-                    Optional.of(current), false);
+            Optional<Connection> saved;
+            try {
+                saved = store.refresh(current, next, accessExpiry(tokens, now));
+            } catch (RuntimeException e) {
+                entryClosed = true;
+                if (rotated) {
+                    abandonLostGrant(provider, current, tokens);
+                    entry.error("refresh_token_lost", "upstream_unavailable");
+                } else {
+                    entry.error(failureReason(e), "upstream_unavailable");
+                }
+                throw e;
+            }
+            if (saved.isEmpty()) {
+                // Disconnected or replaced while the provider was answering: the new tokens belong to nobody.
+                revokeQuietly(provider, tokens.accessToken());
+                revokeQuietly(provider, tokens.refreshToken());
+                entry.denied("connection_changed_during_refresh", null);
+                throw new CredentialRequiredException(systemId);
+            }
             entry.ok("token_refreshed");
-            return new Fresh(saved, next);
+            return new Fresh(saved.get(), next);
         } catch (SecretStoreUnavailableException e) {
-            entry.error("secret_store_unavailable", "upstream_unavailable");
+            if (!entryClosed) {
+                entry.error("secret_store_unavailable", "upstream_unavailable");
+            }
             throw e;
         } finally {
-            lock.release(sub, systemId);
+            lock.release(sub, systemId, owner.get());
         }
     }
 
-    private boolean due(Connection connection, Instant now) {
-        return connection.accessExpiresAt() != null && !connection.accessExpiresAt().isAfter(now.plus(settings.refreshMargin()));
+    /**
+     * The provider rotated the refresh token and the broker could not save the new one: the old one is spent, so
+     * the grant is unusable for the broker. Revoking the new tokens keeps no live grant without an owner, and the
+     * connection goes to "error" (not "revoked": the provider did not withdraw anything) until the user reconnects.
+     */
+    private void abandonLostGrant(OAuthProvider provider, Connection current, TokenSet tokens) {
+        revokeQuietly(provider, tokens.accessToken());
+        revokeQuietly(provider, tokens.refreshToken());
+        try {
+            store.markError(current);
+        } catch (RuntimeException e) {
+            log.error("Connection to {} could not be marked as failed after a lost refresh token ({})", current.system(),
+                    e.getClass().getSimpleName());
+        }
+    }
+
+    private static String failureReason(RuntimeException e) {
+        return e instanceof SecretStoreUnavailableException ? "secret_store_unavailable"
+                : CredentialService.unavailableDatabase(e) ? "database_unavailable" : "internal_error";
+    }
+
+    private static boolean due(Connection connection, Instant dueBefore) {
+        return connection.accessExpiresAt() != null && !connection.accessExpiresAt().isAfter(dueBefore);
     }
 
     private ConfiguredSystem oauthSystem(String systemId) {

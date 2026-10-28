@@ -4,6 +4,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -71,27 +72,58 @@ public class ConnectionRepository {
                 .update();
     }
 
-    /** Connected OAuth connections whose access token stops working before {@code deadline}, oldest first. */
-    public List<Connection> findOAuthExpiringBefore(Instant deadline, int limit) {
+    /**
+     * Connected OAuth connections of the given systems whose access token stops working before {@code deadline},
+     * oldest first. Rows of systems that are no longer configured would never be renewed and would crowd out the rest.
+     */
+    public List<Connection> findOAuthExpiringBefore(Instant deadline, Collection<String> systems, int limit) {
+        if (systems.isEmpty()) {
+            return List.of();
+        }
         return jdbc.sql("""
                 select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at
                 from connection
-                where type = 'user-oauth' and state = 'connected' and access_expires_at < :deadline
+                where type = 'user-oauth' and state = 'connected' and system in (:systems) and access_expires_at < :deadline
                 order by access_expires_at limit :limit
                 """)
                 .param("deadline", timestamp(deadline))
+                .param("systems", systems)
                 .param("limit", limit)
                 .query(ConnectionRepository::map)
                 .list();
     }
 
-    public void setState(String sub, String system, Connection.StoredState state, Instant now) {
-        jdbc.sql("update connection set state = :state, updated_at = :now where sub = :sub and system = :system")
+    /**
+     * Moves the row to a new secret version only if it still points at {@code expectedVersion} and is connected:
+     * a disconnect or a newer connection that happened while a refresh was in flight wins over the refresh.
+     */
+    public boolean switchSecretVersion(String sub, String system, String expectedVersion, String newVersion,
+            Instant accessExpiresAt, Instant now) {
+        return jdbc.sql("""
+                update connection set secret_version = :newVersion, access_expires_at = :accessExpiresAt, updated_at = :now
+                where sub = :sub and system = :system and state = 'connected' and secret_version is not distinct from :expected
+                """)
+                .param("newVersion", newVersion)
+                .param("accessExpiresAt", timestamp(accessExpiresAt))
+                .param("now", timestamp(now))
+                .param("sub", sub)
+                .param("system", system)
+                .param("expected", expectedVersion)
+                .update() == 1;
+    }
+
+    /** Same guard as {@link #switchSecretVersion}: a state change only for the version the caller read. */
+    public boolean setStateIfVersion(String sub, String system, String expectedVersion, Connection.StoredState state, Instant now) {
+        return jdbc.sql("""
+                update connection set state = :state, updated_at = :now
+                where sub = :sub and system = :system and state = 'connected' and secret_version is not distinct from :expected
+                """)
                 .param("state", state.name().toLowerCase(Locale.ROOT))
                 .param("now", timestamp(now))
                 .param("sub", sub)
                 .param("system", system)
-                .update();
+                .param("expected", expectedVersion)
+                .update() == 1;
     }
 
     public void touch(String sub, String system, Instant lastUsedAt) {

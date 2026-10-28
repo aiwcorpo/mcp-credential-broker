@@ -24,7 +24,7 @@ class IdentityRuleVectorTest {
 
     static Stream<Arguments> vectors() {
         List<Resource> files = Contracts.vectors("whoami-identity");
-        assertThat(files).hasSize(12);
+        assertThat(files).hasSize(20);
         return files.stream().map(file -> {
             try (var in = file.getInputStream()) {
                 return Arguments.of(file.getFilename(), Contracts.JSON.readTree(in));
@@ -60,5 +60,17 @@ class IdentityRuleVectorTest {
                 new BackendIdentity("a", null))).isFalse();
         assertThat(IdentityRule.matches("preferred_username", Map.of("preferred_username", 7), new BackendIdentity("7", null)))
                 .isFalse();
+    }
+
+    @Test
+    void caseIsIgnoredOnlyWhenBothSidesAreAscii() {
+        assertThat(IdentityRule.sameIdentity("Alice", "aLICE")).isTrue();
+        assertThat(IdentityRule.sameIdentity("alice", "alice2")).isFalse();
+        assertThat(IdentityRule.sameIdentity("\u0141ukasz", "\u0142ukasz")).as("non-ASCII: exact").isFalse();
+        assertThat(IdentityRule.sameIdentity("\u0141ukasz", "\u0141ukasz")).isTrue();
+        assertThat(IdentityRule.sameIdentity("karen", "\u212aaren")).as("KELVIN SIGN is not a way to match k").isFalse();
+        assertThat(IdentityRule.sameIdentity("Karen", "\u212aaren")).as("canonically equivalent to K").isTrue();
+        assertThat(IdentityRule.sameIdentity("istanbul", "\u0130stanbul")).isFalse();
+        assertThat(IdentityRule.sameIdentity("Zo\u0301a", "Z\u00f3a")).as("NFC vs NFD").isTrue();
     }
 }

@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -52,7 +53,7 @@ class CredentialServiceTest {
     private final InvalidationPublisher invalidations = mock(InvalidationPublisher.class);
     private final SystemRegistry systems = registry("preferred_username");
     private final CredentialService service = new CredentialService(systems, connections, secrets, invalidations,
-            mock(OAuthService.class), new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7));
+            passThroughOAuth(), new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7));
 
     @Test
     void secretStoreOutageFailsClosed() {
@@ -133,6 +134,14 @@ class CredentialServiceTest {
                 .toString()).doesNotContain("alice-pat");
     }
 
+    /** The real service holds a lock around the action; here the action just runs. */
+    @SuppressWarnings("unchecked")
+    private static OAuthService passThroughOAuth() {
+        OAuthService oauth = mock(OAuthService.class);
+        when(oauth.underRefreshLock(any(), any(), any())).thenAnswer(call -> ((Supplier<Object>) call.getArgument(2)).get());
+        return oauth;
+    }
+
     private CredentialService serviceWithIdentity(BackendIdentity identity) {
         SystemRegistry registry = mock(SystemRegistry.class);
         SystemAdapter adapter = (scheme, secret) ->
@@ -140,7 +149,7 @@ class CredentialServiceTest {
         when(registry.find("jira")).thenReturn(Optional.of(
                 new SystemRegistry.ConfiguredSystem("jira", config("preferred_username"), adapter)));
         return new CredentialService(registry, connections, secrets, invalidations,
-                mock(OAuthService.class), new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7));
+                passThroughOAuth(), new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7));
     }
 
     @Test

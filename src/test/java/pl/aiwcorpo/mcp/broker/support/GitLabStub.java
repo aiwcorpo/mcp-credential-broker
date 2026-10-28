@@ -81,6 +81,26 @@ public final class GitLabStub {
         whoami(pat, user);
     }
 
+    /** whoami of this token answers a JSON body far over what the broker reads. */
+    public void oversizedWhoami(String bearer) {
+        server.stubFor(get(urlPathEqualTo("/api/v4/user")).atPriority(1).withHeader("Authorization", equalTo("Bearer " + bearer))
+                .willReturn(aResponse().withStatus(200).withHeader("Content-Type", "application/json")
+                        .withBody("{\"username\":\"" + "x".repeat(300_000) + "\"}")));
+    }
+
+    /** whoami of this token starts answering at once but sends the body in drops for much longer than the broker waits. */
+    public void trickledWhoami(String bearer) {
+        server.stubFor(get(urlPathEqualTo("/api/v4/user")).atPriority(1).withHeader("Authorization", equalTo("Bearer " + bearer))
+                .willReturn(aResponse().withStatus(200).withHeader("Content-Type", "application/json")
+                        .withBody("{\"id\":7,\"username\":\"alice\",\"email\":\"alice@corp.test\"}")
+                        .withChunkedDribbleDelay(10, 8000)));
+    }
+
+    public void whoamiFails(String bearer, int status) {
+        server.stubFor(get(urlPathEqualTo("/api/v4/user")).atPriority(1).withHeader("Authorization", equalTo("Bearer " + bearer))
+                .willReturn(aResponse().withStatus(status).withBody("{}")));
+    }
+
     public void revokeAccepts() {
         revokeAnswers(200);
     }

@@ -119,6 +119,7 @@ public class BrokerConfiguration {
 
     @Bean
     SystemRegistry systemRegistry(BrokerProperties properties, SslBundles sslBundles, JsonMapper json) {
+        requireTls(properties.portalBaseUrl(), "broker.portal-base-url", properties.allowPlainHttp());
         properties.systems().forEach((id, system) -> {
             requireTls(system.baseUrl(), "broker.systems." + id + ".base-url", properties.allowPlainHttp());
             if (system.oauth() != null) {
@@ -147,7 +148,7 @@ public class BrokerConfiguration {
 
     @Bean
     RefreshLock refreshLock(StringRedisTemplate redis, BrokerProperties properties) {
-        return new RefreshLock(redis, properties.oauthFlow().redisPrefix());
+        return new RefreshLock(redis, properties.oauthFlow().redisPrefix(), properties.oauthFlow().refreshLockLease());
     }
 
     @Bean
