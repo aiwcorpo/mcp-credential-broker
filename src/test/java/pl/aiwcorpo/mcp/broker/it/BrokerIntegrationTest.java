@@ -682,6 +682,16 @@ class BrokerIntegrationTest {
     }
 
     @Test
+    void bffTokensWithoutExpOrWithAnotherAlgorithmAreRefused() {
+        String sub = newSub();
+        String noExp = tokens.idpToken(TestTokens.IDP_ISSUER, sub, "alice", "mcp-portal-bff", "mcp-credential-broker", null);
+        for (String token : List.of(noExp, tokens.unsecuredSubjectToken(sub), tokens.hmacSubjectToken(sub))) {
+            assertThat(bff.send("GET", "/v1/connections", token, null, null).status()).isEqualTo(401);
+        }
+        assertThat(bff.send("GET", "/v1/connections", tokens.bffUser(sub, "alice"), null, null).status()).isEqualTo(200);
+    }
+
+    @Test
     void redisOutageFailsClosed(CapturedOutput output) {
         String sub = newSub();
         assertThat(putSecret(sub, "alice", "{\"secret\":\"alice-pat\"}").status()).isEqualTo(200);

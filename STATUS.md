@@ -13,7 +13,7 @@ Kamienie pośrednie:
 3. **K3**: limity `429` z `Retry-After` (OAuth start i complete na `sub`, CC-156; start rejestracji Authenticatora był już 10/h z M3), README,
    przegląd własny, obraz `mcp-credential-broker:m4-<sha>`.
 
-Obraz: `mcp-credential-broker:m4-9fb07d2` (pierwotny, przed poprawkami przeglądu; aktualny: `mcp-credential-broker:m4-64aa705`, 376 testów). Compose i stos nie ruszane.
+Obraz: `mcp-credential-broker:m4-9fb07d2` (pierwotny, przed poprawkami przeglądu; aktualny: `mcp-credential-broker:m4-64aa705`, 377 testów; po poprawce `BffTokenVerifier` obraz `m4-BFFSHA`). Compose i stos nie ruszane.
 
 | Wymaganie M4 | Stan |
 | --- | --- |
@@ -55,7 +55,7 @@ Tests run: 370, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS, mcp-contrac
 | # | Poprawka |
 | --- | --- |
 | M1 | `invalid_scope` -> `503`; `invalid_request` zostaje `403` (uzasadnienie w komentarzu `OpenSearchAdapter`); odmowy: `warn` + licznik `broker.token_exchange.denied`; testy `anInvalidScopeIsTheInstallationsFaultNotTheUsers` i log `warn` |
-| L1 | `SubjectTokenVerifier`: `setAllowEmptyExpiryClaim(false)`, jawnie RS256; testy: token bez `exp`, `alg: none`, HS256 -> `400`. `BffTokenVerifier` ma tę samą lukę `exp` (sprzed M4, nie ruszane: zgłoszone koordynatorowi) |
+| L1 | `SubjectTokenVerifier`: `setAllowEmptyExpiryClaim(false)`, jawnie RS256; testy: token bez `exp`, `alg: none`, HS256 -> `400`. `BffTokenVerifier` poprawiony tak samo (wymagane `exp`, RS256; test `bffTokensWithoutExpOrWithAnotherAlgorithmAreRefused`: bez `exp`, `alg: none`, HS256 -> `401`) |
 | L2 | Odpowiedź IdP odrzucana (`503`), gdy token równa się `subjectToken`, `issued_token_type` nie jest access tokenem, `token_type` nie jest `Bearer`/`N_A`, albo JWT nie ma `aud` z `token-exchange.audience` (token nieprzezroczysty: bez sprawdzenia `aud`) |
 | L3 | `purge`: `findAll` w `attempt`, przepływy OAuth przed połączeniami; test z wstrzymanym PostgreSQL (sekret w OpenBao usunięty mimo `503`). Zostaje: gdy usunięcie połączenia zawiedzie na blokadzie, sekret idzie przez `deleteAllOf`, wiersz i `credential.invalidated` dopiero przy powtórzeniu (gateway cache <= 60 s, `resolve` daje `credential_required`) |
 | L4 | `sub` ponad 255 znaków w `purge`: `204` bez działania (kontrakt zna tylko 204/403/503; żaden użytkownik takiego `sub` nie ma) i jedno `admin_change`/`user_purged`/`ok` bez `sub` |

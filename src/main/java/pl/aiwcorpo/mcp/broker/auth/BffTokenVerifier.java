@@ -5,14 +5,16 @@ import java.time.Duration;
 import java.util.List;
 
 import org.springframework.http.client.JdkClientHttpRequestFactory;
+import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2Error;
 import org.springframework.security.oauth2.core.OAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
+import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtException;
 import org.springframework.security.oauth2.jwt.JwtIssuerValidator;
-import org.springframework.security.oauth2.jwt.JwtValidators;
+import org.springframework.security.oauth2.jwt.JwtTimestampValidator;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.web.client.RestTemplate;
 
@@ -39,6 +41,7 @@ public class BffTokenVerifier {
         JdkClientHttpRequestFactory requests = new JdkClientHttpRequestFactory(http);
         requests.setReadTimeout(Duration.ofSeconds(5));
         NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(config.jwksUri().toString())
+                .jwsAlgorithm(SignatureAlgorithm.RS256)
                 .restOperations(new RestTemplate(requests))
                 .build();
         decoder.setJwtValidator(validator(config));
@@ -51,8 +54,11 @@ public class BffTokenVerifier {
         OAuth2TokenValidator<Jwt> authorizedParty = jwt -> check(config.allowedAzp().contains(jwt.getClaimAsString("azp")), "azp");
         OAuth2TokenValidator<Jwt> subject = jwt -> check(jwt.getSubject() != null && !jwt.getSubject().isBlank()
                 && !jwt.getSubject().startsWith("system:") && jwt.getSubject().length() <= 255, "sub");
-        return JwtValidators.createDefaultWithValidators(List.of(
-                new JwtIssuerValidator(config.issuer()), audience, authorizedParty, subject));
+        // The default timestamp validator accepts a token without exp; a token of the IdP always has one.
+        JwtTimestampValidator timestamps = new JwtTimestampValidator();
+        timestamps.setAllowEmptyExpiryClaim(false);
+        return new DelegatingOAuth2TokenValidator<>(List.of(
+                timestamps, new JwtIssuerValidator(config.issuer()), audience, authorizedParty, subject));
     }
 
     private static OAuth2TokenValidatorResult check(boolean ok, String claim) {
