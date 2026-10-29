@@ -13,7 +13,7 @@ Kamienie pośrednie:
 3. **K3**: limity `429` z `Retry-After` (OAuth start i complete na `sub`, CC-156; start rejestracji Authenticatora był już 10/h z M3), README,
    przegląd własny, obraz `mcp-credential-broker:m4-<sha>`.
 
-Obraz: `mcp-credential-broker:m4-9fb07d2` (pierwotny, przed poprawkami przeglądu; aktualny: `mcp-credential-broker:m4-64aa705`, 377 testów; po poprawce `BffTokenVerifier` obraz `m4-6d121b9`). Compose i stos nie ruszane.
+Obraz: `mcp-credential-broker:m4-9fb07d2` (pierwotny, przed poprawkami przeglądu; aktualny: `mcp-credential-broker:m4-64aa705`, 377 testów; po poprawce `BffTokenVerifier` obraz `m4-e45669f`). Compose i stos nie ruszane.
 
 | Wymaganie M4 | Stan |
 | --- | --- |
