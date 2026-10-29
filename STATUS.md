@@ -1,6 +1,6 @@
 # Status ws-06 (mcp-credential-broker)
 
-Kamień: **M4** (strona brokera: CHANGELOG 4.0.0 kontraktów, CC-133 ... CC-162 dotyczące brokera). Kontrakty: `mcp-contracts` **4.0.0**
+Kamień: **M4** (strona brokera: CHANGELOG 4.0.0 kontraktów, CC-133 ... CC-162 dotyczące brokera). Kontrakty: `mcp-contracts` **4.1.0**
 (tag v4.0.0, w `~/.m2`). Poniżej sekcja M4, dalej M3, M2 i M1 bez zmian.
 
 ## M4 (2026-10-29)
@@ -35,6 +35,12 @@ Tests run: 370, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS, mcp-contrac
   TokenExchangeIntegrationTest 8, ServiceAccountIntegrationTest 6, ServiceAccountKeysTest 2, OffboardingIntegrationTest 6,
   RateLimitIntegrationTest 3, BrokerIntegrationTest 32, InternalJwtVectorTest 64, AuditEventVectorTest 115, ...
 ```
+
+### mcp-contracts 4.1.0
+
+Broker przechodzi na 4.1.0 bez zmian w kodzie: wektory `audit-events/` i `jwt/` zielone, 381 testów. CC-168 (zbiór typów bez mieszania `service-account` z typami użytkownika)
+broker spełniał już od 4.0.0: `SystemRegistry.requireCompatibleTypes` odmawia startu (stricter niż kontrakt: także `token-exchange` stoi sam); dochodzi test `SystemRegistryTest`. CC-165 do CC-167
+dotyczą gatewaya, serwerów i BFF. Nagłówek `X-MCP-Credential-Type` ustawia gateway z `type` odpowiedzi `resolve`; broker zwraca ten typ bez zmian.
 
 ### Odstępstwa i decyzje M4
 

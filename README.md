@@ -3,7 +3,7 @@
 Credential broker platformy MCP (strumień ws-06): jedyne miejsce, w którym leżą poświadczenia użytkowników
 do systemów docelowych, per (`sub`, system). Gateway pobiera z niego poświadczenie przy wywołaniu
 narzędzia (`resolve`), portal BFF zapisuje je w imieniu zalogowanego użytkownika. Kontrakt: C4 z
-`mcp-contracts` 4.0.0 (`openapi/credential-broker.v1.yaml`), audyt C8, zdarzenie C4.3.
+`mcp-contracts` 4.1.0 (`openapi/credential-broker.v1.yaml`), audyt C8, zdarzenie C4.3.
 
 Stan: kamień M4 (wszystkie cztery typy poświadczeń, offboarding, czyszczenie nieużywanych połączeń, limity; poza tym Authenticator TOTP z M3, PAT i "Połącz przez OAuth" dla GitLaba z M1-M2). Co działa, czego jeszcze nie ma i odstępstwa od briefu: [STATUS.md](STATUS.md).
 
@@ -330,7 +330,7 @@ docker build -t mcp-credential-broker:dev .
 
 | Test | Co sprawdza |
 | --- | --- |
-| `InternalJwtVectorTest` | wszystkie wektory C2 z `mcp-contracts` 4.0.0 (także `dev-` z `devstackProfile` i wywołania `authenticator` z `tool`) (wynik i powód, `allowTestKeys` z wektora), klucz testowy pod produkcyjnym `kid` (SPKI), replay |
+| `InternalJwtVectorTest` | wszystkie wektory C2 z `mcp-contracts` 4.1.0 (także `dev-` z `devstackProfile` i wywołania `authenticator` z `tool`) (wynik i powód, `allowTestKeys` z wektora), klucz testowy pod produkcyjnym `kid` (SPKI), replay |
 | `ReturnPathTest` | walidator `returnPath` (CC-032) na wektorach `return-paths/`, używany przez `oauth/start` |
 | `OAuthIntegrationTest` | przepływ GitLaba na stubie WireMock: PKCE, state jednorazowy i związany z użytkownikiem, cudzy `flowId`/`state` (zły `state` nie spala przepływu), ponowne użycie, konto o innym loginie (połączone, widoczne jako `backendUser`), błąd i timeout dostawcy, wygasły przepływ, zapis w OpenBao, odświeżanie (rotacja, równoległe, odwołany grant, awaria dostawcy, `DELETE` w trakcie odświeżania, utrata blokady, odwołanie zastąpionego grantu), limit rozmiaru i czasu odpowiedzi dostawcy, zadanie w tle, `DELETE` z odwołaniem, PAT GitLaba; brak tokenów w odpowiedziach poza `resolve` i w logach |
 | `TotpVectorTest` | wszystkie scenariusze `test-vectors/totp/` (RFC 6238, okno, jednorazowość kroku, blokada 5/15, limit dzienny, rejestracja, spalanie) na prawdziwym serwisie, PostgreSQL i OpenBao Transit z zegarem ustawianym na `at` kroku; przykłady `rfc6238-sha1` i `otpauth-uri`; sprzątanie nieudanych rejestracji, ziaren bez wiersza (po karencji), nieudane kasowanie ziarna przy usunięciu, utrata ziarna aktywnej rejestracji |
@@ -345,7 +345,7 @@ docker build -t mcp-credential-broker:dev .
 | `OpenBaoClientTest` | `renew-self`, ponowne logowanie przy `token_max_ttl`, praca na ważnym tokenie po nieudanym logowaniu |
 | `KeySourceTest` | JWKS gateway'a przeterminowany -> 503, niedostępny JWKS IdP -> 503 zamiast 401 |
 | `CredentialServiceTest`, `ConnectionTest`, `AuditLogTest`, `TransportSecurityTest` | fail-closed, wersje sekretów, `email_verified`, porównanie ASCII, `subjectToken`, TTL, `lastUsedAt`, escapowanie audytu, `backendUser` w audycie (poprawny, odrzucany, surogaty, błąd zapisu po whoami), wymóg https |
-| `AuditEventVectorTest` | wszystkie wektory `audit-events/` z `mcp-contracts` 4.0.0 względem schematu C8 i zgodność `AuditLog.validBackendUser` z wektorami `backendUser` |
+| `AuditEventVectorTest` | wszystkie wektory `audit-events/` z `mcp-contracts` 4.1.0 względem schematu C8 i zgodność `AuditLog.validBackendUser` z wektorami `backendUser` |
 
 ## Uruchomienie lokalne w `mcp-platform-dev` (ws-01)
 
