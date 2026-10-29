@@ -100,16 +100,26 @@ public final class TestTokens {
     }
 
     public String bff(String sub, String username, String azp, String audience) {
+        return idpToken(IDP_ISSUER, sub, username, azp, audience, Instant.now().plusSeconds(300));
+    }
+
+    /** What the gateway passes as subjectToken: the user's token exchanged for aud=mcp-credential-broker. */
+    public String subjectToken(String sub, String username) {
+        return idpToken(IDP_ISSUER, sub, username, "mcp-gateway", "mcp-credential-broker", Instant.now().plusSeconds(300));
+    }
+
+    /** A token of the IdP key with every claim under the test's control. */
+    public String idpToken(String issuer, String sub, String username, String azp, String audience, Instant expiresAt) {
         Instant now = Instant.now();
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
-                .issuer(IDP_ISSUER)
+                .issuer(issuer)
                 .subject(sub)
                 .audience(List.of(audience))
                 .claim("azp", azp)
                 .claim("preferred_username", username)
                 .claim("email", username + "@corp.test")
-                .issueTime(Date.from(now))
-                .expirationTime(Date.from(now.plusSeconds(300)))
+                .issueTime(Date.from(now.minusSeconds(3600)))
+                .expirationTime(Date.from(expiresAt))
                 .jwtID(UUID.randomUUID().toString())
                 .build();
         try {

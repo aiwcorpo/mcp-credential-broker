@@ -28,8 +28,11 @@ import pl.aiwcorpo.mcp.broker.authenticator.AuthenticatorRefusedException;
 import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
 import pl.aiwcorpo.mcp.broker.credential.CredentialRequiredException;
 import pl.aiwcorpo.mcp.broker.credential.InvalidRequestException;
+import pl.aiwcorpo.mcp.broker.credential.RateLimitedException;
 import pl.aiwcorpo.mcp.broker.credential.SecretRejectedException;
+import pl.aiwcorpo.mcp.broker.credential.SystemNotConfiguredException;
 import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
+import pl.aiwcorpo.mcp.broker.system.ExchangeDeniedException;
 import pl.aiwcorpo.mcp.broker.system.UpstreamUnavailableException;
 
 /**
@@ -60,6 +63,26 @@ public class ApiExceptionHandler {
     @ExceptionHandler(SecretRejectedException.class)
     ResponseEntity<Map<String, String>> secretRejected(SecretRejectedException e) {
         return ResponseEntity.status(422).body(Map.of("error", e.error()));
+    }
+
+    /** Raised and audited by the services (CC-158). */
+    @ExceptionHandler(SystemNotConfiguredException.class)
+    ResponseEntity<Map<String, String>> systemNotConfigured(SystemNotConfiguredException e) {
+        return ResponseEntity.status(422).body(Map.of("error", "system_not_configured"));
+    }
+
+    /** The IdP refused the token exchange; audited by resolve (CC-157). */
+    @ExceptionHandler(ExchangeDeniedException.class)
+    ResponseEntity<Map<String, String>> exchangeDenied(ExchangeDeniedException e) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", "exchange_denied"));
+    }
+
+    /** Audited by the service that counted (CC-156). */
+    @ExceptionHandler(RateLimitedException.class)
+    ResponseEntity<Map<String, String>> rateLimited(RateLimitedException e) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header("Retry-After", String.valueOf(e.retryAfterSeconds()))
+                .body(Map.of("error", "rate_limited"));
     }
 
     /** Raised and audited by the authenticator service: 409, 422 and 429 bodies of C4. */

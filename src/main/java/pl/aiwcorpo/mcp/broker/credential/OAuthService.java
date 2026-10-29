@@ -25,6 +25,7 @@ import pl.aiwcorpo.mcp.broker.auth.Caller;
 import pl.aiwcorpo.mcp.broker.auth.RequestIds;
 import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
 import pl.aiwcorpo.mcp.broker.oauth.OAuthFlowStore;
+import pl.aiwcorpo.mcp.broker.oauth.RateLimiter;
 import pl.aiwcorpo.mcp.broker.oauth.RefreshLock;
 import pl.aiwcorpo.mcp.broker.secret.SecretStore;
 import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
@@ -77,10 +78,14 @@ public class OAuthService {
     private final Clock clock;
     private final URI redirectUri;
     private final BrokerProperties.OAuthFlow settings;
+    private final RateLimiter limiter;
+    private final BrokerProperties.RateLimits limits;
 
     public OAuthService(SystemRegistry systems, ConnectionRepository connections, SecretStore secrets,
             ConnectionStore store, OAuthFlowStore flows, RefreshLock lock, AuditLog audit, Clock clock,
-            URI redirectUri, BrokerProperties.OAuthFlow settings) {
+            URI redirectUri, BrokerProperties.OAuthFlow settings, RateLimiter limiter, BrokerProperties.RateLimits limits) {
+        this.limiter = limiter;
+        this.limits = limits;
         this.systems = systems;
         this.connections = connections;
         this.secrets = secrets;
@@ -96,6 +101,7 @@ public class OAuthService {
     public Started start(Caller.PortalUser caller, String systemId, String returnPath) {
         AuditLog.Entry entry = portalEntry(caller, systemId);
         try {
+            limiter.check("oauth-start", caller.sub(), limits.oauthStarts());
             ConfiguredSystem system = oauthSystem(systemId);
             if (!ReturnPath.isValid(returnPath)) {
                 throw new InvalidRequestException("returnPath is not a path of the portal");
@@ -108,6 +114,12 @@ public class OAuthService {
                     system.config().oauthScopes().stream().distinct().toList());
             entry.ok("oauth_started");
             return new Started(authorizeUrl, flowId);
+        } catch (RateLimitedException e) {
+            entry.denied("rate_limited", "rate_limited");
+            throw e;
+        } catch (SystemNotConfiguredException e) {
+            entry.error("system_not_configured", "internal_error");
+            throw e;
         } catch (InvalidRequestException e) {
             entry.denied("invalid_request", "invalid_argument");
             throw e;
@@ -126,6 +138,7 @@ public class OAuthService {
         OAuthProvider provider = null;
         boolean stored = false;
         try {
+            limiter.check("oauth-complete", caller.sub(), limits.oauthCompletions());
             ConfiguredSystem system = oauthSystem(systemId);
             provider = system.oauth().orElseThrow();
             OAuthFlowStore.Flow pending = flows.peek(flowId).orElseThrow(() -> new SecretRejectedException("flow_invalid"));
@@ -166,6 +179,12 @@ public class OAuthService {
             stored = true;
             entry.ok(replaced ? "oauth_replaced" : "oauth_connected");
             return new Completed(ConnectionStatus.CONNECTED, identity.username());
+        } catch (RateLimitedException e) {
+            entry.denied("rate_limited", "rate_limited");
+            throw e;
+        } catch (SystemNotConfiguredException e) {
+            entry.error("system_not_configured", "internal_error");
+            throw e;
         } catch (SecretRejectedException e) {
             entry.denied(e.reason(), null);
             throw e;
@@ -255,13 +274,22 @@ public class OAuthService {
         return renewed;
     }
 
-    /** Best effort: the connection is removed locally whether or not the provider could be reached. */
-    public void revokeAtProvider(Connection connection) {
+    /**
+     * Best effort: the connection is removed locally whether or not the provider could be reached.
+     *
+     * @return false when there was a grant to revoke and the provider could not be told (the caller audits it)
+     */
+    public boolean revokeAtProvider(Connection connection) {
         Optional<ConfiguredSystem> system = systems.find(connection.system());
         if (system.isEmpty() || system.get().oauth().isEmpty()) {
-            return;
+            return true;
         }
-        revokeGrantQuietly(system.get().oauth().get(), grantToRevoke(connection));
+        boolean hadGrant = connection.type() == CredentialType.USER_OAUTH && connection.state() == Connection.StoredState.CONNECTED;
+        StoredCredential grant = grantToRevoke(connection);
+        if (grant == null) {
+            return !hadGrant;
+        }
+        return revokeGrantQuietly(system.get().oauth().get(), grant);
     }
 
     /** The stored tokens of a connected user-oauth connection, or null when there is nothing to revoke or the store fails. */
@@ -282,11 +310,13 @@ public class OAuthService {
         systems.find(systemId).flatMap(ConfiguredSystem::oauth).ifPresent(provider -> revokeGrantQuietly(provider, grant));
     }
 
-    private void revokeGrantQuietly(OAuthProvider provider, StoredCredential grant) {
-        if (grant != null) {
-            revokeQuietly(provider, grant.refreshToken());
-            revokeQuietly(provider, grant.value());
+    private boolean revokeGrantQuietly(OAuthProvider provider, StoredCredential grant) {
+        if (grant == null) {
+            return true;
         }
+        boolean refreshRevoked = revokeQuietly(provider, grant.refreshToken());
+        boolean accessRevoked = revokeQuietly(provider, grant.value());
+        return refreshRevoked && accessRevoked;
     }
 
     /** @param window renew when the access token stops working within this time: the margin for a caller, the sweep window for the sweep */
@@ -399,6 +429,9 @@ public class OAuthService {
     }
 
     private ConfiguredSystem oauthSystem(String systemId) {
+        if (systems.find(systemId).isEmpty() && SystemRegistry.KNOWN_SYSTEMS.contains(systemId)) {
+            throw new SystemNotConfiguredException(systemId);
+        }
         return systems.find(systemId)
                 .filter(s -> s.oauth().isPresent())
                 .orElseThrow(() -> new InvalidRequestException("system does not accept OAuth connections"));
@@ -415,14 +448,16 @@ public class OAuthService {
         return tokens.expiresInSeconds() == null ? null : now.plusSeconds(tokens.expiresInSeconds()).truncatedTo(ChronoUnit.SECONDS);
     }
 
-    private void revokeQuietly(OAuthProvider provider, SecretValue token) {
+    private boolean revokeQuietly(OAuthProvider provider, SecretValue token) {
         if (token == null) {
-            return;
+            return true;
         }
         try {
             provider.revoke(token);
+            return true;
         } catch (UpstreamUnavailableException | SecretStoreUnavailableException e) {
             log.warn("Token not revoked at the provider: {}", e.getMessage());
+            return false;
         }
     }
 

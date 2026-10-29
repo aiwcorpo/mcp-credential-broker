@@ -32,6 +32,7 @@ import org.springframework.dao.DataAccessResourceFailureException;
 import pl.aiwcorpo.mcp.broker.audit.AuditLog;
 import pl.aiwcorpo.mcp.broker.auth.Caller;
 import pl.aiwcorpo.mcp.broker.auth.InternalJwtClaims;
+import pl.aiwcorpo.mcp.broker.auth.SubjectTokenVerifier;
 import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
 import pl.aiwcorpo.mcp.broker.event.InvalidationPublisher;
 import pl.aiwcorpo.mcp.broker.secret.SecretKey;
@@ -55,9 +56,10 @@ class CredentialServiceTest {
     private final ConnectionRepository connections = mock(ConnectionRepository.class);
     private final SecretStore secrets = mock(SecretStore.class);
     private final InvalidationPublisher invalidations = mock(InvalidationPublisher.class);
+    private final SubjectTokenVerifier subjectTokens = mock(SubjectTokenVerifier.class);
     private final SystemRegistry systems = registry();
     private final CredentialService service = new CredentialService(systems, connections, secrets, invalidations,
-            passThroughOAuth(), new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7));
+            passThroughOAuth(), subjectTokens, new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7));
 
     @Test
     void secretStoreOutageFailsClosed() {
@@ -153,7 +155,7 @@ class CredentialServiceTest {
         when(registry.find("jira")).thenReturn(Optional.of(
                 new SystemRegistry.ConfiguredSystem("jira", config(), adapter)));
         return new CredentialService(registry, connections, secrets, invalidations,
-                passThroughOAuth(), new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7));
+                passThroughOAuth(), subjectTokens, new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7));
     }
 
     @Test
@@ -178,13 +180,14 @@ class CredentialServiceTest {
 
     private static SystemRegistry registry() {
         return new SystemRegistry(Map.of("jira", config()), HttpClient.newHttpClient(), JsonMapper.builder().build(),
-                mock(pl.aiwcorpo.mcp.broker.secret.OAuthClientSecrets.class));
+                mock(pl.aiwcorpo.mcp.broker.secret.OAuthClientSecrets.class),
+                mock(pl.aiwcorpo.mcp.broker.secret.ServiceAccountKeys.class), Clock.systemUTC());
     }
 
     private static BrokerProperties.SystemConfig config() {
         return new BrokerProperties.SystemConfig(URI.create("http://jira.test"), "atlassian-dc",
                 List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET, CredentialScheme.BEARER,
-                List.of(), Duration.ofSeconds(1), null);
+                List.of(), Duration.ofSeconds(1), null, null);
     }
 
     private static Connection connection(Instant expiresAt) {

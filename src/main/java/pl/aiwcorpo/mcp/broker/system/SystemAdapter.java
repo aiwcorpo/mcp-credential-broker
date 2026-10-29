@@ -4,8 +4,9 @@ import pl.aiwcorpo.mcp.broker.credential.CredentialScheme;
 import pl.aiwcorpo.mcp.broker.secret.SecretValue;
 
 /**
- * System-specific calls of the broker. M1 needs only whoami; OAuth endpoints and revoke (M2, M4) are
- * added here per adapter.
+ * System-specific calls of the broker for the types where a user brings a credential (user-secret, user-oauth): whoami
+ * here, the OAuth endpoints and revoke in {@link OAuthProvider}. The exchange of a token ({@link TokenExchanger}) and the
+ * platform's own key ({@link ServiceAccountSource}) belong to systems that have no user credentials and no whoami.
  */
 public interface SystemAdapter {
 

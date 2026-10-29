@@ -73,6 +73,23 @@ public class ConnectionRepository {
     }
 
     /**
+     * Connections whose last use (their creation when they were never used) is before {@code cutoff}, oldest first; the
+     * candidates of the cleanup of unused connections.
+     */
+    public List<Connection> findLastActivityBefore(Instant cutoff, int limit) {
+        return jdbc.sql("""
+                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at
+                from connection
+                where coalesce(last_used_at, connected_at) < :cutoff
+                order by coalesce(last_used_at, connected_at) limit :limit
+                """)
+                .param("cutoff", timestamp(cutoff))
+                .param("limit", limit)
+                .query(ConnectionRepository::map)
+                .list();
+    }
+
+    /**
      * Connected OAuth connections of the given systems whose access token stops working before {@code deadline},
      * oldest first. Rows of systems that are no longer configured would never be renewed and would crowd out the rest.
      */

@@ -14,4 +14,10 @@ public interface SecretStore {
 
     /** Removes every version of the secret. Idempotent. */
     void delete(SecretKey key);
+
+    /**
+     * Removes everything stored for the user under any system and version, including values no connection row points
+     * at (left by a failed delete, or by a row that is gone). Idempotent; used by the offboarding purge.
+     */
+    void deleteAllOf(String sub);
 }

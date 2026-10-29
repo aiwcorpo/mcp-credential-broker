@@ -20,7 +20,7 @@
         <java.version>25</java.version>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <mcp-contracts.version>3.0.2</mcp-contracts.version>
+        <mcp-contracts.version>4.0.0</mcp-contracts.version>
         <bouncycastle.version>1.86</bouncycastle.version>
         <json-schema-validator.version>3.0.8</json-schema-validator.version>
         <wiremock.version>3.13.2</wiremock.version>

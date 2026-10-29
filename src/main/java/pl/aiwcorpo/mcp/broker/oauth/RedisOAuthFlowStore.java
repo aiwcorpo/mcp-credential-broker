@@ -1,6 +1,7 @@
 package pl.aiwcorpo.mcp.broker.oauth;
 
 import java.time.Duration;
+import java.util.Collection;
 import java.util.Optional;
 
 import org.springframework.dao.DataAccessException;
@@ -69,6 +70,22 @@ public class RedisOAuthFlowStore implements OAuthFlowStore {
         } catch (DataAccessException e) {
             throw unavailable(e);
         }
+    }
+
+    @Override
+    public int discardAll(String sub, Collection<String> systems) {
+        int discarded = 0;
+        try {
+            for (String system : systems) {
+                String flowId = redis.opsForValue().getAndDelete(userKey(sub, system));
+                if (flowId != null && Boolean.TRUE.equals(redis.delete(flowKey(flowId)))) {
+                    discarded++;
+                }
+            }
+        } catch (DataAccessException e) {
+            throw unavailable(e);
+        }
+        return discarded;
     }
 
     private Optional<Flow> parse(String stored) {

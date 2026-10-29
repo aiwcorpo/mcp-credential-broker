@@ -1,10 +1,19 @@
 # Status ws-06 (mcp-credential-broker)
 
-Kamień: **M3** (strona brokera: Authenticator TOTP, CC-091 ... CC-094, CC-126, CC-128). Kontrakty: `mcp-contracts` **3.0.2**
-(3.0.0 ma lukę poprawioną w 3.0.1, 3.0.1 ma jar wektorów z nadmiarowymi plikami, poprawione w 3.0.2). `token-exchange` (OpenSearch) i `service-account` z briefu są **przeniesione poza M3** (decyzja koordynatora, zakres tego
-etapu to Authenticator); wracają w kolejnym etapie brokera. Poniżej sekcja M3, dalej M2 (z przeglądem) i M1 bez zmian.
+Kamień: **M4** (strona brokera: CHANGELOG 4.0.0 kontraktów, CC-133 ... CC-162 dotyczące brokera). Kontrakty: `mcp-contracts` **4.0.0**
+(tag v4.0.0, w `~/.m2`). Poniżej sekcja M4, dalej M3, M2 i M1 bez zmian.
 
-## M3 (2026-10-28)
+## M4 (2026-10-29)
+
+Kamienie pośrednie:
+
+1. **K1**: `mcp-contracts` 4.0.0 (wektory, `dev-` w trybie dev, CC-137), `token-exchange` (OpenSearch), `service-account` (Service Desk),
+   `422 system_not_configured` (CC-158), `subject_token_invalid`, `exchange_denied`.
+2. **K2**: offboarding (`purge`, CC-155), czyszczenie nieużywanych połączeń (`unused_cleanup`), `provider_revoke_failed` przy usunięciu połączenia.
+3. **K3**: limity `429` z `Retry-After` (OAuth start i complete na `sub`, CC-156; start rejestracji Authenticatora był już 10/h z M3), README,
+   przegląd własny, obraz `mcp-credential-broker:m4-<sha>`.
+
+## M3 (2026-10-28), historia
 
 Kamienie pośrednie:
 

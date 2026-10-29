@@ -539,8 +539,9 @@ class BrokerIntegrationTest {
             assertThat(Contracts.brokerSchemaErrors("SystemInfo", system)).isEmpty();
         }
         assertThat(fromGateway.json()).extracting(system -> system.path("system").stringValue())
-                .containsExactly("confluence", "gitlab", "jira");
+                .containsExactly("confluence", "gitlab", "jira", "opensearch");
         assertThat(fromGateway.json().get(2).path("supportedTypes").get(0).stringValue()).isEqualTo("user-secret");
+        assertThat(fromGateway.json().get(3).path("supportedTypes").get(0).stringValue()).isEqualTo("token-exchange");
 
         BrokerClient.Response fromPortal = bff.send("GET", "/v1/systems", tokens.bffUser(newSub(), "alice"), null, null);
         assertThat(fromPortal.status()).isEqualTo(200);
@@ -647,6 +648,37 @@ class BrokerIntegrationTest {
         assertThat(gateway.send("POST", "/v1/credentials/resolve", tokens.gatewayUser(sub, "alice", subjectToken), subjectToken,
                 "{\"system\":\"jira\",\"subjectToken\":\"exchanged\"}").status()).isEqualTo(400);
         assertThat(auditEvents(output, subjectToken)).hasSize(1);
+    }
+
+    @Test
+    void aSystemOfTheContractsWithoutConfigurationIs422SystemNotConfigured(CapturedOutput output) {
+        String sub = newSub();
+        String rid = TestTokens.newRequestId();
+        BrokerClient.Response resolved = resolve(sub, "alice", rid, "{\"system\":\"servicedesk\"}");
+        assertThat(resolved.status()).isEqualTo(422);
+        assertThat(resolved.body()).isEqualTo("{\"error\":\"system_not_configured\"}");
+        assertThat(Contracts.brokerSchemaErrors("Error", resolved.json())).isEmpty();
+        assertThat(auditEvents(output, rid)).singleElement().satisfies(e -> {
+            assertThat(e.path("event").stringValue()).isEqualTo("credential_resolve");
+            assertThat(e.path("reason").stringValue()).isEqualTo("system_not_configured");
+            assertThat(e.path("outcome").stringValue()).isEqualTo("error");
+            assertThat(e.path("server").stringValue()).isEqualTo("mcp-servicedesk");
+        });
+
+        String start = TestTokens.newRequestId();
+        BrokerClient.Response started = bff.send("POST", "/v1/connections/servicedesk/oauth/start", tokens.bffUser(sub, "alice"),
+                start, "{\"returnPath\":\"/catalog\"}");
+        assertThat(started.status()).isEqualTo(422);
+        assertThat(started.json().path("error").stringValue()).isEqualTo("system_not_configured");
+        assertThat(auditEvents(output, start)).singleElement()
+                .satisfies(e -> assertThat(e.path("reason").stringValue()).isEqualTo("system_not_configured"));
+
+        BrokerClient.Response completed = bff.send("POST", "/v1/connections/servicedesk/oauth/complete",
+                tokens.bffUser(sub, "alice"), null,
+                "{\"flowId\":\"flow-aaaaaaaaaaaaaaaaaaaaaa\",\"code\":\"c\",\"state\":\"s\"}");
+        assertThat(completed.status()).isEqualTo(422);
+        assertThat(Contracts.brokerSchemaErrors("OAuthCompleteError", completed.json())).isEmpty();
+        assertThat(completed.json().path("error").stringValue()).isEqualTo("system_not_configured");
     }
 
     @Test

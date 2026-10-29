@@ -59,7 +59,8 @@ class InternalJwtVectorTest {
 
         InMemoryReplayGuard replay = new InMemoryReplayGuard();
         verifier.path("seenJtis").forEach(jti -> replay.seen.add(jti.stringValue()));
-        InternalJwtVerifier subject = verifier(verifier, replay, verifier.path("allowTestKeys").asBoolean(false));
+        InternalJwtVerifier subject = verifier(verifier, replay, verifier.path("allowTestKeys").asBoolean(false),
+                verifier.path("devstackProfile").asBoolean(false));
 
         String token = vector.path("token").isString() ? vector.path("token").stringValue() : null;
         boolean jsonRpc = "jsonrpc".equals(request.path("kind").stringValue());
@@ -167,12 +168,17 @@ class InternalJwtVectorTest {
     }
 
     private static InternalJwtVerifier verifier(JsonNode verifier, ReplayGuard replay, boolean allowTestKeys) {
+        return verifier(verifier, replay, allowTestKeys, allowTestKeys);
+    }
+
+    private static InternalJwtVerifier verifier(JsonNode verifier, ReplayGuard replay, boolean allowTestKeys,
+            boolean devstackProfile) {
         Clock clock = Clock.fixed(Instant.parse(verifier.path("now").stringValue()), ZoneOffset.UTC);
         String jwks = Contracts.text("test-vectors/" + verifier.path("jwks").stringValue());
         GatewayKeys keys = new JwksGatewayKeys(() -> jwks, "vectors", clock, Duration.ofDays(1), Duration.ZERO, Duration.ofDays(1));
         return new InternalJwtVerifier(verifier.path("issuer").stringValue(), verifier.path("audience").stringValue(),
                 keys, replay, clock, Duration.ofSeconds(verifier.path("clockSkewSeconds").asLong()),
-                Duration.ofSeconds(verifier.path("maxLifetimeSeconds").asLong()), allowTestKeys);
+                Duration.ofSeconds(verifier.path("maxLifetimeSeconds").asLong()), allowTestKeys, devstackProfile);
     }
 
     private static JsonNode read(Resource file) {

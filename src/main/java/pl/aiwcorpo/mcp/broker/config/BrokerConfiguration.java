@@ -14,6 +14,8 @@ import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.Ordered;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.scheduling.annotation.EnableScheduling;
@@ -27,6 +29,7 @@ import pl.aiwcorpo.mcp.broker.auth.GatewayKeys;
 import pl.aiwcorpo.mcp.broker.auth.InternalJwtVerifier;
 import pl.aiwcorpo.mcp.broker.auth.JwksGatewayKeys;
 import pl.aiwcorpo.mcp.broker.auth.RedisReplayGuard;
+import pl.aiwcorpo.mcp.broker.auth.SubjectTokenVerifier;
 import pl.aiwcorpo.mcp.broker.auth.ReplayGuard;
 import pl.aiwcorpo.mcp.broker.authenticator.AuthenticatorSeedStore;
 import pl.aiwcorpo.mcp.broker.authenticator.AuthenticatorSweepJob;
@@ -36,16 +39,20 @@ import pl.aiwcorpo.mcp.broker.credential.ConnectionRepository;
 import pl.aiwcorpo.mcp.broker.credential.ConnectionStore;
 import pl.aiwcorpo.mcp.broker.credential.CredentialService;
 import pl.aiwcorpo.mcp.broker.credential.OAuthRefreshJob;
+import pl.aiwcorpo.mcp.broker.credential.OffboardingService;
+import pl.aiwcorpo.mcp.broker.credential.UnusedConnectionCleanupJob;
 import pl.aiwcorpo.mcp.broker.credential.OAuthService;
 import pl.aiwcorpo.mcp.broker.event.InvalidationPublisher;
 import pl.aiwcorpo.mcp.broker.event.RedisInvalidationPublisher;
 import pl.aiwcorpo.mcp.broker.oauth.OAuthFlowStore;
+import pl.aiwcorpo.mcp.broker.oauth.RateLimiter;
 import pl.aiwcorpo.mcp.broker.oauth.RedisOAuthFlowStore;
 import pl.aiwcorpo.mcp.broker.oauth.RefreshLock;
 import pl.aiwcorpo.mcp.broker.secret.OAuthClientSecrets;
 import pl.aiwcorpo.mcp.broker.secret.OpenBaoClient;
 import pl.aiwcorpo.mcp.broker.secret.OpenBaoSecretStore;
 import pl.aiwcorpo.mcp.broker.secret.SecretStore;
+import pl.aiwcorpo.mcp.broker.secret.ServiceAccountKeys;
 import pl.aiwcorpo.mcp.broker.system.SystemRegistry;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -95,16 +102,22 @@ public class BrokerConfiguration {
     }
 
     @Bean
-    InternalJwtVerifier internalJwtVerifier(BrokerProperties properties, GatewayKeys keys, ReplayGuard replayGuard, Clock clock) {
+    InternalJwtVerifier internalJwtVerifier(BrokerProperties properties, GatewayKeys keys, ReplayGuard replayGuard, Clock clock,
+            Environment environment) {
         BrokerProperties.GatewayJwt config = properties.gatewayJwt();
         return new InternalJwtVerifier(config.issuer(), config.audience(), keys, replayGuard, clock,
-                config.clockSkew(), config.maxLifetime(), config.allowTestKeys());
+                config.clockSkew(), config.maxLifetime(), config.allowTestKeys(), environment.acceptsProfiles(Profiles.of("devstack")));
     }
 
     @Bean
     BffTokenVerifier bffTokenVerifier(BrokerProperties properties, SslBundles sslBundles) {
         requireTls(properties.bffToken().jwksUri(), "broker.bff-token.jwks-uri", properties.allowPlainHttp());
         return BffTokenVerifier.create(properties.bffToken(), internalClient(sslBundles));
+    }
+
+    @Bean
+    SubjectTokenVerifier subjectTokenVerifier(BrokerProperties properties, SslBundles sslBundles) {
+        return SubjectTokenVerifier.create(properties.bffToken(), properties.gatewayJwt().clockSkew(), internalClient(sslBundles));
     }
 
     @Bean
@@ -136,8 +149,13 @@ public class BrokerConfiguration {
     }
 
     @Bean
+    ServiceAccountKeys serviceAccountKeys(BrokerProperties properties, OpenBaoClient client, Clock clock) {
+        return new ServiceAccountKeys(client, properties.openbao().kvMount(), properties.openbao().serviceAccountsPrefix(), clock);
+    }
+
+    @Bean
     SystemRegistry systemRegistry(BrokerProperties properties, SslBundles sslBundles, JsonMapper json,
-            OAuthClientSecrets clientSecrets) {
+            OAuthClientSecrets clientSecrets, ServiceAccountKeys serviceAccountKeys, Clock clock) {
         requireTls(properties.portalBaseUrl(), "broker.portal-base-url", properties.allowPlainHttp());
         properties.systems().forEach((id, system) -> {
             requireTls(system.baseUrl(), "broker.systems." + id + ".base-url", properties.allowPlainHttp());
@@ -151,8 +169,18 @@ public class BrokerConfiguration {
                 requireTls(system.oauth().tokenUrl(), "broker.systems." + id + ".oauth.token-url", properties.allowPlainHttp());
                 requireTls(system.oauth().revokeUrl(), "broker.systems." + id + ".oauth.revoke-url", properties.allowPlainHttp());
             }
+            if (system.tokenExchange() != null) {
+                if (system.tokenExchange().clientSecret() != null && !system.tokenExchange().clientSecret().isBlank()
+                        && !properties.allowPlainHttp()) {
+                    throw new IllegalStateException("broker.systems." + id + ".token-exchange.client-secret is for local development only"
+                            + " (broker.allow-plain-http); the client secret belongs in OpenBao under "
+                            + properties.openbao().oauthClientsPrefix() + "/" + id);
+                }
+                requireTls(system.tokenExchange().tokenUrl(), "broker.systems." + id + ".token-exchange.token-url",
+                        properties.allowPlainHttp());
+            }
         });
-        return new SystemRegistry(properties.systems(), internalClient(sslBundles), json, clientSecrets);
+        return new SystemRegistry(properties.systems(), internalClient(sslBundles), json, clientSecrets, serviceAccountKeys, clock);
     }
 
     @Bean
@@ -176,14 +204,19 @@ public class BrokerConfiguration {
     }
 
     @Bean
+    RateLimiter rateLimiter(StringRedisTemplate redis, BrokerProperties properties) {
+        return new RateLimiter(redis, properties.rateLimits().redisPrefix(), properties.rateLimits().window());
+    }
+
+    @Bean
     OAuthService oauthService(SystemRegistry systems, ConnectionRepository connections, SecretStore secrets,
             InvalidationPublisher invalidations, OAuthFlowStore flows, RefreshLock lock, AuditLog audit, Clock clock,
-            BrokerProperties properties) {
+            BrokerProperties properties, RateLimiter rateLimiter) {
         if (properties.oauthFlow().refreshMargin().compareTo(Duration.ofSeconds(properties.cacheTtlSeconds())) <= 0) {
             throw new IllegalStateException("broker.oauth-flow.refresh-margin must exceed broker.cache-ttl-seconds");
         }
         return new OAuthService(systems, connections, secrets, new ConnectionStore(connections, secrets, invalidations, clock),
-                flows, lock, audit, clock, portalCallback(properties), properties.oauthFlow());
+                flows, lock, audit, clock, portalCallback(properties), properties.oauthFlow(), rateLimiter, properties.rateLimits());
     }
 
     @Bean
@@ -210,9 +243,23 @@ public class BrokerConfiguration {
 
     @Bean
     CredentialService credentialService(SystemRegistry systems, ConnectionRepository connections, SecretStore secrets,
-            InvalidationPublisher invalidations, OAuthService oauth, AuditLog audit, Clock clock, BrokerProperties properties) {
-        return new CredentialService(systems, connections, secrets, invalidations, oauth, audit, clock,
+            InvalidationPublisher invalidations, OAuthService oauth, SubjectTokenVerifier subjectTokens, AuditLog audit,
+            Clock clock, BrokerProperties properties) {
+        return new CredentialService(systems, connections, secrets, invalidations, oauth, subjectTokens, audit, clock,
                 properties.cacheTtlSeconds(), properties.expiringThreshold());
+    }
+
+    @Bean
+    OffboardingService offboardingService(ConnectionRepository connections, SecretStore secrets,
+            InvalidationPublisher invalidations, OAuthService oauth, OAuthFlowStore flows, AuthenticatorService authenticator,
+            AuditLog audit, Clock clock, BrokerProperties properties) {
+        return new OffboardingService(connections, secrets, invalidations, oauth, flows, authenticator, audit, clock,
+                properties.retention());
+    }
+
+    @Bean
+    UnusedConnectionCleanupJob unusedConnectionCleanupJob(OffboardingService offboarding) {
+        return new UnusedConnectionCleanupJob(offboarding);
     }
 
     /** redirect_uri registered at the providers: the BFF callback (C12) on the portal's public address. */

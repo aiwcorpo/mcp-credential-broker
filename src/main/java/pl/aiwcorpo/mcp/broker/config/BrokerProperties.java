@@ -34,6 +34,8 @@ public record BrokerProperties(
         @Valid @NotNull Redis redis,
         @Valid @NotNull OAuthFlow oauthFlow,
         @DefaultValue @Valid @NotNull Authenticator authenticator,
+        @DefaultValue @Valid @NotNull Retention retention,
+        @DefaultValue @Valid @NotNull RateLimits rateLimits,
         @NotEmpty Map<String, @Valid SystemConfig> systems) {
 
     /** Internal JWT from the gateway (C2). Exactly one of jwksUri and jwksFile is set. */
@@ -67,6 +69,7 @@ public record BrokerProperties(
             @DefaultValue("secret") @NotBlank String kvMount,
             @DefaultValue("mcp/connections") @NotBlank String pathPrefix,
             @DefaultValue("mcp/oauth-clients") @NotBlank String oauthClientsPrefix,
+            @DefaultValue("mcp/service-accounts") @NotBlank String serviceAccountsPrefix,
             @DefaultValue("transit") @NotBlank String transitMount,
             @DefaultValue("mcp-credential-broker") @NotBlank String transitKey,
             @DefaultValue("5s") @NotNull Duration timeout) {
@@ -88,6 +91,29 @@ public record BrokerProperties(
             @DefaultValue("10") @Min(1) int enrollmentStartsPerHour,
             @DefaultValue("1m") @NotNull Duration sweepInterval,
             @DefaultValue("30m") @NotNull Duration orphanSweepInterval) {
+    }
+
+    /**
+     * Removal of connections nobody uses (CC-155): a connection whose last use (its creation, when it was never
+     * used) is older than {@code unusedAfter} is deleted like a disconnect would, by a job that runs every
+     * {@code cleanupInterval}. The portal derives "about to expire" from {@code lastUsedAt} and {@code connectedAt}.
+     */
+    public record Retention(
+            @DefaultValue("180d") @NotNull Duration unusedAfter,
+            @DefaultValue("1h") @NotNull Duration cleanupInterval,
+            @DefaultValue("100") @Min(1) int batchSize) {
+    }
+
+    /**
+     * Limits per {@code sub} on the OAuth operations of the portal (CC-156), counted in a fixed window in Redis. The
+     * contract does not fix the values. The limit of authenticator enrollment starts is
+     * {@link Authenticator#enrollmentStartsPerHour()}.
+     */
+    public record RateLimits(
+            @DefaultValue("10") @Min(1) int oauthStarts,
+            @DefaultValue("20") @Min(1) int oauthCompletions,
+            @DefaultValue("1m") @NotNull Duration window,
+            @DefaultValue("broker:rate:") @NotBlank String redisPrefix) {
     }
 
     /**
@@ -126,6 +152,27 @@ public record BrokerProperties(
         }
     }
 
+    /**
+     * Token exchange of a system in the IdP (RFC 8693). {@code clientSecret} is a fallback for local development only,
+     * like {@link OAuth#clientSecret()}; the secret belongs in OpenBao under {@code openbao.oauth-clients-prefix}.
+     */
+    public record TokenExchange(
+            @NotBlank String clientId,
+            String clientSecret,
+            @NotNull URI tokenUrl,
+            @NotBlank String audience,
+            @DefaultValue("") List<String> scopes) {
+
+        public TokenExchange {
+            scopes = scopes == null ? List.of() : scopes.stream().filter(scope -> !scope.isBlank()).toList();
+        }
+
+        @Override
+        public String toString() {
+            return "TokenExchange[clientId=" + clientId + ", audience=" + audience + "]";
+        }
+    }
+
     /** One target system. */
     public record SystemConfig(
             @NotNull URI baseUrl,
@@ -135,7 +182,8 @@ public record BrokerProperties(
             @DefaultValue("Bearer") @NotNull CredentialScheme secretScheme,
             @DefaultValue("") List<String> oauthScopes,
             @DefaultValue("5s") @NotNull Duration timeout,
-            @Valid OAuth oauth) {
+            @Valid OAuth oauth,
+            @Valid TokenExchange tokenExchange) {
 
         /** An unset list binds as one empty string; C4 wants an empty list. */
         public SystemConfig {

@@ -63,9 +63,13 @@ public record Operation(String operationId, String method, Pattern path, Set<Str
             Pattern.compile("^/v1/admin/users/[^/]+/authenticator/reset$"), Set.of(OFFBOARDING), false,
             InternalJwtVerifier.ToolClaim.FORBIDDEN, "authenticator", true);
 
+    public static final Operation PURGE_USER = new Operation("purgeUser", "POST",
+            Pattern.compile("^/v1/admin/users/[^/]+/purge$"), Set.of(OFFBOARDING), false,
+            InternalJwtVerifier.ToolClaim.FORBIDDEN, "admin_change", true);
+
     public static final List<Operation> ALL = List.of(RESOLVE, PUT_SECRET, LIST_SYSTEMS, LIST_CONNECTIONS, DELETE_CONNECTION,
             START_OAUTH, COMPLETE_OAUTH, GET_AUTHENTICATOR, DELETE_AUTHENTICATOR, START_ENROLLMENT, CONFIRM_ENROLLMENT,
-            VERIFY_CODE, INVALIDATE_CODES, RESET_AUTHENTICATOR);
+            VERIFY_CODE, INVALIDATE_CODES, RESET_AUTHENTICATOR, PURGE_USER);
 
     private static final Pattern SYSTEM_IN_PATH = Pattern.compile("^/v1/connections/([^/;]+)(?:/|$)");
 

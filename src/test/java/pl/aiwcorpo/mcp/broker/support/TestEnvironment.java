@@ -34,6 +34,8 @@ public final class TestEnvironment {
     public static final String REDIS_ADMIN_PASSWORD = "test-only-redis-admin";
     public static final String GITLAB_CLIENT_ID = "mcp-broker";
     public static final String GITLAB_CLIENT_SECRET = "test-only-gitlab-client-secret";
+    public static final String EXCHANGE_CLIENT_ID = "mcp-credential-broker";
+    public static final String EXCHANGE_CLIENT_SECRET = "test-only-exchange-client-secret";
     public static final String BAO_ROOT_TOKEN = "test-only-root";
     public static final String BAO_ROLE_ID = "test-only-role-id";
     public static final String BAO_SECRET_ID = "test-only-secret-id";
@@ -51,6 +53,7 @@ public final class TestEnvironment {
             path "secret/metadata/mcp/connections/*" { capabilities = ["read", "list", "delete"] }
             path "secret/data/mcp/oauth-clients/*"   { capabilities = ["read"] }
             path "secret/data/mcp/oauth-clients-it/*" { capabilities = ["read"] }
+            path "secret/data/mcp/service-accounts/*" { capabilities = ["read"] }
             path "transit/encrypt/mcp-credential-broker" { capabilities = ["update"] }
             path "transit/decrypt/mcp-credential-broker" { capabilities = ["update"] }
             path "secret/data/mcp/authenticators/*"     { capabilities = ["create", "read", "update", "delete"] }
@@ -68,6 +71,7 @@ public final class TestEnvironment {
     public final AtomicInteger whoamiCalls = new AtomicInteger();
     public final AtomicInteger confluenceWhoamiCalls = new AtomicInteger();
     public final GitLabStub gitlab = new GitLabStub();
+    public final IdpStub idp = new IdpStub();
     public final TestPki pki = new TestPki("mcp-test-ca");
     public final TestPki foreignPki = new TestPki("mcp-foreign-ca");
     public final TestTokens tokens = new TestTokens();
@@ -214,10 +218,28 @@ public final class TestEnvironment {
         registry.add("broker.systems.gitlab.oauth.client-id", () -> GITLAB_CLIENT_ID);
         registry.add("broker.systems.gitlab.oauth.client-secret", () -> GITLAB_CLIENT_SECRET);
         registry.add("broker.systems.gitlab.oauth.authorize-url", () -> "https://gitlab.test/oauth/authorize");
+        registry.add("broker.systems.opensearch.base-url", this::upstreamUrl);
+        registry.add("broker.systems.opensearch.adapter", () -> "opensearch");
+        registry.add("broker.systems.opensearch.supported-types", () -> "token-exchange");
+        registry.add("broker.systems.opensearch.default-type", () -> "token-exchange");
+        registry.add("broker.systems.opensearch.timeout", () -> "2s");
+        registry.add("broker.systems.opensearch.token-exchange.client-id", () -> EXCHANGE_CLIENT_ID);
+        registry.add("broker.systems.opensearch.token-exchange.token-url", idp::tokenUrl);
+        registry.add("broker.systems.opensearch.token-exchange.audience", () -> "opensearch");
+        registry.add("broker.systems.opensearch.token-exchange.scopes", () -> "opensearch-audience");
         registry.add("broker.oauth-flow.sweep-interval", () -> "PT1H");
         registry.add("broker.oauth-flow.refresh-lock-wait", () -> "3s");
         registry.add("MCP_PORTAL_URL", () -> "https://mcp-portal.test");
         registry.add("MCP_ALLOW_PLAIN_HTTP", () -> "true");
+    }
+
+    /** Service Desk as service-account; left out of {@link #registerProperties} so that other tests have an unconfigured system. */
+    public void registerServiceDesk(DynamicPropertyRegistry registry) {
+        registry.add("broker.systems.servicedesk.base-url", this::upstreamUrl);
+        registry.add("broker.systems.servicedesk.adapter", () -> "generic-rest");
+        registry.add("broker.systems.servicedesk.supported-types", () -> "service-account");
+        registry.add("broker.systems.servicedesk.default-type", () -> "service-account");
+        registry.add("broker.systems.servicedesk.secret-scheme", () -> "Bearer");
     }
 
     /** Raw OpenBao call with the root token, for setup and for checking what is stored. */
@@ -241,6 +263,8 @@ public final class TestEnvironment {
         requireOk(bao("POST", "transit/keys/mcp-authenticators", "{\"type\":\"aes256-gcm96\"}"));
         requireOk(bao("PUT", "sys/policies/acl/mcp-credential-broker",
                 Contracts.JSON.createObjectNode().put("policy", BAO_POLICY).toString()));
+        requireOk(bao("POST", "secret/data/mcp/oauth-clients/opensearch",
+                "{\"data\":{\"client_id\":\"" + EXCHANGE_CLIENT_ID + "\",\"client_secret\":\"" + EXCHANGE_CLIENT_SECRET + "\"}}"));
         requireOk(bao("POST", "sys/auth/approle", "{\"type\":\"approle\"}"));
         requireOk(bao("POST", "auth/approle/role/mcp-credential-broker",
                 "{\"token_policies\":\"mcp-credential-broker\",\"token_ttl\":\"1h\",\"token_max_ttl\":\"4h\"}"));

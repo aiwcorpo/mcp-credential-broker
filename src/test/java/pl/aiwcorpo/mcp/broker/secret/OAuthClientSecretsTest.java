@@ -24,7 +24,7 @@ class OAuthClientSecretsTest {
     private final MutableClock clock = new MutableClock(Instant.parse("2026-10-28T12:00:00Z"));
     private final OAuthClientSecrets secrets = new OAuthClientSecrets(
             new OpenBaoClient(new BrokerProperties.OpenBao(URI.create(env.openBaoUrl()), TestEnvironment.BAO_ROLE_ID,
-                    TestEnvironment.BAO_SECRET_ID, "secret", "mcp/connections", "mcp/oauth-clients", "transit",
+                    TestEnvironment.BAO_SECRET_ID, "secret", "mcp/connections", "mcp/oauth-clients", "mcp/service-accounts", "transit",
                     "mcp-credential-broker", Duration.ofSeconds(5)), HttpClient.newHttpClient(), JsonMapper.builder().build(), clock),
             "secret", "mcp/oauth-clients", clock);
 

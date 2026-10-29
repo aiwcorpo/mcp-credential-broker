@@ -18,20 +18,26 @@ import org.springframework.dao.TransientDataAccessException;
 import pl.aiwcorpo.mcp.broker.audit.AuditLog;
 import pl.aiwcorpo.mcp.broker.auth.Caller;
 import pl.aiwcorpo.mcp.broker.auth.InternalJwtClaims;
+import pl.aiwcorpo.mcp.broker.auth.KeySourceUnavailableException;
+import pl.aiwcorpo.mcp.broker.auth.SubjectTokenVerifier;
+import pl.aiwcorpo.mcp.broker.auth.TokenRejectedException;
 import pl.aiwcorpo.mcp.broker.event.InvalidationPublisher;
 import pl.aiwcorpo.mcp.broker.secret.SecretStore;
+import pl.aiwcorpo.mcp.broker.secret.ServiceAccountKeys;
 import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
 import pl.aiwcorpo.mcp.broker.secret.SecretValue;
 import pl.aiwcorpo.mcp.broker.secret.StoredCredential;
 import pl.aiwcorpo.mcp.broker.system.BackendIdentity;
+import pl.aiwcorpo.mcp.broker.system.ExchangeDeniedException;
 import pl.aiwcorpo.mcp.broker.system.SystemRegistry;
 import pl.aiwcorpo.mcp.broker.system.SystemRegistry.ConfiguredSystem;
+import pl.aiwcorpo.mcp.broker.system.TokenExchanger;
 import pl.aiwcorpo.mcp.broker.system.UpstreamUnavailableException;
 import pl.aiwcorpo.mcp.broker.system.WhoamiResult;
 
 /**
- * Resolve (gateway) and PUT secret (portal BFF) for user-secret credentials. The user is always the
- * authenticated caller; no method takes a sub from the request.
+ * Resolve (gateway) for all four credential types and PUT secret (portal BFF) for user-secret credentials. The user
+ * is always the authenticated caller; no method takes a sub from the request.
  */
 public class CredentialService {
 
@@ -62,10 +68,12 @@ public class CredentialService {
     private final Clock clock;
     private final int cacheTtlSeconds;
     private final Duration expiringThreshold;
+    private final SubjectTokenVerifier subjectTokens;
 
     public CredentialService(SystemRegistry systems, ConnectionRepository connections, SecretStore secrets,
-            InvalidationPublisher invalidations, OAuthService oauth, AuditLog audit, Clock clock, int cacheTtlSeconds,
-            Duration expiringThreshold) {
+            InvalidationPublisher invalidations, OAuthService oauth, SubjectTokenVerifier subjectTokens, AuditLog audit,
+            Clock clock, int cacheTtlSeconds, Duration expiringThreshold) {
+        this.subjectTokens = subjectTokens;
         this.systems = systems;
         this.connections = connections;
         this.secrets = secrets;
@@ -85,8 +93,9 @@ public class CredentialService {
                 .gatewayContext(user.vs(), user.tool(), user.prv())
                 .system(systemId);
         try {
-            ConfiguredSystem system = systems.find(systemId)
-                    .orElseThrow(() -> new InvalidRequestException("system is not configured in the broker"));
+            ConfiguredSystem system = systems.find(systemId).orElseThrow(() -> SystemRegistry.KNOWN_SYSTEMS.contains(systemId)
+                    ? new SystemNotConfiguredException(systemId)
+                    : new InvalidRequestException("unknown system"));
             if (scopes != null && new HashSet<>(scopes).size() != scopes.size()) {
                 throw new InvalidRequestException("scopes must be unique");
             }
@@ -95,47 +104,101 @@ public class CredentialService {
                 // hide that the gateway hands user tokens to places that do not need them.
                 throw new InvalidRequestException("subjectToken is only for token-exchange systems");
             }
-            Instant now = clock.instant();
-            Optional<Connection> connection = connections.find(user.sub(), system.id());
-            if (connection.isEmpty() || !connection.get().status(now, expiringThreshold).usable()) {
-                throw new CredentialRequiredException(system.id());
+            Resolved resolved;
+            if (system.supports(CredentialType.TOKEN_EXCHANGE)) {
+                entry.credentialType(CredentialType.TOKEN_EXCHANGE.wire());
+                resolved = exchange(system, user.sub(), subjectToken);
+            } else if (system.supports(CredentialType.SERVICE_ACCOUNT)) {
+                entry.credentialType(CredentialType.SERVICE_ACCOUNT.wire());
+                resolved = serviceAccount(system);
+            } else {
+                resolved = userCredential(caller, system, entry);
             }
-            Connection found = connection.get();
-            entry.credentialType(found.type().wire());
-            StoredCredential stored = secrets.get(found.secretKey())
-                    .orElseThrow(() -> {
-                        log.warn("Connection metadata without a stored secret for system {}", system.id());
-                        return new CredentialRequiredException(system.id());
-                    });
-            if (stored.type() != found.type()) {
-                throw new SecretStoreUnavailableException("stored credential type differs from connection metadata");
-            }
-            if (found.type() == CredentialType.USER_OAUTH) {
-                OAuthService.Fresh fresh = oauth.ensureFresh(caller.requestId(), found, stored);
-                found = fresh.connection();
-                stored = fresh.credential();
-            }
-            if (found.lastUsedAt() == null || found.lastUsedAt().isBefore(now.minus(LAST_USED_PRECISION))) {
-                connections.touch(user.sub(), system.id(), now);
-            }
-            Instant expiry = found.type() == CredentialType.USER_OAUTH ? found.accessExpiresAt() : found.expiresAt();
-            Resolved resolved = new Resolved(system.config().secretScheme(), stored.value(), found.type(),
-                    expiry, ttl(clock.instant(), expiry));
             entry.ok("resolved");
             return resolved;
         } catch (CredentialRequiredException e) {
             entry.denied("credential_required", "credential_required");
             throw e;
+        } catch (SubjectTokenInvalidException e) {
+            entry.denied("subject_token_invalid", null);
+            throw e;
         } catch (InvalidRequestException e) {
             entry.denied("invalid_request", "invalid_argument");
             throw e;
-        } catch (SecretStoreUnavailableException | UpstreamUnavailableException e) {
+        } catch (ExchangeDeniedException e) {
+            entry.denied("exchange_denied", "access_denied");
+            throw e;
+        } catch (SystemNotConfiguredException e) {
+            log.error("Resolve for a system without configuration in the broker: {}", systemId);
+            entry.error("system_not_configured", "internal_error");
+            throw e;
+        } catch (UpstreamUnavailableException e) {
+            entry.error("provider_unavailable", "upstream_unavailable");
+            throw e;
+        } catch (SecretStoreUnavailableException e) {
             entry.error("secret_store_unavailable", "upstream_unavailable");
             throw e;
         } catch (RuntimeException e) {
             entry.error(unavailableDatabase(e) ? "database_unavailable" : "internal_error", "upstream_unavailable");
             throw e;
         }
+    }
+
+    private Resolved userCredential(Caller.Gateway caller, ConfiguredSystem system, AuditLog.Entry entry) {
+        InternalJwtClaims user = caller.claims();
+        Instant now = clock.instant();
+        Optional<Connection> connection = connections.find(user.sub(), system.id());
+        if (connection.isEmpty() || !connection.get().status(now, expiringThreshold).usable()) {
+            throw new CredentialRequiredException(system.id());
+        }
+        Connection found = connection.get();
+        entry.credentialType(found.type().wire());
+        StoredCredential stored = secrets.get(found.secretKey())
+                .orElseThrow(() -> {
+                    log.warn("Connection metadata without a stored secret for system {}", system.id());
+                    return new CredentialRequiredException(system.id());
+                });
+        if (stored.type() != found.type()) {
+            throw new SecretStoreUnavailableException("stored credential type differs from connection metadata");
+        }
+        if (found.type() == CredentialType.USER_OAUTH) {
+            OAuthService.Fresh fresh = oauth.ensureFresh(caller.requestId(), found, stored);
+            found = fresh.connection();
+            stored = fresh.credential();
+        }
+        if (found.lastUsedAt() == null || found.lastUsedAt().isBefore(now.minus(LAST_USED_PRECISION))) {
+            connections.touch(user.sub(), system.id(), now);
+        }
+        Instant expiry = found.type() == CredentialType.USER_OAUTH ? found.accessExpiresAt() : found.expiresAt();
+        return new Resolved(system.config().secretScheme(), stored.value(), found.type(), expiry, ttl(clock.instant(), expiry));
+    }
+
+    /** Nothing is stored: the token lives in the response and in the gateway's cache for at most cacheTtlSeconds. */
+    private Resolved exchange(ConfiguredSystem system, String sub, String subjectToken) {
+        if (subjectToken == null) {
+            throw new InvalidRequestException("subjectToken is required for this system");
+        }
+        try {
+            subjectTokens.verify(subjectToken, sub);
+        } catch (TokenRejectedException e) {
+            log.info("subjectToken refused: {}", e.reason());
+            throw new SubjectTokenInvalidException();
+        } catch (KeySourceUnavailableException e) {
+            throw new UpstreamUnavailableException(e.getMessage());
+        }
+        TokenExchanger.ExchangedToken token = system.tokenExchanger()
+                .orElseThrow(() -> new IllegalStateException("token-exchange system without an exchanger"))
+                .exchange(SecretValue.of(subjectToken));
+        return new Resolved(CredentialScheme.BEARER, token.accessToken(), CredentialType.TOKEN_EXCHANGE, token.expiresAt(),
+                ttl(clock.instant(), token.expiresAt()));
+    }
+
+    private Resolved serviceAccount(ConfiguredSystem system) {
+        ServiceAccountKeys.Key key = system.serviceAccountSource()
+                .orElseThrow(() -> new IllegalStateException("service-account system without a key source"))
+                .key();
+        return new Resolved(system.config().secretScheme(), key.value(), CredentialType.SERVICE_ACCOUNT, key.expiresAt(),
+                ttl(clock.instant(), key.expiresAt()));
     }
 
     public Stored putSecret(Caller.PortalUser caller, String systemId, SecretValue secret, String expiresAtText) {
@@ -221,7 +284,13 @@ public class CredentialService {
                     return false;
                 }
                 entry.credentialType(existing.get().type().wire()).backendUser(existing.get().backendUser());
-                oauth.revokeAtProvider(existing.get());
+                if (!oauth.revokeAtProvider(existing.get())) {
+                    audit.event("connection_change", caller.requestId())
+                            .user(caller.sub(), caller.username(), caller.azp())
+                            .system(systemId)
+                            .credentialType(existing.get().type().wire())
+                            .error("provider_revoke_failed", null);
+                }
                 secrets.delete(existing.get().secretKey());
                 connections.delete(caller.sub(), systemId);
                 invalidations.invalidated(caller.sub(), systemId);

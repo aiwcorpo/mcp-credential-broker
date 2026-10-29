@@ -27,4 +27,7 @@ public interface OAuthFlowStore {
 
     /** Reads and removes in one step; only one of several concurrent callers gets the flow. */
     Optional<Flow> take(String flowId);
+
+    /** Drops the pending flow of the user for each of the systems (offboarding). Idempotent. @return how many flows were pending */
+    int discardAll(String sub, java.util.Collection<String> systems);
 }

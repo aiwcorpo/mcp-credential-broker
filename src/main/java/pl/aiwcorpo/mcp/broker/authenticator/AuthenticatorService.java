@@ -346,6 +346,33 @@ public class AuthenticatorService {
     }
 
     /**
+     * Offboarding (mcp-offboarding, CC-155): the row goes, with the lock of the user (the user no longer exists, so
+     * the lock has nothing left to protect), and so do both seeds. Row first and seeds after, like
+     * {@link #removeRegistration}: a seed that outlives its row is harmless and the orphan sweep removes it. Idempotent.
+     */
+    public void purge(String requestId, String sub) {
+        AuditLog.Entry entry = audit.event("authenticator", requestId).user(sub, null, null);
+        try {
+            boolean registered = Boolean.TRUE.equals(tx.execute(status -> {
+                AuthenticatorRecord row = repository.lock(sub).orElse(null);
+                if (row == null) {
+                    return false;
+                }
+                boolean existed = row.state != State.NONE || row.pendingId != null;
+                repository.delete(sub);
+                return existed;
+            }));
+            seeds.deleteActive(sub);
+            seeds.deletePending(sub);
+            if (registered) {
+                entry.ok("authenticator_removed");
+            }
+        } catch (RuntimeException e) {
+            throw failed(entry, e);
+        }
+    }
+
+    /**
      * The row goes to "none" first and commits; the seeds are deleted after. A failed delete answers 503 and the
      * caller repeats the (idempotent) request, which deletes unconditionally, also when no row is left. In between,
      * a seed without a registration is harmless.

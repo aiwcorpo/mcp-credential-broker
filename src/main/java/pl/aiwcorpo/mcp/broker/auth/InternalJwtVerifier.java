@@ -80,9 +80,19 @@ public class InternalJwtVerifier {
     private final long skewSeconds;
     private final long maxLifetimeSeconds;
     private final boolean allowTestKeys;
+    private final boolean devMode;
 
     public InternalJwtVerifier(String issuer, String audience, GatewayKeys keys, ReplayGuard replayGuard, Clock clock,
             Duration clockSkew, Duration maxLifetime, boolean allowTestKeys) {
+        this(issuer, audience, keys, replayGuard, clock, clockSkew, maxLifetime, allowTestKeys, false);
+    }
+
+    /**
+     * @param devstackProfile the devstack profile is active; keys whose kid starts with {@code dev-} are accepted only
+     *                        together with {@code allowTestKeys} (CC-137), which is what dev mode means
+     */
+    public InternalJwtVerifier(String issuer, String audience, GatewayKeys keys, ReplayGuard replayGuard, Clock clock,
+            Duration clockSkew, Duration maxLifetime, boolean allowTestKeys, boolean devstackProfile) {
         this.issuer = issuer;
         this.audience = audience;
         this.keys = keys;
@@ -91,6 +101,7 @@ public class InternalJwtVerifier {
         this.skewSeconds = clockSkew.toSeconds();
         this.maxLifetimeSeconds = maxLifetime.toSeconds();
         this.allowTestKeys = allowTestKeys;
+        this.devMode = allowTestKeys && devstackProfile;
     }
 
     /**
@@ -168,7 +179,7 @@ public class InternalJwtVerifier {
         if (kid == null || kid.isEmpty()) {
             throw new TokenRejectedException("unknown_kid");
         }
-        if (!allowTestKeys && kid.startsWith("test-")) {
+        if ((!allowTestKeys && kid.startsWith("test-")) || (!devMode && kid.startsWith("dev-"))) {
             throw new TokenRejectedException("test_key_not_allowed");
         }
         Optional<ECKey> key = keys.find(kid);

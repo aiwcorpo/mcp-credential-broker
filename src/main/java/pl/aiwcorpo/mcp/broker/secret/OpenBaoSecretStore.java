@@ -82,6 +82,30 @@ public class OpenBaoSecretStore implements SecretStore {
         client.delete(metadataPath(key));
     }
 
+    @Override
+    public void deleteAllOf(String sub) {
+        deleteBelow(config.kvMount() + "/metadata/" + config.pathPrefix() + "/" + SecretKey.hashOf(sub) + "/");
+    }
+
+    /** KV v2 lists a folder as {@code name/} and a secret as {@code name}; a metadata delete removes all versions of a secret. */
+    private void deleteBelow(String folder) {
+        JsonNode listed = client.list(folder);
+        if (listed == null) {
+            return;
+        }
+        for (JsonNode entry : listed.path("data").path("keys")) {
+            String name = entry.asString("");
+            if (name.isEmpty() || name.contains("..") || name.startsWith("/")) {
+                throw new SecretStoreUnavailableException("secret store listed an unexpected entry");
+            }
+            if (name.endsWith("/")) {
+                deleteBelow(folder + name);
+            } else {
+                client.delete(folder + name);
+            }
+        }
+    }
+
     private StoredCredential parse(SecretKey key, byte[] plaintext) {
         JsonNode node;
         try {

@@ -90,6 +90,11 @@ class AuthenticatorRepository {
                 .update();
     }
 
+    /** Removes the row with the lock and, by cascade, the wrong codes; only the offboarding purge deletes a user's lock. */
+    void delete(String sub) {
+        jdbc.sql("delete from authenticator where sub = :sub").param("sub", sub).update();
+    }
+
     /** Subs whose enrollment started before {@code cutoff}, oldest first. */
     List<String> findPendingBefore(Instant cutoff, int limit) {
         return jdbc.sql("select sub from authenticator where pending_id is not null and pending_created_at < :cutoff "

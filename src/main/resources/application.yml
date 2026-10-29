@@ -90,6 +90,13 @@ broker:
   redis:
     jti-prefix: "jti:mcp-credential-broker:"
     invalidation-channel: credential.invalidated
+  retention:
+    unused-after: 180d
+    cleanup-interval: PT1H
+  rate-limits:
+    oauth-starts: 10
+    oauth-completions: 20
+    window: 1m
   oauth-flow:
     flow-ttl: 10m
     refresh-margin: 2m
