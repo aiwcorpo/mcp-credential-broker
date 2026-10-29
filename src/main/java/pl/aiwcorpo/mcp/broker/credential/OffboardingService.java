@@ -62,6 +62,10 @@ public class OffboardingService {
      * Every call leaves one admin_change event, whatever it found.
      */
     public void purge(String requestId, String sub) {
+        if (sub.isBlank() || sub.length() > 255) {
+            audit.event("admin_change", requestId).denied("invalid_request", "invalid_argument");
+            throw new InvalidRequestException("sub must be 1..255 characters");
+        }
         AuditLog.Entry summary = audit.event("admin_change", requestId).user(sub, null, null);
         List<RuntimeException> failures = new ArrayList<>();
         attempt(failures, () -> removeConnections(requestId, sub));

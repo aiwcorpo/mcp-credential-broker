@@ -13,6 +13,94 @@ Kamienie pośrednie:
 3. **K3**: limity `429` z `Retry-After` (OAuth start i complete na `sub`, CC-156; start rejestracji Authenticatora był już 10/h z M3), README,
    przegląd własny, obraz `mcp-credential-broker:m4-<sha>`.
 
+Obrazy: `mcp-credential-broker:m4-<sha>` z komunikatu ostatniego commitu (K3). Compose i stos nie ruszane.
+
+| Wymaganie M4 | Stan |
+| --- | --- |
+| `mcp-contracts` 4.0.0 | `pom.xml`; wektory `jwt/` (64 przypadki, w tym `dev-kid-rejected-*` i `valid-dev-kid-in-dev-mode`), `audit-events/` (115, w tym cztery brokera z 4.0.0), `totp/`, `return-paths/` zielone |
+| klucze `dev-` (CC-137) | `InternalJwtVerifier` odrzuca `kid` z prefiksem `dev-` z powodem `test_key_not_allowed`, chyba że `MCP_ALLOW_TEST_KEYS=true` **i** profil `devstack` (`Environment.acceptsProfiles`) |
+| `token-exchange` OpenSearch (CC-157) | `SubjectTokenVerifier` (podpis, `iss`, `aud`, `exp` z skew 30 s, `sub` == `sub` wewnętrznego JWT) przed wymianą; `OpenSearchAdapter` (RFC 8693, `client_secret_basic`, `audience` i `scope` z konfiguracji); `expiresAt` zawsze, TTL <= 60 i <= do `expiresAt`; nic w OpenBao; zły token -> `400` + `subject_token_invalid`; odmowa IdP -> `403 exchange_denied` + audyt `exchange_denied`; IdP niedostępny, zły klient brokera, odpowiedź bez wartości -> `503` |
+| `service-account` Service Desk (CC-157) | `GenericRestAdapter` + `ServiceAccountKeys`: `secret/data/mcp/service-accounts/<system>` (`value` albo `username`+`password` dla Basic, `expires_at`), `scheme` z konfiguracji systemu, `expiresAt` z rotacji albo `null`, bez cache w brokerze; `GET /v1/connections` go nie zwraca; brak / po terminie / zły wpis -> `503` |
+| `422 system_not_configured` (CC-158) | `resolve`, `oauth/start`, `oauth/complete` (schemat `OAuthCompleteError`); audyt `credential_resolve` z powodem `system_not_configured`, outcome `error`, errorCode `internal_error`; identyfikator spoza kontraktów nadal `400` |
+| `purge` (CC-155) | `POST /v1/admin/users/{sub}/purge`, CN `mcp-offboarding`, `204` idempotentne; połączenia (odwołanie u dostawcy, sekret ze wszystkimi wersjami, wiersz, `credential.invalidated`), `SecretStore.deleteAllOf` (wartości bez wiersza), przepływy OAuth, rejestracja Authenticatora z ziarnami i blokada; audyt `connection_change`/`user_purged` per połączenie, `authenticator`/`authenticator_removed`, `admin_change`/`user_purged` zawsze (także gdy nic nie było i dla nieznanego `sub`; `error` przy awarii) |
+| czyszczenie nieużywanych | `OffboardingService.removeUnused` + `UnusedConnectionCleanupJob` (1 h), `broker.retention.unused-after` 180 dni, ponowny odczyt pod blokadą połączenia, audyt `unused_cleanup`; migracja V6 (indeks po ostatniej aktywności). "Oznaczenie wygasających": patrz Propozycje CC |
+| limity `429` (CC-156, CC-151) | `RateLimiter` (Redis, stałe okno): `oauth/start` 10/min i `oauth/complete` 20/min na `sub` (konfiguracja), `Retry-After`, audyt `rate_limited`; start rejestracji Authenticatora 10/h już z M3 (`Retry-After` w teście) |
+| nowe powody C8 | `provider_revoke_failed` (DELETE i purge), `authenticator_seed_missing` (z M3), `user_purged`, `unused_cleanup`, `subject_token_invalid`, `exchange_denied`, `system_not_configured`, `rate_limited`; każda linia w testach przechodzi schemat C8 |
+
+### Dowody (K1-K3)
+
+```
+./mvnw -B verify
+Tests run: 370, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS, mcp-contracts 4.0.0; przed M4 było 328)
+  TokenExchangeIntegrationTest 8, ServiceAccountIntegrationTest 6, ServiceAccountKeysTest 2, OffboardingIntegrationTest 6,
+  RateLimitIntegrationTest 3, BrokerIntegrationTest 32, InternalJwtVectorTest 64, AuditEventVectorTest 115, ...
+```
+
+### Odstępstwa i decyzje M4
+
+- **`provider_revoke_failed` obok, nie zamiast:** nieudane odwołanie tokenów daje osobną linię `connection_change` / `provider_revoke_failed` / `error` (bez `errorCode`, jak w
+  wektorze), a zwykły wynik (`disconnected`, `user_purged`, `unused_cleanup`) idzie dalej jako `ok`. Przy zastąpieniu grantu (nowe połączenie) odwołanie nadal jest ciche (logowane).
+- **Odmowa IdP vs błąd instalacji:** IdP dzieli kody błędów między "ten użytkownik nie może" i "broker źle skonfigurowany" (Keycloak: `invalid_request` dla audience, którego użytkownik
+  nie dostaje, ale też dla literówki w `audience`). Odmową (`403`) są `access_denied`, `invalid_grant`, `invalid_target`, `invalid_request`, `invalid_scope`, `invalid_token`; `invalid_client`,
+  `unauthorized_client`, 5xx i nieznane kody to `503`. Skutek uboczny: zła nazwa `audience` w konfiguracji wygląda jak masowa odmowa; przyczyna jest w logu brokera (`info`, kod błędu i audience).
+- **Broker nie cache'uje wymiany ani klucza konta:** kontrakt daje cache bramie (`cacheTtlSeconds`), a brak cache w brokerze oznacza, że rotacja w OpenBao i zmiana uprawnień w IdP działają od następnego `resolve`.
+  Koszt: jedno wywołanie IdP albo OpenBao na `resolve` (gateway cache'uje do 60 s).
+- **`azp` subjectToken nie jest ograniczane:** kontrakt wymaga `aud`, `exp`, `sub`; to, kto wymienił token, rozstrzyga IdP.
+- **Konfiguracja typów:** `token-exchange` i `service-account` wykluczają inne typy w tym samym systemie (start się nie uda); adaptery `opensearch` i `generic-rest` są nazwane po roli, `SystemAdapter` (whoami) zostaje tylko dla typów z poświadczeniem użytkownika.
+- **Purge a awarie:** kroki niezależne, `503` po wykonaniu wszystkich; połączenie, którego sekretu nie dało się skasować, zostaje w bazie (powtórzenie kończy). Wiersz Authenticatora jest usuwany przed ziarnami (osierocone ziarno sprząta `sweepOrphanSeeds`).
+- **Limity OAuth:** wartości własne (kontrakt: konfiguracja brokera), okno stałe 1 min; licznik bez TTL (przerwany proces między `INCR` i `EXPIRE`) dostaje TTL przy pierwszym przekroczeniu zamiast blokować na zawsze.
+
+### Przegląd własny M4
+
+Sprawdzone ręcznie, bez zewnętrznego przeglądu (Opus i Haiku smoke zostają dla koordynatora): ścieżki, w których sekret mógłby wyjść poza `resolve` (logi i audyt: testy na całym wyjściu procesu, w tym token
+subjectToken, token IdP, sekret klienta wymiany, klucz konta, ziarno TOTP); kolejność kontroli `purge` (CN przed wszystkim, bez tokenu); zgodność z ACL Redisa stosu (`INCR`, `EXPIRE`, `TTL`, `GETDEL`, `DEL`
+są w `redis/broker.rules`); polityka OpenBao (`list` i `delete` na `secret/metadata/mcp/connections/*` już jest, odczyt `service-accounts/*` już jest).
+
+### Czego broker potrzebuje od innych (M4)
+
+**ws-01 (`mcp-platform-dev`), przed wdrożeniem obrazu `mcp-credential-broker:m4-<sha>`:**
+
+1. Broker w compose: `SPRING_PROFILES_ACTIVE=devstack` razem z `MCP_ALLOW_TEST_KEYS=true`. Klucze generowane lokalnie przez stos mają `kid` z prefiksem `dev-` (CC-137), a broker 4.0.0 przyjmuje je tylko w trybie dev;
+   bez tego `resolve` z takim kluczem kończy się `401 test_key_not_allowed`. Profil należy nadać w compose, nie w obrazie.
+2. Systemy w brokerze (`BROKER_SYSTEMS_*`, obok istniejących `CONFLUENCE`/`GITLAB`):
+   - OpenSearch: `BROKER_SYSTEMS_OPENSEARCH_BASEURL=http://opensearch.internal:8080` (wymagany przez schemat, nie jest wywoływany), `_ADAPTER=opensearch`, `_SUPPORTEDTYPES=token-exchange`, `_DEFAULTTYPE=token-exchange`,
+     `_TOKENEXCHANGE_CLIENTID=mcp-credential-broker`, `_TOKENEXCHANGE_TOKENURL=http://keycloak:8080/realms/corp/protocol/openid-connect/token`, `_TOKENEXCHANGE_AUDIENCE=opensearch`,
+     `_TOKENEXCHANGE_SCOPES=opensearch-audience`.
+   - Service Desk: `BROKER_SYSTEMS_SERVICEDESK_BASEURL=http://servicedesk.internal:8080`, `_ADAPTER=generic-rest`, `_SUPPORTEDTYPES=service-account`, `_DEFAULTTYPE=service-account`, `_SECRETSCHEME=Bearer` (mock przyjmuje `Authorization: Bearer <klucz>`).
+3. Keycloak: klient `mcp-credential-broker` (confidential, `standard.token.exchange.enabled`, opcjonalny scope `opensearch-audience`) już jest w `realm-corp.json`; nic do zmiany. Sprawdzić, że token `aud=mcp-credential-broker`
+   wymieniony przez `mcp-gateway` ma `sub` równe `sub` tokenu klienta MCP (tak jest w opisie wymiany w `docs/uzytkownicy.md`).
+4. OpenBao (`openbao/init.sh`): sekret klienta wymiany `secret/mcp/oauth-clients/opensearch` (`client_id=mcp-credential-broker`, `client_secret=$KC_CLIENT_MCP_CREDENTIAL_BROKER_SECRET`) i zmiana wiersza polityki
+   `secret/data/mcp/oauth-clients/gitlab` na `secret/data/mcp/oauth-clients/*` (albo dopisanie `.../opensearch`); klucz konta serwisowego `secret/mcp/service-accounts/servicedesk` z `value=$SERVICEDESK_API_KEY`
+   (polityka `service-accounts/*` już jest). Przykład:
+
+   ```sh
+   printf '%s' "$KC_CLIENT_MCP_CREDENTIAL_BROKER_SECRET" | bao kv put secret/mcp/oauth-clients/opensearch client_id=mcp-credential-broker client_secret=- >/dev/null
+   printf '%s' "$SERVICEDESK_API_KEY" | bao kv put secret/mcp/service-accounts/servicedesk value=- >/dev/null
+   ```
+5. Certyfikat `mcp-offboarding` już jest w `certs/` (EKU clientAuth): offboarding wywołuje `POST https://mcp-credential-broker.internal:8443/v1/admin/users/{sub}/purge` bez tokenu, dwa razy
+   (po IdP/IGA i po wylogowaniu back-channel) oraz purge gateway'a; oczekiwane `204`.
+6. Redis i PostgreSQL: bez zmian (migracja V6 uruchamia się sama; ACL brokera ma już `INCR`, `EXPIRE`, `TTL`, `GETDEL`).
+7. Gateway (ws-05): `credentialType` z konfiguracji dla `opensearch` (`token-exchange`) i `servicedesk` (`service-account`), `subjectToken` w `resolve` tylko dla `opensearch`; mapowanie `403 exchange_denied` na `access_denied` i `422 system_not_configured` na `internal_error`.
+
+### Propozycje CC
+
+Kontraktów nie zmieniam; propozycje do decyzji człowieka.
+
+| # | Propozycja | Powód |
+| --- | --- | --- |
+| P1 | Opcjonalne pole `cleanupAt` (`Timestamp` albo `null`) w `Connection` (C4) i `GET /api/v1/connections` | Kontrakt mówi, że portal oznacza połączenia bliskie czyszczenia jako wygasające, ale retencja (180 dni) jest konfiguracją brokera; portal nie zna wartości i może liczyć tylko z własnej kopii. Broker nie zmienia statusu `expiring` (opis `ConnectionStatus` ogranicza go do `user-secret` z `expiresAt`) |
+| P2 | Zamrozić w C4 pola wpisu `secret/data/mcp/service-accounts/<system>` (`value`, `username`, `password`, `expires_at`) i ścieżkę sekretu klienta wymiany (`secret/data/mcp/oauth-clients/<system>`, `client_secret`) | Kontrakt podaje tylko ścieżkę konta; nazwy pól wybrał broker, a zapisuje je ws-01 i operator |
+| P3 | Opis `reason` dla `admin_change`: `user_purged` z wynikiem `error`, gdy `purge` się nie udał (dziś opis mówi tylko o `ok`) | Nieudany `purge` powinien zostawić ślad; broker emituje `admin_change` / `user_purged` / `error` / `upstream_unavailable` |
+| P4 | `provider_revoke_failed`: napisać, że zdarzenie jest dodatkowe względem zdarzenia wyniku i nie ma `errorCode` | Wektor ma tylko jedno zdarzenie; broker emituje dwa (osobny wynik `ok` dla usunięcia) |
+| P5 | Wskazać, które odpowiedzi IdP to `exchange_denied` (lista z "Odstępstw") | Granica użytkownik / konfiguracja jest dziś decyzją implementacji |
+
+### Zostaje
+
+- Wiersze `authenticator` w stanie `none` bez blokady i bez błędów (po `DELETE`/reset) nikt nie sprząta poza `purge` (nieszkodliwe: jeden wiersz na użytkownika).
+- `sweepOrphanSeeds` przegląda cały prefiks `mcp/authenticators` bez stronicowania.
+- Obraz nie był uruchomiony na stosie (zakaz zmian w compose); test akceptacyjny `make pat`/purge na prawdziwym stosie i Haiku smoke po stronie koordynatora i ws-01.
+- Okno limitów OAuth jest stałe; przy rozproszeniu na wiele instancji liczy wspólny Redis, więc limit jest globalny na `sub`.
+
 ## M3 (2026-10-28), historia
 
 Kamienie pośrednie:

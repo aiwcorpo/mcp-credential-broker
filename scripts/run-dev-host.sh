@@ -106,6 +106,30 @@ if [[ -n "${MCP_GITLAB_URL:-}" ]]; then
   fi
 fi
 
+# OpenSearch as token-exchange (optional): the broker exchanges the user's token at the dev Keycloak with its own client
+# (mcp-credential-broker). The client secret is read from OpenBao (secret/mcp/oauth-clients/opensearch); without that
+# entry the secret of the stack's client is used as the development fallback.
+if [[ "${MCP_OPENSEARCH_EXCHANGE:-}" == "true" ]]; then
+  export BROKER_SYSTEMS_OPENSEARCH_BASEURL="${MCP_OPENSEARCH_URL:-http://localhost:18744}"
+  export BROKER_SYSTEMS_OPENSEARCH_ADAPTER=opensearch
+  export BROKER_SYSTEMS_OPENSEARCH_SUPPORTEDTYPES=token-exchange
+  export BROKER_SYSTEMS_OPENSEARCH_DEFAULTTYPE=token-exchange
+  export BROKER_SYSTEMS_OPENSEARCH_TOKENEXCHANGE_CLIENTID=mcp-credential-broker
+  export BROKER_SYSTEMS_OPENSEARCH_TOKENEXCHANGE_TOKENURL="${MCP_OIDC_ISSUER}/protocol/openid-connect/token"
+  export BROKER_SYSTEMS_OPENSEARCH_TOKENEXCHANGE_AUDIENCE=opensearch
+  export BROKER_SYSTEMS_OPENSEARCH_TOKENEXCHANGE_SCOPES=opensearch-audience
+  export BROKER_SYSTEMS_OPENSEARCH_TOKENEXCHANGE_CLIENTSECRET="${KC_CLIENT_MCP_CREDENTIAL_BROKER_SECRET:-}"
+fi
+
+# Service Desk as service-account (optional): the key is read from OpenBao (secret/mcp/service-accounts/servicedesk).
+if [[ "${MCP_SERVICEDESK_ACCOUNT:-}" == "true" ]]; then
+  export BROKER_SYSTEMS_SERVICEDESK_BASEURL="${MCP_SERVICEDESK_URL:-http://localhost:18743}"
+  export BROKER_SYSTEMS_SERVICEDESK_ADAPTER=generic-rest
+  export BROKER_SYSTEMS_SERVICEDESK_SUPPORTEDTYPES=service-account
+  export BROKER_SYSTEMS_SERVICEDESK_DEFAULTTYPE=service-account
+  export BROKER_SYSTEMS_SERVICEDESK_SECRETSCHEME="${MCP_SERVICEDESK_SCHEME:-Bearer}"
+fi
+
 "$java_bin" -jar "$jar" &
 broker_pid=$!
 trap 'kill "$broker_pid" 2>/dev/null || true; wait "$broker_pid" 2>/dev/null || true' INT TERM

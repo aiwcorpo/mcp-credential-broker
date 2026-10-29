@@ -8,7 +8,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 import pl.aiwcorpo.mcp.broker.auth.Caller;
 import pl.aiwcorpo.mcp.broker.auth.CallerAuthenticationFilter;
-import pl.aiwcorpo.mcp.broker.credential.InvalidRequestException;
 import pl.aiwcorpo.mcp.broker.credential.OffboardingService;
 
 /** C4 purgeUser: the offboarding channel (certificate CN mcp-offboarding, no token) names the user in the path. */
@@ -26,9 +25,6 @@ public class OffboardingController {
             @PathVariable("sub") String sub) {
         if (!(caller instanceof Caller.Offboarding channel)) {
             throw new IllegalStateException("purge reached without the offboarding channel");
-        }
-        if (sub.isBlank() || sub.length() > 255) {
-            throw new InvalidRequestException("sub must be 1..255 characters");
         }
         offboarding.purge(channel.requestId(), sub);
         return ResponseEntity.noContent().build();

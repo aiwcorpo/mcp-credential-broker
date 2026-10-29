@@ -3,9 +3,9 @@
 Credential broker platformy MCP (strumień ws-06): jedyne miejsce, w którym leżą poświadczenia użytkowników
 do systemów docelowych, per (`sub`, system). Gateway pobiera z niego poświadczenie przy wywołaniu
 narzędzia (`resolve`), portal BFF zapisuje je w imieniu zalogowanego użytkownika. Kontrakt: C4 z
-`mcp-contracts` 3.0.2 (`openapi/credential-broker.v1.yaml`), audyt C8, zdarzenie C4.3.
+`mcp-contracts` 4.0.0 (`openapi/credential-broker.v1.yaml`), audyt C8, zdarzenie C4.3.
 
-Stan: kamień M3 w zakresie Authenticatora TOTP (poza tym PAT oraz "Połącz przez OAuth" dla GitLaba z M1-M2). Co działa, czego jeszcze nie ma i odstępstwa od briefu: [STATUS.md](STATUS.md).
+Stan: kamień M4 (wszystkie cztery typy poświadczeń, offboarding, czyszczenie nieużywanych połączeń, limity; poza tym Authenticator TOTP z M3, PAT i "Połącz przez OAuth" dla GitLaba z M1-M2). Co działa, czego jeszcze nie ma i odstępstwa od briefu: [STATUS.md](STATUS.md).
 
 ## API w tej wersji
 
@@ -13,24 +13,24 @@ Wszystko po HTTPS z wymaganym certyfikatem klienta z wewnętrznego CA (port 8443
 
 | Operacja | CN certyfikatu | Token | Wynik |
 | --- | --- | --- | --- |
-| `POST /v1/credentials/resolve` | `mcp-gateway` | wewnętrzny JWT C2, wariant użytkownika, `aud=mcp-credential-broker` | `200 {scheme, value, type, expiresAt, cacheTtlSeconds}` z `Cache-Control: no-store`, `409 credential_required` |
+| `POST /v1/credentials/resolve` | `mcp-gateway` | wewnętrzny JWT C2, wariant użytkownika, `aud=mcp-credential-broker` | `200 {scheme, value, type, expiresAt, cacheTtlSeconds}` z `Cache-Control: no-store`, `409 credential_required`, `403 exchange_denied`, `422 system_not_configured`, `400` (także zły `subjectToken`) |
 | `PUT /v1/connections/{system}/secret` | `mcp-portal-bff` | token użytkownika po token exchange: `aud` zawiera `mcp-credential-broker`, `azp=mcp-portal-bff` | `200 {status, backendUser, expiresAt}`, `422 secret_invalid` |
 | `GET /v1/systems` | `mcp-gateway`, `mcp-portal-bff` | jak wyżej; od gateway'a także wariant serwisowy C2 (CC-030) | lista systemów z konfiguracji |
 | `GET /v1/connections` | `mcp-portal-bff` | token użytkownika jak przy `PUT secret` | połączenia użytkownika z tokenu, statusy C4, bez wartości sekretu |
 | `DELETE /v1/connections/{system}` | `mcp-portal-bff` | jak wyżej | `204`; usuwa sekret (wszystkie wersje KV) i metadane, publikuje `credential.invalidated`; idempotentne |
-| `POST /v1/connections/{system}/oauth/start` | `mcp-portal-bff` | jak wyżej | `200 {authorizeUrl, flowId}`; `400` dla złego `returnPath` albo systemu bez `user-oauth` |
-| `POST /v1/connections/{system}/oauth/complete` | `mcp-portal-bff` | jak wyżej | `200 {status, backendUser}`, `422 flow_invalid`, `503` przy awarii dostawcy |
+| `POST /v1/connections/{system}/oauth/start` | `mcp-portal-bff` | jak wyżej | `200 {authorizeUrl, flowId}`; `400` dla złego `returnPath` albo systemu bez `user-oauth`, `422 system_not_configured`, `429 rate_limited` |
+| `POST /v1/connections/{system}/oauth/complete` | `mcp-portal-bff` | jak wyżej | `200 {status, backendUser}`, `422 flow_invalid` albo `system_not_configured`, `429 rate_limited`, `503` przy awarii dostawcy |
 | `GET /v1/authenticator` | `mcp-portal-bff`, `mcp-gateway` | token użytkownika; od gateway'a wewnętrzny JWT z `tool` | `200 {state, registeredAt, lastUsedAt, lockedUntil, disabledAt, disabledReason}`, bez ziarna |
 | `DELETE /v1/authenticator` | `mcp-portal-bff` | token użytkownika | `204`, idempotentne; usuwa ziarno (aktywne i w toku), nie zdejmuje blokady |
 | `POST /v1/authenticator/enrollment` | `mcp-portal-bff` | token użytkownika | `201 {enrollmentId, otpauthUri, secret, expiresAt}` z `no-store` (jedyny wyjątek poza `resolve`), `409 already_registered`, `429 rate_limited` |
 | `POST /v1/authenticator/enrollment/confirm` | `mcp-portal-bff` | jak wyżej | `200` status `active`, `422 invalid_code` albo `enrollment_invalid` |
 | `POST /v1/authenticator/verify` | `mcp-gateway` | wewnętrzny JWT z `tool` | `200 {result[, retryAfterSeconds]}`: `ok`, `invalid`, `replayed`, `burned`, `locked`, `disabled`, `not_registered`; `400` dla kodu spoza `^[0-9]{6}$` (nie liczy się nigdzie) |
 | `POST /v1/authenticator/invalidate-codes` | `mcp-gateway` | wewnętrzny JWT z `tool` | `204`, idempotentne |
-| `POST /v1/admin/users/{sub}/authenticator/reset` | `mcp-offboarding` | brak (autoryzacja certyfikatem) | `204`, idempotentne; `sub` z ścieżki to jedyny taki przypadek w C4 |
+| `POST /v1/admin/users/{sub}/authenticator/reset` | `mcp-offboarding` | brak (autoryzacja certyfikatem) | `204`, idempotentne; `sub` ze ścieżki to jedyny taki przypadek w C4 (obok `purge`) |
+| `POST /v1/admin/users/{sub}/purge` | `mcp-offboarding` | brak (autoryzacja certyfikatem) | `204`, idempotentne; usuwa wszystko, co broker trzyma o użytkowniku (sekcja Offboarding) |
 | `GET /actuator/health` | dowolny z wewnętrznego CA | brak | `UP`/`DOWN` |
 
-Pozostała operacja C4 (`purge`, która w M4 usunie też rejestrację Authenticatora) odpowiada
-`404 not_found_or_denied` do czasu M4, tak samo jak każda nieznana ścieżka i metoda. C4 nie ma 500:
+Każda inna ścieżka i metoda odpowiada `404 not_found_or_denied`. C4 nie ma 500:
 nieoczekiwany błąd i niedostępna zależność (OpenBao, PostgreSQL, Redis, JWKS gateway'a lub IdP) dają
 `503 upstream_unavailable`.
 
@@ -46,7 +46,9 @@ wariantu, `iss`, `aud` jako napis, `exp` z tolerancją 30 s, `iat` nie z przysz�
 zabroniony przy `GET /v1/systems` (CC-038), `vsc` według wzorców identyfikatorów i najwyżej 50 na pole
 (CC-056), `jti` jednorazowy (Redis, `SET NX EX` pod `jti:mcp-credential-broker:`). Opublikowane klucze testowe
 (`kid` z prefiksem `test-` i, niezależnie od `kid`, klucze o skrócie SPKI z `test-vectors/keys`) są odrzucane
-z powodem `test_key_not_allowed`, chyba że `MCP_ALLOW_TEST_KEYS=true` (CC-044).
+z powodem `test_key_not_allowed`, chyba że `MCP_ALLOW_TEST_KEYS=true` (CC-044). Klucze z `kid` zaczynającym się od `dev-`
+(stos dev generuje własne) wymagają trybu dev (CC-137): `MCP_ALLOW_TEST_KEYS=true` **i** aktywnego profilu Springa `devstack`
+(`SPRING_PROFILES_ACTIVE=devstack`); samo `MCP_ALLOW_TEST_KEYS` ich nie dopuszcza.
 
 `PUT secret` woła whoami systemu z nowym sekretem (Jira DC: `GET /rest/api/2/myself`, login w `name`; Confluence DC: `GET /rest/api/user/current`,
 login w `username`, CC-073; GitLab: `GET /api/v4/user`, login w `username`; bez podążania za przekierowaniami, TLS z zaufaniem do wewnętrznego CA) tylko po to, żeby sprawdzić ważność sekretu i odczytać konto (`backendUser`). Odrzucony
@@ -68,6 +70,78 @@ zwracane.
 To, które konto podpięto, zostaje w audycie: zdarzenie `connection_change` ma `backendUser` (C8, 2.2.5, CC-117), także przy odświeżaniu
 i rozłączeniu. Login, którego schemat C8 by nie przyjął (ponad 255 znaków, znaki sterujące, niesparowany surogat), jest
 pomijany w zdarzeniu z ostrzeżeniem bez wartości w logu aplikacji, a połączenie mimo to powstaje: to świadoma decyzja.
+
+## token-exchange i service-account (M4)
+
+Systemy tych typów opisują cały system: `supported-types` to dokładnie jeden typ, bez mieszania z typami użytkownika (start się nie uda).
+Użytkownik nie ma połączenia z takim systemem, więc `GET /v1/connections` go nie zwraca, a `PUT secret`, `oauth/*` dają `400`.
+
+**`token-exchange` (OpenSearch, adapter `opensearch`, CC-157).** `resolve` wymaga `subjectToken`: tokenu użytkownika z `aud=mcp-credential-broker`
+(gateway wymienia na niego token C1). Broker sprawdza go jak token BFF (podpis i `iss` względem JWKS IdP, `aud`, `exp` z tolerancją 30 s) i
+wymaga, żeby `sub` był równy `sub` wewnętrznego JWT; inaczej `400 invalid_request` (bez podania, która kontrola zawiodła) i audyt
+`credential_resolve` / `subject_token_invalid` (denied). Potem wymienia go w IdP (RFC 8693, `client_secret_basic`, `audience` i `scope`
+z konfiguracji systemu) i zwraca `scheme: Bearer`, `type: token-exchange`, `expiresAt` zawsze (z `expires_in`, a gdy IdP go pomija z `exp`
+wydanego tokenu; bez żadnego z nich `503`) i `cacheTtlSeconds` nie większe niż 60 i nie dłuższe niż do `expiresAt`. Nic nie jest zapisywane, broker też
+nie cache'uje wymiany. Odpowiedzi IdP: `access_denied`, `invalid_grant`, `invalid_target`, `invalid_request`, `invalid_scope`, `invalid_token`
+to odmowa dla użytkownika (`403 exchange_denied`, audyt `exchange_denied`, errorCode `access_denied`); `invalid_client`, `unauthorized_client`,
+5xx, brak odpowiedzi i każdy nieznany błąd to `503` (to defekt instalacji albo IdP, nie decyzja o użytkowniku). Klucz wymiany: klient poufny z
+`broker.systems.opensearch.token-exchange.client-id`, sekret w OpenBao `secret/data/mcp/oauth-clients/opensearch` (pole `client_secret`, ten sam
+mechanizm co klient OAuth GitLaba; `client-secret` w konfiguracji tylko dla dev).
+
+```yaml
+broker.systems.opensearch:
+  base-url: https://opensearch.internal:9200   # wymagany przez schemat konfiguracji, broker go nie wywołuje
+  adapter: opensearch
+  supported-types: [token-exchange]
+  default-type: token-exchange
+  token-exchange:
+    client-id: mcp-credential-broker
+    token-url: https://keycloak.internal/realms/corp/protocol/openid-connect/token
+    audience: opensearch
+    scopes: [opensearch-audience]
+```
+
+**`service-account` (Service Desk, adapter `generic-rest`, CC-157).** Klucz konta leży w OpenBao w `secret/data/mcp/service-accounts/<system>`
+(zapisuje operator, broker ma tylko odczyt): `value` (to, co idzie po schemacie w nagłówku) albo, dla `secret-scheme: Basic`, `username` i `password`
+(broker składa `base64(login:hasło)`), oraz opcjonalne `expires_at` (RFC 3339) przy rotacji na harmonogram. `scheme` to `secret-scheme` systemu (`Bearer`,
+`Basic`, `Token`, `ApiKey`), `expiresAt` to `expires_at` albo `null`, `cacheTtlSeconds` nie dłuższe niż do `expiresAt`. Klucza nie cache'uje nikt po
+stronie brokera, więc rotacja w OpenBao działa od następnego `resolve`. Brak wpisu, brak wartości, wartość z białymi znakami, zły `expires_at` albo
+klucz po terminie to `503` (fail-closed; nikt po stronie użytkownika tego nie naprawi) z audytem `secret_store_unavailable`.
+
+**`422 system_not_configured` (CC-158).** System z kontraktów (`jira`, `confluence`, `gitlab`, `servicedesk`, `opensearch`), którego broker nie ma w
+konfiguracji, w `resolve`, `oauth/start` i `oauth/complete` daje `422 {"error":"system_not_configured"}` (zamiast `400`). Audyt:
+`credential_resolve` z powodem `system_not_configured` i wynikiem `error` (w `oauth/*` to samo w `connection_change`). Identyfikator spoza
+kontraktów to nadal `400`.
+
+## Offboarding i czyszczenie (M4)
+
+**`POST /v1/admin/users/{sub}/purge` (CN `mcp-offboarding`, bez tokenu, CC-155).** Usuwa w tej kolejności ważności: wszystkie połączenia
+z sekretami (odwołanie tokenów u dostawcy dla `user-oauth`, potem sekret ze wszystkimi wersjami KV, potem wiersz, `credential.invalidated` dla
+każdego), wszystkie wartości pod `secret/mcp/connections/<sha256(sub)>/` także te, na które nie wskazuje żaden wiersz (po nieudanym kasowaniu), przepływy
+OAuth w toku, rejestrację Authenticatora z oboma ziarnami i wiersz blokady (to jedyne wywołanie, które ją zdejmuje: użytkownika już nie ma).
+Kroki są niezależne: awaria jednego (np. OpenBao) nie zatrzymuje pozostałych, a po ich wykonaniu wywołanie kończy się `503`; powtórzenie
+dokańcza resztę (połączenie, którego sekretu nie dało się skasować, zostaje w bazie właśnie po to). Odpowiedź `204` jest ta sama dla użytkownika, którego
+broker nie zna. Zalecane jest powtórzenie po wylogowaniu back-channel w portalu: przepływ OAuth otwarty w trakcie mógł założyć połączenie po pierwszym wywołaniu.
+Po `purge` `sub` nie jest blokowany (okno do 60 min na wygaśnięcie tokenu C1 przyjęte przez człowieka).
+
+Audyt `purge`: `connection_change` z powodem `user_purged` dla każdego połączenia (z `credentialType` i `backendUser`), `authenticator` z
+`authenticator_removed`, gdy była rejestracja albo trwała rejestracja, oraz **zawsze** jedno `admin_change` z powodem `user_purged` (`ok`, także gdy nic nie
+było do usunięcia; `error`, gdy któryś krok się nie udał). Nieudane odwołanie tokenów u dostawcy (przy `purge` i przy zwykłym `DELETE`) zostawia dodatkowe
+`connection_change` z powodem `provider_revoke_failed` i wynikiem `error`; połączenie jest usuwane mimo to.
+
+**Czyszczenie nieużywanych połączeń (CC-155).** Zadanie w tle (`broker.retention.cleanup-interval`, domyślnie 1 h) usuwa połączenia, których ostatnie użycie
+(a gdy nigdy nie użyto, utworzenie) jest starsze niż `broker.retention.unused-after` (domyślnie 180 dni), tą samą drogą co `DELETE`; audyt
+`connection_change` z powodem `unused_cleanup`. Wiersz jest czytany ponownie pod blokadą połączenia, więc użyte w międzyczasie zostaje. Broker nie dodaje statusu
+"wygasające" dla portalu: `GET /v1/connections` podaje `lastUsedAt` i `connectedAt`, z których portal wylicza ostrzeżenie (kontrakt mówi, że oznacza je portal; wartość
+retencji jest konfiguracją brokera, zob. Propozycje CC w STATUS.md).
+
+## Limity (M4)
+
+Limity na `sub`, licznik stałego okna w Redisie (`broker:rate:<operacja>:<sha256(sub)>`, `INCR` i `EXPIRE`), ponad limit `429 {"error":"rate_limited"}` z
+`Retry-After` (sekundy do końca okna, co najmniej 1), bez nagłówków `X-RateLimit-*`; audyt `connection_change` z powodem `rate_limited` (denied, errorCode
+`rate_limited`). `broker.rate-limits.oauth-starts` (domyślnie 10) i `oauth-completions` (20) na `window` (1 min): wartości własne brokera, kontrakt ich nie
+ustala. Start rejestracji Authenticatora: `broker.authenticator.enrollment-starts-per-hour`, domyślnie 10 na godzinę (CC-151), też z `Retry-After`. Redis
+niedostępny to `503` (bez licznika limitu nie da się egzekwować, a operacje i tak potrzebują Redisa).
 
 ## Połącz przez OAuth (user-oauth, GitLab)
 
@@ -226,7 +300,11 @@ Zmienne środowiska (nazwy z `mcp-platform-dev`, profil `full`). Pełna lista w
 | `MCP_GATEWAY_JWKS_URI` albo `MCP_GATEWAY_JWKS_FILE` | JWKS wewnętrznego JWT (dokładnie jedno z dwóch) |
 | `MCP_GATEWAY_TLS_NAME` | nazwa TLS endpointu JWKS (CC-035); host w `MCP_GATEWAY_JWKS_URI` musi być równy |
 | `MCP_GATEWAY_ISSUER` | `iss` wewnętrznego JWT, domyślnie `https://mcp-gateway.internal` |
-| `MCP_ALLOW_TEST_KEYS` | domyślnie `false`: opublikowane klucze testowe odrzucane; `true` tylko w testach i lokalnie |
+| `MCP_ALLOW_TEST_KEYS` | domyślnie `false`: opublikowane klucze testowe (`test-`) odrzucane; `true` tylko w testach i lokalnie; klucze `dev-` dodatkowo wymagają profilu `devstack` (CC-137) |
+| `BROKER_SYSTEMS_OPENSEARCH_*`, `BROKER_SYSTEMS_SERVICEDESK_*` | opcjonalne systemy typu `token-exchange` i `service-account` (sekcja wyżej): `BASEURL`, `ADAPTER`, `SUPPORTEDTYPES`, `DEFAULTTYPE`, `SECRETSCHEME`, `TOKENEXCHANGE_CLIENTID`, `_TOKENURL`, `_AUDIENCE`, `_SCOPES` |
+| `BROKER_RETENTION_UNUSEDAFTER`, `BROKER_RETENTION_CLEANUPINTERVAL`, `BROKER_RETENTION_BATCHSIZE` | czyszczenie nieużywanych połączeń: `180d`, `PT1H`, `100` |
+| `BROKER_RATELIMITS_OAUTHSTARTS`, `BROKER_RATELIMITS_OAUTHCOMPLETIONS`, `BROKER_RATELIMITS_WINDOW` | limity OAuth na `sub`: `10`, `20`, `1m` |
+| `BROKER_OPENBAO_SERVICEACCOUNTSPREFIX` | ścieżka kluczy kont serwisowych w KV, domyślnie `mcp/service-accounts` |
 | `MCP_JIRA_URL` | adres Jiry (whoami), wymagany |
 | `BROKER_SYSTEMS_CONFLUENCE_*` | opcjonalny system `confluence` (adapter `atlassian-dc`): `BASEURL`, `ADAPTER=atlassian-dc`, `SUPPORTEDTYPES=user-secret`, `DEFAULTTYPE=user-secret`; ten sam sposób co `jira` w `application.yml` |
 | `MCP_PORTAL_URL` | baza `connectUrl` w `409 credential_required`, wymagany |
@@ -236,8 +314,9 @@ Authenticator (`broker.authenticator.*`): `transit-key` (`mcp-authenticators`), 
 `enrollment-starts-per-hour` (10, wartość własna brokera), `sweep-interval` (1 min), `orphan-sweep-interval` (30 min). Okno,
 limity błędów, blokada i reguły rejestracji są stałe (kontrakt).
 
-Systemy i typy poświadczeń są w `broker.systems` (YAML). Znane są `user-secret` (Jira, Confluence, GitLab) i
-`user-oauth` (GitLab); konfiguracja typu, którego ta wersja nie obsługuje, zatrzymuje start.
+Systemy i typy poświadczeń są w `broker.systems` (YAML). Znane są `user-secret` (Jira, Confluence, GitLab), `user-oauth` (GitLab),
+`token-exchange` (OpenSearch) i `service-account` (Service Desk); niespójna konfiguracja (adapter nie obsługuje typu, `token-exchange` albo `service-account`
+zmieszany z innym typem, brak bloku `token-exchange`) zatrzymuje start.
 
 ## Budowanie i testy
 
@@ -251,18 +330,22 @@ docker build -t mcp-credential-broker:dev .
 
 | Test | Co sprawdza |
 | --- | --- |
-| `InternalJwtVectorTest` | wszystkie wektory C2 z `mcp-contracts` 3.0.2 (także wywołania `authenticator` z `tool`) (wynik i powód, `allowTestKeys` z wektora), klucz testowy pod produkcyjnym `kid` (SPKI), replay |
+| `InternalJwtVectorTest` | wszystkie wektory C2 z `mcp-contracts` 4.0.0 (także `dev-` z `devstackProfile` i wywołania `authenticator` z `tool`) (wynik i powód, `allowTestKeys` z wektora), klucz testowy pod produkcyjnym `kid` (SPKI), replay |
 | `ReturnPathTest` | walidator `returnPath` (CC-032) na wektorach `return-paths/`, używany przez `oauth/start` |
 | `OAuthIntegrationTest` | przepływ GitLaba na stubie WireMock: PKCE, state jednorazowy i związany z użytkownikiem, cudzy `flowId`/`state` (zły `state` nie spala przepływu), ponowne użycie, konto o innym loginie (połączone, widoczne jako `backendUser`), błąd i timeout dostawcy, wygasły przepływ, zapis w OpenBao, odświeżanie (rotacja, równoległe, odwołany grant, awaria dostawcy, `DELETE` w trakcie odświeżania, utrata blokady, odwołanie zastąpionego grantu), limit rozmiaru i czasu odpowiedzi dostawcy, zadanie w tle, `DELETE` z odwołaniem, PAT GitLaba; brak tokenów w odpowiedziach poza `resolve` i w logach |
 | `TotpVectorTest` | wszystkie scenariusze `test-vectors/totp/` (RFC 6238, okno, jednorazowość kroku, blokada 5/15, limit dzienny, rejestracja, spalanie) na prawdziwym serwisie, PostgreSQL i OpenBao Transit z zegarem ustawianym na `at` kroku; przykłady `rfc6238-sha1` i `otpauth-uri`; sprzątanie nieudanych rejestracji, ziaren bez wiersza (po karencji), nieudane kasowanie ziarna przy usunięciu, utrata ziarna aktywnej rejestracji |
 | `AuthenticatorIntegrationTest` | rejestracja po HTTP (nagłówki, schematy, ziarno raz), przechowywanie (szyfrogram w KV, `sub` w rekordzie, baza bez ziarna), 50 równoległych błędnych kodów = 5 sprawdzeń, dobowy limit raz i jedno zdarzenie `authenticator_disabled`, ten sam kod równolegle = jeden `ok`, spalanie, usunięcie i reset (blokada zostaje), ziarno pod cudzą ścieżką = 503, macierz CN i tokenów, `sub` zawsze z tokenu |
+| `TokenExchangeIntegrationTest` | wymiana na stubie IdP: żądanie RFC 8693 (pola, `Basic`), `expiresAt` i TTL, `exp` z tokenu gdy brak `expires_in`, `subjectToken` cudzy / zły `aud` / wygasły / zły `iss` / zły podpis / nie JWT -> `400` bez pytania IdP, odmowy IdP -> `403`, awarie IdP -> `503`, nic w OpenBao, brak tokenów i sekretu klienta w logach |
+| `ServiceAccountIntegrationTest`, `ServiceAccountKeysTest` | klucz z OpenBao (Bearer, Basic z loginu i hasła, `expires_at`, rotacja bez restartu), brak / po terminie / zły wpis -> `503`, `GET /v1/connections` bez konta, `PUT secret` i `oauth/*` -> `400` |
+| `OffboardingIntegrationTest` | `purge` (połączenia, wszystkie wersje KV i wartość bez wiersza, przepływ OAuth w toku, Authenticator z blokadą, odwołanie u dostawcy, `credential.invalidated`, audyt per element i zbiorczy), idempotencja i nieznany `sub`, tylko CN `mcp-offboarding`, `provider_revoke_failed`, awaria OpenBao w trakcie (`503`, powtórzenie kończy), czyszczenie nieużywanych (`unused_cleanup`) |
+| `RateLimitIntegrationTest` | `429` z `Retry-After` dla `start` i `complete` na `sub`, inny użytkownik bez wpływu, licznik bez TTL dostaje TTL |
 | `OperationsContractTest` | tabela operacji filtra == metody, ścieżki i `x-allowed-client-cn` z OpenAPI C4 |
 | `BrokerIntegrationTest` | mTLS, PostgreSQL, Redis z ACL jak w dev, OpenBao (AppRole, KV v2, Transit), fałszywa Jira; odpowiedzi walidowane schematami OpenAPI, audyt schematem C8, zdarzenie schematem C4.3; brak sekretu w odpowiedziach poza `resolve` i w logach |
 | `BrokerIntegrationTest` (awarie) | Redis i PostgreSQL wstrzymane (`docker pause`) -> 503 z audytem; szyfrogram przeniesiony pod cudzą ścieżkę -> 503; ciało chunked 200 KB -> 400 bez whoami; sondy ścieżek -> 404 |
 | `OpenBaoClientTest` | `renew-self`, ponowne logowanie przy `token_max_ttl`, praca na ważnym tokenie po nieudanym logowaniu |
 | `KeySourceTest` | JWKS gateway'a przeterminowany -> 503, niedostępny JWKS IdP -> 503 zamiast 401 |
 | `CredentialServiceTest`, `ConnectionTest`, `AuditLogTest`, `TransportSecurityTest` | fail-closed, wersje sekretów, `email_verified`, porównanie ASCII, `subjectToken`, TTL, `lastUsedAt`, escapowanie audytu, `backendUser` w audycie (poprawny, odrzucany, surogaty, błąd zapisu po whoami), wymóg https |
-| `AuditEventVectorTest` | wszystkie wektory `audit-events/` z `mcp-contracts` 3.0.2 względem schematu C8 i zgodność `AuditLog.validBackendUser` z wektorami `backendUser` |
+| `AuditEventVectorTest` | wszystkie wektory `audit-events/` z `mcp-contracts` 4.0.0 względem schematu C8 i zgodność `AuditLog.validBackendUser` z wektorami `backendUser` |
 
 ## Uruchomienie lokalne w `mcp-platform-dev` (ws-01)
 
@@ -310,6 +393,10 @@ Skrypt:
 - Bez `MCP_GATEWAY_JWKS_URI` używa testowego JWKS z `../mcp-contracts/test-vectors/keys/test-gateway-jwks.json` i
   ustawia `MCP_ALLOW_TEST_KEYS=true`, żeby `resolve` dało się wywołać tokenem podpisanym kluczem testowym A
   (`test-gateway-jwt-a`). To tylko do pracy lokalnej.
+- OpenSearch jako `token-exchange` (opcjonalnie): `MCP_OPENSEARCH_EXCHANGE=true`; wymiana w Keycloaku stosu klientem `mcp-credential-broker`
+  (`audience=opensearch`, `scope=opensearch-audience`), sekret klienta z OpenBao `secret/mcp/oauth-clients/opensearch`, a gdy go tam nie ma, z
+  `KC_CLIENT_MCP_CREDENTIAL_BROKER_SECRET` (zapas dla developmentu). Service Desk jako `service-account`: `MCP_SERVICEDESK_ACCOUNT=true`; klucz musi być w OpenBao
+  pod `secret/mcp/service-accounts/servicedesk` (pole `value`).
 - GitLab (opcjonalnie): `MCP_GITLAB_URL=http://localhost:18741` (mock ze stosu). `client_secret` broker czyta z OpenBao
   (`secret/mcp/oauth-clients/gitlab`); `MCP_GITLAB_CLIENT_SECRET` to zapas wyłącznie dla developmentu.
 
@@ -329,14 +416,13 @@ curl -s -o /dev/null -w '%{http_code}\n' --cacert $d/ca/ca.crt -X POST \
 pl.aiwcorpo.mcp.broker
 ├── auth/        mTLS CN, weryfikacja C2 i tokenu BFF, tabela operacji, jti w Redis
 ├── api/         kontrolery C4, DTO, mapowanie błędów
-├── credential/  CredentialService (resolve, PUT secret), OAuthService (start, complete, odświeżanie), IdentityRule (C4.1), metadane połączeń (JDBC)
-├── oauth/       przepływy w Redisie (jednorazowe), blokada odświeżania
+├── credential/  CredentialService (resolve czterech typów, PUT secret), OAuthService (start, complete, odświeżanie), OffboardingService (purge, czyszczenie), metadane połączeń (JDBC)
+├── oauth/       przepływy w Redisie (jednorazowe), blokada odświeżania, limity (RateLimiter)
 ├── authenticator/ TOTP (RFC 6238), serwis rejestracji i weryfikacji, magazyn ziarna w OpenBao Transit, metadane (JDBC)
-├── secret/      SecretStore + OpenBao (AppRole, KV v2, Transit), SecretValue
-├── system/      SystemRegistry, SystemAdapter (whoami), OAuthProvider, AtlassianDcAdapter, GitLabAdapter
+├── secret/      SecretStore + OpenBao (AppRole, KV v2, Transit), klucze kont serwisowych, SecretValue
+├── system/      SystemRegistry, SystemAdapter (whoami), OAuthProvider, TokenExchanger, ServiceAccountSource, adaptery: AtlassianDc, GitLab, OpenSearch, GenericRest
 ├── audit/       zdarzenia C8
 └── event/       credential.invalidated (Redis pub/sub)
 ```
 
-Rozszerzenia M3-M4 wchodzą w istniejące miejsca: nowe typy poświadczeń w `CredentialType` i
-`SystemRegistry`, nowe operacje w `Operation` (test kontraktowy pilnuje zgodności z OpenAPI).
+Nowe typy poświadczeń wchodzą w `CredentialType` i `SystemRegistry`, nowe operacje w `Operation` (test kontraktowy pilnuje zgodności z OpenAPI).
