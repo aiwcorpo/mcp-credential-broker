@@ -49,6 +49,13 @@ class ServiceAccountKeysTest {
     }
 
     @Test
+    void aBasicLoginWithAColonIsRefused() {
+        String system = "sys-" + UUID.randomUUID();
+        put(system, "{\"username\":\"svc:mcp\",\"password\":\"x\"}");
+        assertThatThrownBy(() -> keys.read(system, CredentialScheme.BASIC)).isInstanceOf(SecretStoreUnavailableException.class);
+    }
+
+    @Test
     void aKeyThatExpiresIsRefusedFromItsExpiry() {
         String system = "sys-" + UUID.randomUUID();
         put(system, "{\"value\":\"k\",\"expires_at\":\"" + clock.instant().plusSeconds(30) + "\"}");

@@ -9,6 +9,7 @@ import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2Error;
 import org.springframework.security.oauth2.core.OAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
+import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtException;
@@ -41,13 +42,16 @@ public class SubjectTokenVerifier {
         JdkClientHttpRequestFactory requests = new JdkClientHttpRequestFactory(http);
         requests.setReadTimeout(Duration.ofSeconds(5));
         NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(idp.jwksUri().toString())
+                .jwsAlgorithm(SignatureAlgorithm.RS256)
                 .restOperations(new RestTemplate(requests))
                 .build();
         OAuth2TokenValidator<Jwt> audience = jwt -> jwt.getAudience() != null && jwt.getAudience().contains(idp.audience())
                 ? OAuth2TokenValidatorResult.success()
                 : OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "aud", null));
+        JwtTimestampValidator timestamps = new JwtTimestampValidator(clockSkew);
+        timestamps.setAllowEmptyExpiryClaim(false);
         decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(List.of(
-                new JwtTimestampValidator(clockSkew), new JwtIssuerValidator(idp.issuer()), audience)));
+                timestamps, new JwtIssuerValidator(idp.issuer()), audience)));
         return new SubjectTokenVerifier(decoder);
     }
 

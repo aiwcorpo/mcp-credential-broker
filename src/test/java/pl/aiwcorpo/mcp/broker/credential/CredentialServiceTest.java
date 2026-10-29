@@ -181,7 +181,8 @@ class CredentialServiceTest {
     private static SystemRegistry registry() {
         return new SystemRegistry(Map.of("jira", config()), HttpClient.newHttpClient(), JsonMapper.builder().build(),
                 mock(pl.aiwcorpo.mcp.broker.secret.OAuthClientSecrets.class),
-                mock(pl.aiwcorpo.mcp.broker.secret.ServiceAccountKeys.class), Clock.systemUTC());
+                mock(pl.aiwcorpo.mcp.broker.secret.ServiceAccountKeys.class), Clock.systemUTC(),
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
     }
 
     private static BrokerProperties.SystemConfig config() {

@@ -13,7 +13,7 @@ Kamienie pośrednie:
 3. **K3**: limity `429` z `Retry-After` (OAuth start i complete na `sub`, CC-156; start rejestracji Authenticatora był już 10/h z M3), README,
    przegląd własny, obraz `mcp-credential-broker:m4-<sha>`.
 
-Obraz: `mcp-credential-broker:m4-9fb07d2` (jar z `./mvnw -B verify` na tym commicie, 370 testów; po nim tylko ta linijka). Compose i stos nie ruszane.
+Obraz: `mcp-credential-broker:m4-9fb07d2` (pierwotny, przed poprawkami przeglądu; aktualny obraz po poprawkach: patrz niżej). Compose i stos nie ruszane.
 
 | Wymaganie M4 | Stan |
 | --- | --- |
@@ -41,14 +41,28 @@ Tests run: 370, Failures: 0, Errors: 0, Skipped: 0   (BUILD SUCCESS, mcp-contrac
 - **`provider_revoke_failed` obok, nie zamiast:** nieudane odwołanie tokenów daje osobną linię `connection_change` / `provider_revoke_failed` / `error` (bez `errorCode`, jak w
   wektorze), a zwykły wynik (`disconnected`, `user_purged`, `unused_cleanup`) idzie dalej jako `ok`. Przy zastąpieniu grantu (nowe połączenie) odwołanie nadal jest ciche (logowane).
 - **Odmowa IdP vs błąd instalacji:** IdP dzieli kody błędów między "ten użytkownik nie może" i "broker źle skonfigurowany" (Keycloak: `invalid_request` dla audience, którego użytkownik
-  nie dostaje, ale też dla literówki w `audience`). Odmową (`403`) są `access_denied`, `invalid_grant`, `invalid_target`, `invalid_request`, `invalid_scope`, `invalid_token`; `invalid_client`,
-  `unauthorized_client`, 5xx i nieznane kody to `503`. Skutek uboczny: zła nazwa `audience` w konfiguracji wygląda jak masowa odmowa; przyczyna jest w logu brokera (`info`, kod błędu i audience).
+  nie dostaje, ale też dla literówki w `audience`). Odmową (`403`) są `access_denied`, `invalid_grant`, `invalid_target`, `invalid_request` (Keycloak mówi tak o audience, którego użytkownik nie dostaje) i `invalid_token`; `invalid_scope`
+  (scope'y należą do klienta, nie do użytkownika), `invalid_client`, `unauthorized_client`, 5xx i nieznane kody to `503`. Każda odmowa: log `warn` z kodem i audience oraz licznik Micrometer `broker.token_exchange.denied{audience}` (endpoint `metrics` nie jest wystawiony: `management.endpoints.web.exposure` to tylko `health`). Skutek uboczny: zła nazwa `audience` w konfiguracji wygląda jak masowa odmowa (przyczyna w logu `warn` i w liczniku).
 - **Broker nie cache'uje wymiany ani klucza konta:** kontrakt daje cache bramie (`cacheTtlSeconds`), a brak cache w brokerze oznacza, że rotacja w OpenBao i zmiana uprawnień w IdP działają od następnego `resolve`.
   Koszt: jedno wywołanie IdP albo OpenBao na `resolve` (gateway cache'uje do 60 s).
 - **`azp` subjectToken nie jest ograniczane:** kontrakt wymaga `aud`, `exp`, `sub`; to, kto wymienił token, rozstrzyga IdP.
 - **Konfiguracja typów:** `token-exchange` i `service-account` wykluczają inne typy w tym samym systemie (start się nie uda); adaptery `opensearch` i `generic-rest` są nazwane po roli, `SystemAdapter` (whoami) zostaje tylko dla typów z poświadczeniem użytkownika.
 - **Purge a awarie:** kroki niezależne, `503` po wykonaniu wszystkich; połączenie, którego sekretu nie dało się skasować, zostaje w bazie (powtórzenie kończy). Wiersz Authenticatora jest usuwany przed ziarnami (osierocone ziarno sprząta `sweepOrphanSeeds`).
 - **Limity OAuth:** wartości własne (kontrakt: konfiguracja brokera), okno stałe 1 min; licznik bez TTL (przerwany proces między `INCR` i `EXPIRE`) dostaje TTL przy pierwszym przekroczeniu zamiast blokować na zawsze.
+
+### Poprawki po przeglądzie Opus (M1, L1-L8)
+
+| # | Poprawka |
+| --- | --- |
+| M1 | `invalid_scope` -> `503`; `invalid_request` zostaje `403` (uzasadnienie w komentarzu `OpenSearchAdapter`); odmowy: `warn` + licznik `broker.token_exchange.denied`; testy `anInvalidScopeIsTheInstallationsFaultNotTheUsers` i log `warn` |
+| L1 | `SubjectTokenVerifier`: `setAllowEmptyExpiryClaim(false)`, jawnie RS256; testy: token bez `exp`, `alg: none`, HS256 -> `400`. `BffTokenVerifier` ma tę samą lukę `exp` (sprzed M4, nie ruszane: zgłoszone koordynatorowi) |
+| L2 | Odpowiedź IdP odrzucana (`503`), gdy token równa się `subjectToken`, `issued_token_type` nie jest access tokenem, `token_type` nie jest `Bearer`/`N_A`, albo JWT nie ma `aud` z `token-exchange.audience` (token nieprzezroczysty: bez sprawdzenia `aud`) |
+| L3 | `purge`: `findAll` w `attempt`, przepływy OAuth przed połączeniami; test z wstrzymanym PostgreSQL (sekret w OpenBao usunięty mimo `503`). Zostaje: gdy usunięcie połączenia zawiedzie na blokadzie, sekret idzie przez `deleteAllOf`, wiersz i `credential.invalidated` dopiero przy powtórzeniu (gateway cache <= 60 s, `resolve` daje `credential_required`) |
+| L4 | `sub` ponad 255 znaków w `purge`: `204` bez działania (kontrakt zna tylko 204/403/503; żaden użytkownik takiego `sub` nie ma) i jedno `admin_change`/`user_purged`/`ok` bez `sub` |
+| L5 | Czyszczenie pomija w danym przebiegu wiersze, które się nie udały (`offset`), do 50 partii; test z zajętą blokadą połączenia |
+| L6 | `username` z `:` w koncie Basic -> `503`; README i Javadoc: `value` przy Basic to gotowe `base64(login:hasło)` |
+| L7 | Brief ws-06, funkcje 3 i 7: **nie zrobione w M4**: opcjonalny nagłówek impersonacji konta serwisowego, limit `resolve` na `sub`, wykrywanie nietypowych wzorców (resolve wielu systemów naraz). Kontrakt 4.0.0 nie ma `429` w `resolve`; reszta wymaga decyzji |
+| L8 | Awaria Redisa w limiterze: `RateLimitUnavailableException`, audyt `rate_limit_unavailable`, `503`; test z wstrzymanym Redisem |
 
 ### Przegląd własny M4
 
@@ -89,10 +103,10 @@ Kontraktów nie zmieniam; propozycje do decyzji człowieka.
 | # | Propozycja | Powód |
 | --- | --- | --- |
 | P1 | Opcjonalne pole `cleanupAt` (`Timestamp` albo `null`) w `Connection` (C4) i `GET /api/v1/connections` | Kontrakt mówi, że portal oznacza połączenia bliskie czyszczenia jako wygasające, ale retencja (180 dni) jest konfiguracją brokera; portal nie zna wartości i może liczyć tylko z własnej kopii. Broker nie zmienia statusu `expiring` (opis `ConnectionStatus` ogranicza go do `user-secret` z `expiresAt`) |
-| P2 | Zamrozić w C4 pola wpisu `secret/data/mcp/service-accounts/<system>` (`value`, `username`, `password`, `expires_at`) i ścieżkę sekretu klienta wymiany (`secret/data/mcp/oauth-clients/<system>`, `client_secret`) | Kontrakt podaje tylko ścieżkę konta; nazwy pól wybrał broker, a zapisuje je ws-01 i operator |
+| P2 | Zamrozić w C4 pola wpisu `secret/data/mcp/service-accounts/<system>` (`value`, `username`, `password`, `expires_at`) i ścieżkę sekretu klienta wymiany (`secret/data/mcp/oauth-clients/<system>`, `client_secret`) | Kontrakt podaje tylko ścieżkę konta; nazwy pól wybrał broker, a zapisuje je ws-01 i operator. `value` przy Basic to `base64(login:hasło)`, `username` bez `:` (RFC 7617) |
 | P3 | Opis `reason` dla `admin_change`: `user_purged` z wynikiem `error`, gdy `purge` się nie udał (dziś opis mówi tylko o `ok`) | Nieudany `purge` powinien zostawić ślad; broker emituje `admin_change` / `user_purged` / `error` / `upstream_unavailable` |
 | P4 | `provider_revoke_failed`: napisać, że zdarzenie jest dodatkowe względem zdarzenia wyniku i nie ma `errorCode` | Wektor ma tylko jedno zdarzenie; broker emituje dwa (osobny wynik `ok` dla usunięcia) |
-| P5 | Wskazać, które odpowiedzi IdP to `exchange_denied` (lista z "Odstępstw") | Granica użytkownik / konfiguracja jest dziś decyzją implementacji |
+| P5 | Wskazać, które odpowiedzi IdP to `exchange_denied` (lista z "Odstępstw": `invalid_scope` to `503`), z logiem `warn` i licznikiem odmów | Granica użytkownik / konfiguracja jest dziś decyzją implementacji |
 
 ### Zostaje
 

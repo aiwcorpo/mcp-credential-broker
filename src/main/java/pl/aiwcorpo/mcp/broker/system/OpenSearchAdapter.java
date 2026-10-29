@@ -18,6 +18,8 @@ import java.util.Set;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -44,17 +46,26 @@ public class OpenSearchAdapter implements TokenExchanger {
 
     private static final Logger log = LoggerFactory.getLogger(OpenSearchAdapter.class);
     private static final Pattern ERROR_CODE = Pattern.compile("^[a-z_]{1,40}$");
+    /**
+     * Answers that are about this user. invalid_request is in the set because Keycloak says it for an audience this user
+     * does not get ("Requested audience not available"); without it exchange_denied would never happen. invalid_scope is
+     * not: the scopes a client may ask for belong to the client, so it is always the installation (503).
+     */
     private static final Set<String> DENIED = Set.of("access_denied", "invalid_grant", "invalid_target", "invalid_request",
-            "invalid_scope", "invalid_token");
+            "invalid_token");
+    private static final String ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
 
     private final BrokerProperties.TokenExchange exchange;
     private final Duration timeout;
     private final Supplier<SecretValue> clientSecret;
     private final UpstreamHttp http;
     private final Clock clock;
+    private final Counter denials;
 
     public OpenSearchAdapter(BrokerProperties.TokenExchange exchange, Duration timeout, Supplier<SecretValue> clientSecret,
-            HttpClient http, JsonMapper json, Clock clock) {
+            HttpClient http, JsonMapper json, Clock clock, MeterRegistry meters) {
+        this.denials = Counter.builder("broker.token_exchange.denied").description("Token exchanges the IdP refused for the user")
+                .tag("audience", exchange.audience()).register(meters);
         this.exchange = exchange;
         this.timeout = timeout;
         this.clientSecret = clientSecret;
@@ -77,12 +88,13 @@ public class OpenSearchAdapter implements TokenExchanger {
         HttpResponse<byte[]> response = http.send(request(form));
         int status = response.statusCode();
         if (status == 200) {
-            return parse(http.readJson(response, "token endpoint"), sent);
+            return parse(http.readJson(response, "token endpoint"), sent, subjectToken);
         }
         if (status >= 400 && status < 500) {
             String error = errorCode(response);
             if (DENIED.contains(error)) {
-                log.info("IdP refused the token exchange for audience {}: {}", exchange.audience(), error);
+                denials.increment();
+                log.warn("IdP refused the token exchange for audience {}: {}", exchange.audience(), error);
                 throw new ExchangeDeniedException();
             }
             throw new UpstreamUnavailableException("token endpoint refused the broker's request: " + error);
@@ -90,7 +102,7 @@ public class OpenSearchAdapter implements TokenExchanger {
         throw new UpstreamUnavailableException("token endpoint answered HTTP " + status);
     }
 
-    private ExchangedToken parse(JsonNode body, Instant sent) {
+    private ExchangedToken parse(JsonNode body, Instant sent, SecretValue subjectToken) {
         JsonNode access = body.path("access_token");
         if (!access.isString() || access.stringValue().isEmpty()) {
             throw new UpstreamUnavailableException("token endpoint answered without an access token");
@@ -99,6 +111,7 @@ public class OpenSearchAdapter implements TokenExchanger {
         if (!token.isHeaderToken()) {
             throw new UpstreamUnavailableException("token endpoint answered an access token that is not a header token");
         }
+        requireIssuedForTheSystem(body, access.stringValue(), subjectToken);
         JsonNode expiresIn = body.path("expires_in");
         Instant expiresAt = expiresIn.isIntegralNumber() && expiresIn.asLong() > 0
                 ? sent.plusSeconds(expiresIn.asLong())
@@ -107,6 +120,28 @@ public class OpenSearchAdapter implements TokenExchanger {
             throw new UpstreamUnavailableException("token endpoint answered a token without a usable expiry");
         }
         return new ExchangedToken(token, expiresAt.truncatedTo(ChronoUnit.SECONDS));
+    }
+
+    /**
+     * The token goes to a server that must get a token for itself, never the user's own (invariant 2): it must not be the
+     * subject token, must be an access token, and when it is a JWT its audience must name the system.
+     */
+    private void requireIssuedForTheSystem(JsonNode body, String accessToken, SecretValue subjectToken) {
+        JsonNode issuedType = body.path("issued_token_type");
+        JsonNode tokenType = body.path("token_type");
+        if (accessToken.equals(subjectToken.reveal())
+                || (issuedType.isString() && !ACCESS_TOKEN_TYPE.equals(issuedType.stringValue()))
+                || (tokenType.isString() && !"bearer".equalsIgnoreCase(tokenType.stringValue()) && !"n_a".equalsIgnoreCase(tokenType.stringValue()))) {
+            throw new UpstreamUnavailableException("token endpoint answered a token that is not an access token for the system");
+        }
+        try {
+            var audience = JWTParser.parse(accessToken).getJWTClaimsSet().getAudience();
+            if (audience == null || !audience.contains(exchange.audience())) {
+                throw new UpstreamUnavailableException("token endpoint answered a token for another audience");
+            }
+        } catch (ParseException e) {
+            // an opaque token has no audience to read; the IdP's answer is all there is
+        }
     }
 
     /** Fallback when the IdP leaves out expires_in: the exp of the token it just issued (not a check of the token). */

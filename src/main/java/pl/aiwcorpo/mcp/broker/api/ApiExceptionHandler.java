@@ -28,6 +28,7 @@ import pl.aiwcorpo.mcp.broker.authenticator.AuthenticatorRefusedException;
 import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
 import pl.aiwcorpo.mcp.broker.credential.CredentialRequiredException;
 import pl.aiwcorpo.mcp.broker.credential.InvalidRequestException;
+import pl.aiwcorpo.mcp.broker.credential.RateLimitUnavailableException;
 import pl.aiwcorpo.mcp.broker.credential.RateLimitedException;
 import pl.aiwcorpo.mcp.broker.credential.SecretRejectedException;
 import pl.aiwcorpo.mcp.broker.credential.SystemNotConfiguredException;
@@ -126,11 +127,11 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiError.of("not_found_or_denied"));
     }
 
-    @ExceptionHandler({SecretStoreUnavailableException.class, UpstreamUnavailableException.class,
+    @ExceptionHandler({SecretStoreUnavailableException.class, UpstreamUnavailableException.class, RateLimitUnavailableException.class,
             DataAccessResourceFailureException.class, TransientDataAccessException.class,
             RecoverableDataAccessException.class})
     ResponseEntity<ApiError> unavailable(RuntimeException e) {
-        log.warn("Dependency unavailable: {}", e instanceof SecretStoreUnavailableException || e instanceof UpstreamUnavailableException
+        log.warn("Dependency unavailable: {}", e instanceof SecretStoreUnavailableException || e instanceof UpstreamUnavailableException || e instanceof RateLimitUnavailableException
                 ? e.getMessage() : e.getClass().getSimpleName());
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(ApiError.of("upstream_unavailable"));
     }

@@ -14,8 +14,8 @@ import tools.jackson.databind.JsonNode;
 /**
  * Keys of the platform's own accounts in target systems, read from OpenBao KV
  * ({@code <kvMount>/data/<prefix>/<system>}, written by the operator, read-only for the broker). Fields: {@code value}
- * (the credential as it goes after the scheme in the header), or {@code username} and {@code password} for a system
- * that takes Basic; {@code expires_at} (RFC 3339) when the key is rotated on a schedule. Not cached: a rotation in
+ * (the credential as it goes after the scheme in the header: for Basic already base64 of login:password), or
+ * {@code username} (no colon) and {@code password} for a system that takes Basic, from which the broker builds that value; {@code expires_at} (RFC 3339) when the key is rotated on a schedule. Not cached: a rotation in
  * OpenBao takes effect on the next resolve, and the gateway's own cache is at most 60 seconds.
  */
 public class ServiceAccountKeys {
@@ -71,6 +71,9 @@ public class ServiceAccountKeys {
 
     private static String value(JsonNode data, CredentialScheme scheme) {
         if (scheme == CredentialScheme.BASIC && data.path("username").isString() && data.path("password").isString()) {
+            if (data.path("username").stringValue().contains(":")) {
+                throw new SecretStoreUnavailableException("service account username must not contain a colon (RFC 7617)");
+            }
             String login = data.path("username").stringValue() + ":" + data.path("password").stringValue();
             return Base64.getEncoder().encodeToString(login.getBytes(StandardCharsets.UTF_8));
         }

@@ -117,6 +117,9 @@ public class OAuthService {
         } catch (RateLimitedException e) {
             entry.denied("rate_limited", "rate_limited");
             throw e;
+        } catch (RateLimitUnavailableException e) {
+            entry.error("rate_limit_unavailable", "upstream_unavailable");
+            throw e;
         } catch (SystemNotConfiguredException e) {
             entry.error("system_not_configured", "internal_error");
             throw e;
@@ -181,6 +184,9 @@ public class OAuthService {
             return new Completed(ConnectionStatus.CONNECTED, identity.username());
         } catch (RateLimitedException e) {
             entry.denied("rate_limited", "rate_limited");
+            throw e;
+        } catch (RateLimitUnavailableException e) {
+            entry.error("rate_limit_unavailable", "upstream_unavailable");
             throw e;
         } catch (SystemNotConfiguredException e) {
             entry.error("system_not_configured", "internal_error");

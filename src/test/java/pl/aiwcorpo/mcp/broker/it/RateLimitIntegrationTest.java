@@ -103,6 +103,21 @@ class RateLimitIntegrationTest {
         assertThat(redis.getExpire(key)).isBetween(1L, 60L);
     }
 
+    @Test
+    void aRedisOutageIsAuditedAsTheLimiterNotTheSecretStore(CapturedOutput output) {
+        String rid = TestTokens.newRequestId();
+        BrokerClient.Response response;
+        env.redis.getDockerClient().pauseContainerCmd(env.redis.getContainerId()).exec();
+        try {
+            response = start(UUID.randomUUID().toString(), rid);
+        } finally {
+            env.redis.getDockerClient().unpauseContainerCmd(env.redis.getContainerId()).exec();
+        }
+        assertThat(response.status()).isEqualTo(503);
+        assertThat(AuditLines.of(output, rid)).singleElement()
+                .satisfies(e -> assertThat(e.path("reason").stringValue()).isEqualTo("rate_limit_unavailable"));
+    }
+
     private BrokerClient.Response start(String sub, String rid) {
         return bff.send("POST", "/v1/connections/gitlab/oauth/start", tokens.bffUser(sub, "alice"), rid,
                 "{\"returnPath\":\"/catalog\"}");

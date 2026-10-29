@@ -10,6 +10,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.Supplier;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
 import pl.aiwcorpo.mcp.broker.credential.CredentialType;
 import pl.aiwcorpo.mcp.broker.secret.OAuthClientSecrets;
@@ -59,7 +60,7 @@ public class SystemRegistry {
     private final Map<String, ConfiguredSystem> systems;
 
     public SystemRegistry(Map<String, BrokerProperties.SystemConfig> config, HttpClient whoamiClient, JsonMapper json,
-            OAuthClientSecrets clientSecrets, ServiceAccountKeys serviceAccountKeys, Clock clock) {
+            OAuthClientSecrets clientSecrets, ServiceAccountKeys serviceAccountKeys, Clock clock, MeterRegistry meters) {
         Map<String, ConfiguredSystem> configured = new LinkedHashMap<>();
         config.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry -> {
             String id = entry.getKey();
@@ -71,7 +72,7 @@ public class SystemRegistry {
                 throw new IllegalArgumentException("broker.systems." + id + ": default-type is not in supported-types");
             }
             requireCompatibleTypes(id, system);
-            Object adapter = adapter(id, system, whoamiClient, json, clientSecrets, serviceAccountKeys, clock);
+            Object adapter = adapter(id, system, whoamiClient, json, clientSecrets, serviceAccountKeys, clock, meters);
             if (system.supportedTypes().contains(CredentialType.USER_OAUTH)
                     && (system.oauth() == null || !(adapter instanceof OAuthProvider))) {
                 throw new IllegalArgumentException("broker.systems." + id + ": user-oauth needs an oauth client and an adapter that speaks OAuth");
@@ -105,7 +106,7 @@ public class SystemRegistry {
 
     /** The adapter object implements the interfaces of the capabilities its system has. */
     private static Object adapter(String id, BrokerProperties.SystemConfig system, HttpClient http, JsonMapper json,
-            OAuthClientSecrets clientSecrets, ServiceAccountKeys serviceAccountKeys, Clock clock) {
+            OAuthClientSecrets clientSecrets, ServiceAccountKeys serviceAccountKeys, Clock clock, MeterRegistry meters) {
         return switch (system.adapter()) {
             case "gitlab" -> {
                 if (!"gitlab".equals(id)) {
@@ -125,7 +126,7 @@ public class SystemRegistry {
                 }
                 BrokerProperties.TokenExchange exchange = system.tokenExchange();
                 yield new OpenSearchAdapter(exchange, system.timeout(),
-                        () -> clientSecrets.clientSecret(id, exchange.clientSecret()), http, json, clock);
+                        () -> clientSecrets.clientSecret(id, exchange.clientSecret()), http, json, clock, meters);
             }
             case "generic-rest" -> {
                 if (!system.supportedTypes().equals(List.of(CredentialType.SERVICE_ACCOUNT))) {

@@ -68,6 +68,9 @@ class OffboardingIntegrationTest {
     @Autowired
     OffboardingService offboardingService;
 
+    @Autowired
+    org.springframework.data.redis.core.StringRedisTemplate redis;
+
     BrokerClient gateway;
     BrokerClient bff;
     BrokerClient offboarding;
@@ -198,10 +201,10 @@ class OffboardingIntegrationTest {
         assertThat(offboarding.send("GET", "/v1/admin/users/" + sub + "/purge", null, null, null).status()).isEqualTo(404);
         assertThat(rows(sub)).as("nothing was purged").isEqualTo(1);
         String invalid = TestTokens.newRequestId();
-        assertThat(offboarding.send("POST", "/v1/admin/users/" + "x".repeat(256) + "/purge", null, invalid, null).status()).isEqualTo(400);
+        assertThat(offboarding.send("POST", "/v1/admin/users/" + "x".repeat(256) + "/purge", null, invalid, null).status()).isEqualTo(204);
         assertThat(AuditLines.of(output, invalid)).singleElement().satisfies(e -> {
             assertThat(e.path("event").stringValue()).isEqualTo("admin_change");
-            assertThat(e.path("outcome").stringValue()).isEqualTo("denied");
+            assertThat(e.path("outcome").stringValue()).isEqualTo("ok");
             assertThat(e.has("sub")).isFalse();
         });
     }
@@ -264,6 +267,45 @@ class OffboardingIntegrationTest {
         assertThat(env.bao("GET", path.replace("/data/", "/metadata/"), null).statusCode()).isEqualTo(404);
         assertThat(env.bao("GET", "secret/data/mcp/authenticators/" + SecretKey.hashOf(sub), null).statusCode()).isEqualTo(404);
         assertThat(registered.seed).isNotEmpty();
+    }
+
+    @Test
+    void aDatabaseOutageDoesNotKeepThePurgeFromDeletingSecrets() {
+        String sub = newSub();
+        assertThat(putSecret(sub, "jira", "alice-pat").status()).isEqualTo(200);
+        String path = "secret/data/mcp/connections/" + new SecretKey(sub, "jira", version(sub, "jira")).relativePath();
+        BrokerClient.Response failed;
+        env.postgres.getDockerClient().pauseContainerCmd(env.postgres.getContainerId()).exec();
+        try {
+            failed = offboarding.send("POST", "/v1/admin/users/" + sub + "/purge", null, null, null);
+        } finally {
+            env.postgres.getDockerClient().unpauseContainerCmd(env.postgres.getContainerId()).exec();
+        }
+        assertThat(failed.status()).isEqualTo(503);
+        assertThat(env.bao("GET", path.replace("/data/", "/metadata/"), null).statusCode())
+                .as("the secret store step ran although the database did not answer").isEqualTo(404);
+        assertThat(offboarding.send("POST", "/v1/admin/users/" + sub + "/purge", null, null, null).status()).isEqualTo(204);
+        assertThat(rows(sub)).isZero();
+    }
+
+    @Test
+    void aConnectionThatCannotBeRemovedDoesNotStopTheCleanupOfTheOthers() {
+        String stuck = newSub();
+        String stale = newSub();
+        assertThat(complete(stuck, start(stuck), gitlab.issueCode("alice", 7200).code()).status()).isEqualTo(200);
+        assertThat(putSecret(stale, "jira", "alice-pat").status()).isEqualTo(200);
+        age(stuck, Instant.now().minus(300, ChronoUnit.DAYS), null);
+        age(stale, Instant.now().minus(200, ChronoUnit.DAYS), null);
+        String lock = "broker:oauth:refresh:" + SecretKey.hashOf(stuck) + ":gitlab";
+        redis.opsForValue().set(lock, "held-by-the-test", java.time.Duration.ofSeconds(30));
+        try {
+            assertThat(offboardingService.removeUnused()).isEqualTo(1);
+        } finally {
+            redis.delete(lock);
+        }
+        assertThat(rows(stale)).isZero();
+        assertThat(rows(stuck)).isEqualTo(1);
+        assertThat(offboardingService.removeUnused()).as("the next run takes it").isEqualTo(1);
     }
 
     @Test

@@ -22,6 +22,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import pl.aiwcorpo.mcp.broker.audit.AuditLog;
 import pl.aiwcorpo.mcp.broker.auth.BffTokenVerifier;
 import pl.aiwcorpo.mcp.broker.auth.CallerAuthenticationFilter;
@@ -155,7 +156,7 @@ public class BrokerConfiguration {
 
     @Bean
     SystemRegistry systemRegistry(BrokerProperties properties, SslBundles sslBundles, JsonMapper json,
-            OAuthClientSecrets clientSecrets, ServiceAccountKeys serviceAccountKeys, Clock clock) {
+            OAuthClientSecrets clientSecrets, ServiceAccountKeys serviceAccountKeys, Clock clock, MeterRegistry meters) {
         requireTls(properties.portalBaseUrl(), "broker.portal-base-url", properties.allowPlainHttp());
         properties.systems().forEach((id, system) -> {
             requireTls(system.baseUrl(), "broker.systems." + id + ".base-url", properties.allowPlainHttp());
@@ -180,7 +181,7 @@ public class BrokerConfiguration {
                         properties.allowPlainHttp());
             }
         });
-        return new SystemRegistry(properties.systems(), internalClient(sslBundles), json, clientSecrets, serviceAccountKeys, clock);
+        return new SystemRegistry(properties.systems(), internalClient(sslBundles), json, clientSecrets, serviceAccountKeys, clock, meters);
     }
 
     @Bean

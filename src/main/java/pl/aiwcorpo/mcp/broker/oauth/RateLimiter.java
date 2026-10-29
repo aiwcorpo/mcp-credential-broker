@@ -6,9 +6,9 @@ import java.util.concurrent.TimeUnit;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
+import pl.aiwcorpo.mcp.broker.credential.RateLimitUnavailableException;
 import pl.aiwcorpo.mcp.broker.credential.RateLimitedException;
 import pl.aiwcorpo.mcp.broker.secret.SecretKey;
-import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
 
 /**
  * Fixed-window counters per (operation, user) in Redis under the broker's ACL prefix: INCR, and EXPIRE when the
@@ -32,7 +32,7 @@ public class RateLimiter {
      * Counts one use of {@code operation} by {@code sub}.
      *
      * @throws RateLimitedException when this use is beyond {@code limit} in the current window
-     * @throws SecretStoreUnavailableException when Redis cannot be reached: without the counter the limit cannot be
+     * @throws RateLimitUnavailableException when Redis cannot be reached: without the counter the limit cannot be
      *         enforced, and the operations it protects need Redis anyway
      */
     public void check(String operation, String sub, int limit) {
@@ -40,7 +40,7 @@ public class RateLimiter {
         try {
             Long count = redis.opsForValue().increment(key);
             if (count == null) {
-                throw new SecretStoreUnavailableException("rate limit counter unavailable");
+                throw new RateLimitUnavailableException("rate limit counter unavailable");
             }
             if (count == 1) {
                 redis.expire(key, window);
@@ -54,7 +54,7 @@ public class RateLimiter {
                 throw new RateLimitedException(ttl);
             }
         } catch (DataAccessException e) {
-            throw new SecretStoreUnavailableException("rate limit counter unavailable: " + e.getClass().getSimpleName());
+            throw new RateLimitUnavailableException("rate limit counter unavailable: " + e.getClass().getSimpleName());
         }
     }
 }

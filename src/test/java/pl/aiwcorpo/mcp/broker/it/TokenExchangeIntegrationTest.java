@@ -146,7 +146,9 @@ class TokenExchangeIntegrationTest {
                 Instant.now().minusSeconds(120));
         String wrongIssuer = tokens.idpToken("http://evil.test/realms/corp", alice, "alice", "mcp-gateway",
                 "mcp-credential-broker", Instant.now().plusSeconds(300));
-        for (String token : List.of(otherUser, wrongAudience, expired, wrongIssuer, "not-a-jwt", forgedSignature(alice))) {
+        String noExpiry = tokens.idpToken(TestTokens.IDP_ISSUER, alice, "alice", "mcp-gateway", "mcp-credential-broker", null);
+        for (String token : List.of(otherUser, wrongAudience, expired, wrongIssuer, "not-a-jwt", forgedSignature(alice), noExpiry,
+                tokens.unsecuredSubjectToken(alice), tokens.hmacSubjectToken(alice))) {
             idp.issues(token, "must-never-be-issued", 300);
             String rid = TestTokens.newRequestId();
             BrokerClient.Response response = resolve(alice, rid, token);
@@ -182,12 +184,45 @@ class TokenExchangeIntegrationTest {
             BrokerClient.Response response = resolve(sub, rid, subjectToken);
             assertThat(response.status()).as(error).isEqualTo(403);
             assertThat(response.body()).isEqualTo("{\"error\":\"exchange_denied\"}");
+            assertThat(output.getAll()).contains("IdP refused the token exchange for audience opensearch: " + error);
             assertThat(Contracts.brokerSchemaErrors("Error", response.json())).isEmpty();
             assertThat(AuditLines.of(output, rid)).singleElement().satisfies(e -> {
                 assertThat(e.path("reason").stringValue()).isEqualTo("exchange_denied");
                 assertThat(e.path("outcome").stringValue()).isEqualTo("denied");
             });
         }
+    }
+
+    @Test
+    void aTokenThatIsNotForTheSystemIsNotHandedOut() {
+        String sub = UUID.randomUUID().toString();
+        String own = tokens.subjectToken(sub, "alice");
+        idp.issues(own, own, 300);
+        assertThat(resolve(sub, TestTokens.newRequestId(), own).status()).as("the user's own token").isEqualTo(503);
+
+        String other = tokens.subjectToken(sub, "alice");
+        idp.issues(other, tokens.idpToken(TestTokens.IDP_ISSUER, sub, "alice", "mcp-credential-broker", "mcp-credential-broker",
+                Instant.now().plusSeconds(300)), 300);
+        assertThat(resolve(sub, TestTokens.newRequestId(), other).status()).as("another audience").isEqualTo(503);
+
+        String typed = tokens.subjectToken(sub, "alice");
+        idp.answers(typed, 200, "{\"access_token\":\"t-1\",\"token_type\":\"DPoP\",\"expires_in\":60}");
+        assertThat(resolve(sub, TestTokens.newRequestId(), typed).status()).as("token type").isEqualTo(503);
+        String issuedType = tokens.subjectToken(sub, "alice");
+        idp.answers(issuedType, 200, "{\"access_token\":\"t-2\",\"token_type\":\"Bearer\",\"expires_in\":60,"
+                + "\"issued_token_type\":\"urn:ietf:params:oauth:token-type:refresh_token\"}");
+        assertThat(resolve(sub, TestTokens.newRequestId(), issuedType).status()).as("issued token type").isEqualTo(503);
+    }
+
+    @Test
+    void anInvalidScopeIsTheInstallationsFaultNotTheUsers(CapturedOutput output) {
+        String sub = UUID.randomUUID().toString();
+        String subjectToken = tokens.subjectToken(sub, "alice");
+        idp.refuses(subjectToken, 400, "invalid_scope");
+        String rid = TestTokens.newRequestId();
+        assertThat(resolve(sub, rid, subjectToken).status()).isEqualTo(503);
+        assertThat(AuditLines.of(output, rid)).singleElement()
+                .satisfies(e -> assertThat(e.path("outcome").stringValue()).isEqualTo("error"));
     }
 
     @Test

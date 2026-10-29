@@ -28,6 +28,7 @@ import pl.aiwcorpo.mcp.broker.system.UpstreamUnavailableException;
  */
 public class OffboardingService {
 
+    private static final int MAX_PASSES = 50;
     private static final Logger log = LoggerFactory.getLogger(OffboardingService.class);
 
     private final ConnectionRepository connections;
@@ -63,13 +64,16 @@ public class OffboardingService {
      */
     public void purge(String requestId, String sub) {
         if (sub.isBlank() || sub.length() > 255) {
-            audit.event("admin_change", requestId).denied("invalid_request", "invalid_argument");
-            throw new InvalidRequestException("sub must be 1..255 characters");
+            // C4 knows 204, 403 and 503 here. No user has such a sub (the contract caps it at 255), so there is nothing to
+            // remove; the call still leaves its one event, without a sub the schema would not take.
+            audit.event("admin_change", requestId).ok("user_purged");
+            return;
         }
         AuditLog.Entry summary = audit.event("admin_change", requestId).user(sub, null, null);
         List<RuntimeException> failures = new ArrayList<>();
-        attempt(failures, () -> removeConnections(requestId, sub));
+        // Flows first: a flow still open could create a connection after the others are gone.
         attempt(failures, () -> flows.discardAll(sub, SystemRegistry.KNOWN_SYSTEMS));
+        attempt(failures, () -> removeConnections(requestId, sub));
         attempt(failures, () -> authenticator.purge(requestId, sub));
         if (failures.isEmpty()) {
             summary.ok("user_purged");
@@ -83,9 +87,11 @@ public class OffboardingService {
 
     private void removeConnections(String requestId, String sub) {
         List<RuntimeException> failures = new ArrayList<>();
-        for (Connection connection : connections.findAll(sub)) {
-            attempt(failures, () -> remove(requestId, connection, "user_purged", null));
-        }
+        attempt(failures, () -> {
+            for (Connection connection : connections.findAll(sub)) {
+                attempt(failures, () -> remove(requestId, connection, "user_purged", null));
+            }
+        });
         // Values no row points at: a delete that failed once, or a row that was lost.
         attempt(failures, () -> secrets.deleteAllOf(sub));
         if (!failures.isEmpty()) {
@@ -104,22 +110,31 @@ public class OffboardingService {
     public int removeUnused() {
         Instant cutoff = clock.instant().minus(retention.unusedAfter());
         int removed = 0;
-        for (Connection candidate : connections.findLastActivityBefore(cutoff, retention.batchSize())) {
-            try {
-                if (remove(RequestIds.next(clock), candidate, "unused_cleanup", cutoff)) {
-                    removed++;
-                }
-            } catch (SecretStoreUnavailableException e) {
-                log.warn("Cleanup of unused connections stopped, the secret store or lock is unavailable: {}", e.getMessage());
+        int skipped = 0;
+        // Rows that fail stay at the front of the oldest-first query, so each pass skips the ones that failed in this run
+        // instead of meeting them again; the next run tries them anew.
+        for (int pass = 0; pass < MAX_PASSES; pass++) {
+            List<Connection> batch = connections.findLastActivityBefore(cutoff, retention.batchSize(), skipped);
+            if (batch.isEmpty()) {
                 break;
-            } catch (UpstreamUnavailableException e) {
-                log.warn("Connection to {} not removed: {}", candidate.system(), e.getMessage());
-            } catch (RuntimeException e) {
-                if (CredentialService.unavailableDatabase(e)) {
-                    log.warn("Cleanup of unused connections stopped, the database is unavailable");
-                    break;
+            }
+            for (Connection candidate : batch) {
+                try {
+                    if (remove(RequestIds.next(clock), candidate, "unused_cleanup", cutoff)) {
+                        removed++;
+                    }
+                } catch (SecretStoreUnavailableException e) {
+                    log.warn("Cleanup of unused connections stopped, the secret store or lock is unavailable: {}", e.getMessage());
+                    return removed;
+                } catch (RuntimeException e) {
+                    if (CredentialService.unavailableDatabase(e)) {
+                        log.warn("Cleanup of unused connections stopped, the database is unavailable");
+                        return removed;
+                    }
+                    skipped++;
+                    log.warn("Connection to {} not removed ({}: {})", candidate.system(), e.getClass().getSimpleName(),
+                            e instanceof UpstreamUnavailableException ? e.getMessage() : "see audit");
                 }
-                log.warn("Connection to {} not removed ({})", candidate.system(), e.getClass().getSimpleName());
             }
         }
         return removed;

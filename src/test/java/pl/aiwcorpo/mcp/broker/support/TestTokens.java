@@ -119,7 +119,7 @@ public final class TestTokens {
                 .claim("preferred_username", username)
                 .claim("email", username + "@corp.test")
                 .issueTime(Date.from(now.minusSeconds(3600)))
-                .expirationTime(Date.from(expiresAt))
+                .expirationTime(expiresAt == null ? null : Date.from(expiresAt))
                 .jwtID(UUID.randomUUID().toString())
                 .build();
         try {
@@ -130,6 +130,27 @@ public final class TestTokens {
         } catch (JOSEException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    /** Claims of a valid subject token under an unsecured header (alg none): the signature part is empty. */
+    public String unsecuredSubjectToken(String sub) {
+        return new com.nimbusds.jwt.PlainJWT(subjectClaims(sub)).serialize();
+    }
+
+    /** The same claims signed with HMAC (HS256) under a key the attacker chose. */
+    public String hmacSubjectToken(String sub) {
+        try {
+            SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.HS256).keyID(idpKey.getKeyID()).build(), subjectClaims(sub));
+            jwt.sign(new com.nimbusds.jose.crypto.MACSigner("0123456789abcdef0123456789abcdef"));
+            return jwt.serialize();
+        } catch (JOSEException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private static JWTClaimsSet subjectClaims(String sub) {
+        return new JWTClaimsSet.Builder().issuer(IDP_ISSUER).subject(sub).audience(List.of("mcp-credential-broker"))
+                .claim("azp", "mcp-gateway").expirationTime(Date.from(Instant.now().plusSeconds(300))).build();
     }
 
     private String signGateway(JWTClaimsSet claims) {

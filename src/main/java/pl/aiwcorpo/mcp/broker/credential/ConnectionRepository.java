@@ -76,14 +76,15 @@ public class ConnectionRepository {
      * Connections whose last use (their creation when they were never used) is before {@code cutoff}, oldest first; the
      * candidates of the cleanup of unused connections.
      */
-    public List<Connection> findLastActivityBefore(Instant cutoff, int limit) {
+    public List<Connection> findLastActivityBefore(Instant cutoff, int limit, int skip) {
         return jdbc.sql("""
                 select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at
                 from connection
                 where coalesce(last_used_at, connected_at) < :cutoff
-                order by coalesce(last_used_at, connected_at) limit :limit
+                order by coalesce(last_used_at, connected_at), sub, system limit :limit offset :skip
                 """)
                 .param("cutoff", timestamp(cutoff))
+                .param("skip", skip)
                 .param("limit", limit)
                 .query(ConnectionRepository::map)
                 .list();

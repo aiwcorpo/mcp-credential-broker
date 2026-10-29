@@ -82,8 +82,8 @@ wymaga, żeby `sub` był równy `sub` wewnętrznego JWT; inaczej `400 invalid_re
 `credential_resolve` / `subject_token_invalid` (denied). Potem wymienia go w IdP (RFC 8693, `client_secret_basic`, `audience` i `scope`
 z konfiguracji systemu) i zwraca `scheme: Bearer`, `type: token-exchange`, `expiresAt` zawsze (z `expires_in`, a gdy IdP go pomija z `exp`
 wydanego tokenu; bez żadnego z nich `503`) i `cacheTtlSeconds` nie większe niż 60 i nie dłuższe niż do `expiresAt`. Nic nie jest zapisywane, broker też
-nie cache'uje wymiany. Odpowiedzi IdP: `access_denied`, `invalid_grant`, `invalid_target`, `invalid_request`, `invalid_scope`, `invalid_token`
-to odmowa dla użytkownika (`403 exchange_denied`, audyt `exchange_denied`, errorCode `access_denied`); `invalid_client`, `unauthorized_client`,
+nie cache'uje wymiany. Odpowiedzi IdP: `access_denied`, `invalid_grant`, `invalid_target`, `invalid_request` i `invalid_token`
+to odmowa dla użytkownika (`403 exchange_denied`, audyt `exchange_denied`, errorCode `access_denied`); `invalid_scope`, `invalid_client`, `unauthorized_client`,
 5xx, brak odpowiedzi i każdy nieznany błąd to `503` (to defekt instalacji albo IdP, nie decyzja o użytkowniku). Klucz wymiany: klient poufny z
 `broker.systems.opensearch.token-exchange.client-id`, sekret w OpenBao `secret/data/mcp/oauth-clients/opensearch` (pole `client_secret`, ten sam
 mechanizm co klient OAuth GitLaba; `client-secret` w konfiguracji tylko dla dev).
@@ -102,7 +102,7 @@ broker.systems.opensearch:
 ```
 
 **`service-account` (Service Desk, adapter `generic-rest`, CC-157).** Klucz konta leży w OpenBao w `secret/data/mcp/service-accounts/<system>`
-(zapisuje operator, broker ma tylko odczyt): `value` (to, co idzie po schemacie w nagłówku) albo, dla `secret-scheme: Basic`, `username` i `password`
+(zapisuje operator, broker ma tylko odczyt): `value` (to, co idzie po schemacie w nagłówku; przy Basic musi to być już `base64(login:hasło)`) albo, dla `secret-scheme: Basic`, `username` (bez `:`) i `password`
 (broker składa `base64(login:hasło)`), oraz opcjonalne `expires_at` (RFC 3339) przy rotacji na harmonogram. `scheme` to `secret-scheme` systemu (`Bearer`,
 `Basic`, `Token`, `ApiKey`), `expiresAt` to `expires_at` albo `null`, `cacheTtlSeconds` nie dłuższe niż do `expiresAt`. Klucza nie cache'uje nikt po
 stronie brokera, więc rotacja w OpenBao działa od następnego `resolve`. Brak wpisu, brak wartości, wartość z białymi znakami, zły `expires_at` albo
@@ -121,7 +121,7 @@ każdego), wszystkie wartości pod `secret/mcp/connections/<sha256(sub)>/` takż
 OAuth w toku, rejestrację Authenticatora z oboma ziarnami i wiersz blokady (to jedyne wywołanie, które ją zdejmuje: użytkownika już nie ma).
 Kroki są niezależne: awaria jednego (np. OpenBao) nie zatrzymuje pozostałych, a po ich wykonaniu wywołanie kończy się `503`; powtórzenie
 dokańcza resztę (połączenie, którego sekretu nie dało się skasować, zostaje w bazie właśnie po to). Odpowiedź `204` jest ta sama dla użytkownika, którego
-broker nie zna. Zalecane jest powtórzenie po wylogowaniu back-channel w portalu: przepływ OAuth otwarty w trakcie mógł założyć połączenie po pierwszym wywołaniu.
+broker nie zna i dla `sub` dłuższego niż 255 znaków. Zalecane jest powtórzenie po wylogowaniu back-channel w portalu: przepływ OAuth otwarty w trakcie mógł założyć połączenie po pierwszym wywołaniu.
 Po `purge` `sub` nie jest blokowany (okno do 60 min na wygaśnięcie tokenu C1 przyjęte przez człowieka).
 
 Audyt `purge`: `connection_change` z powodem `user_purged` dla każdego połączenia (z `credentialType` i `backendUser`), `authenticator` z
