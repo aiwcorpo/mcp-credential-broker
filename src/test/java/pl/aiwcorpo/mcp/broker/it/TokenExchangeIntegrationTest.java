@@ -147,7 +147,9 @@ class TokenExchangeIntegrationTest {
         String wrongIssuer = tokens.idpToken("http://evil.test/realms/corp", alice, "alice", "mcp-gateway",
                 "mcp-credential-broker", Instant.now().plusSeconds(300));
         String noExpiry = tokens.idpToken(TestTokens.IDP_ISSUER, alice, "alice", "mcp-gateway", "mcp-credential-broker", null);
-        for (String token : List.of(otherUser, wrongAudience, expired, wrongIssuer, "not-a-jwt", forgedSignature(alice), noExpiry,
+        String wrongType = tokens.idpToken(TestTokens.IDP_ISSUER, alice, "alice", "mcp-gateway", "mcp-credential-broker",
+                Instant.now().plusSeconds(300), new com.nimbusds.jose.JOSEObjectType("logout+jwt"));
+        for (String token : List.of(otherUser, wrongAudience, expired, wrongIssuer, "not-a-jwt", forgedSignature(alice), noExpiry, wrongType,
                 tokens.unsecuredSubjectToken(alice), tokens.hmacSubjectToken(alice))) {
             idp.issues(token, "must-never-be-issued", 300);
             String rid = TestTokens.newRequestId();

@@ -688,6 +688,12 @@ class BrokerIntegrationTest {
         for (String token : List.of(noExp, tokens.unsecuredSubjectToken(sub), tokens.hmacSubjectToken(sub))) {
             assertThat(bff.send("GET", "/v1/connections", token, null, null).status()).isEqualTo(401);
         }
+        String wrongType = tokens.idpToken(TestTokens.IDP_ISSUER, sub, "alice", "mcp-portal-bff", "mcp-credential-broker",
+                java.time.Instant.now().plusSeconds(300), new com.nimbusds.jose.JOSEObjectType("logout+jwt"));
+        assertThat(bff.send("GET", "/v1/connections", wrongType, null, null).status()).as("typ other than JWT or at+jwt").isEqualTo(401);
+        String accessTokenType = tokens.idpToken(TestTokens.IDP_ISSUER, sub, "alice", "mcp-portal-bff", "mcp-credential-broker",
+                java.time.Instant.now().plusSeconds(300), new com.nimbusds.jose.JOSEObjectType("at+jwt"));
+        assertThat(bff.send("GET", "/v1/connections", accessTokenType, null, null).status()).isEqualTo(200);
         assertThat(bff.send("GET", "/v1/connections", tokens.bffUser(sub, "alice"), null, null).status()).isEqualTo(200);
     }
 

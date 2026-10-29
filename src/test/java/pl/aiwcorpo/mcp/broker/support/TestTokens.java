@@ -110,6 +110,12 @@ public final class TestTokens {
 
     /** A token of the IdP key with every claim under the test's control. */
     public String idpToken(String issuer, String sub, String username, String azp, String audience, Instant expiresAt) {
+        return idpToken(issuer, sub, username, azp, audience, expiresAt, JOSEObjectType.JWT);
+    }
+
+    /** Same, with the header type (typ) chosen by the test. */
+    public String idpToken(String issuer, String sub, String username, String azp, String audience, Instant expiresAt,
+            JOSEObjectType type) {
         Instant now = Instant.now();
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
                 .issuer(issuer)
@@ -124,7 +130,7 @@ public final class TestTokens {
                 .build();
         try {
             SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(idpKey.getKeyID())
-                    .type(JOSEObjectType.JWT).build(), claims);
+                    .type(type).build(), claims);
             jwt.sign(new RSASSASigner(idpKey));
             return jwt.serialize();
         } catch (JOSEException e) {
