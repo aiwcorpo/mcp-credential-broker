@@ -108,7 +108,8 @@ public record BrokerProperties(
             @DefaultValue("6h") @NotNull Duration orphanSweepInterval,
             @DefaultValue("false") boolean orphanSweepDelete,
             @DefaultValue("50") @Min(1) int orphanMaxDeletesPerRun,
-            @DefaultValue("0.2") @DecimalMin("0.0") @DecimalMax("1.0") double orphanMaxFraction) {
+            @DefaultValue("0.2") @DecimalMin("0.0") @DecimalMax("1.0") double orphanMaxFraction,
+            @DefaultValue("30m") @NotNull Duration purgeMarkerTtl) {
     }
 
     /**

@@ -269,10 +269,11 @@ Po włączeniu usuwa najwyżej `orphan-max-deletes-per-run` (50) wartości stars
 `orphan-max-fraction` (0,2). Ograniczenie: gdy dostawca rotuje
 refresh token, a instancja zginie po jego wydaniu przed zapisem, stary token jest zużyty i połączenie wymaga ponownego połączenia przez
 użytkownika (`invalid_grant` -> `revoked`). `purge` kasuje wartości bez wiersza (`deleteAllOf`) dopiero, gdy usunięto wszystkie połączenia;
-inaczej kończy się błędem i powtórzenie odwoła grant u dostawcy. Purge ustawia na starcie znacznik w Redisie (2 min, `broker:oauth:purging:<hash>`),
-który sprawdzają pod blokadą `PUT secret` i `oauth/complete` (503, dopóki znacznik nie wygaśnie), a po `deleteAllOf` robi drugi przegląd wierszy. Zapis,
-który minął sprawdzenie tuż przed znacznikiem, wpada w ten drugi przegląd. Wpis, który magazyn zwraca, ale nie da się go odczytać (Transit odmawia
-szyfrogramu, wpis cudzej ścieżki), nie blokuje purge: połączenie jest usuwane z audytem `provider_revoke_failed`; niedostępny magazyn daje `503` i powtórzenie.
+inaczej kończy się błędem i powtórzenie odwoła grant u dostawcy. Purge ustawia na starcie znacznik w Redisie (`broker.retention.purge-marker-ttl`, domyślnie 30 min, ma przeżyć czas życia przepływu OAuth i tokenu portalu;
+`broker:oauth:purging:<hash>`), który sprawdzają `PUT secret`, `oauth/start` i `oauth/complete` (503, dopóki nie wygaśnie; ponowne podłączenie tego samego `sub`
+w tym oknie jest odmawiane). Potem purge bierze i zwalnia blokadę każdego systemu (czeka na zapisy, które ją trzymały), czyta wiersze jeszcze raz i dopiero wtedy
+wywołuje `deleteAllOf`. Bez Redisa purge nie próbuje przepływów ani blokad (każda próba kosztuje timeout), usuwa tylko rejestrację Authenticatora i kończy się `503`. Wpis, który magazyn zwraca, ale nie da się go odczytać (Transit odmawia uszkodzonego
+szyfrogramu: `cipher: message authentication failed` albo `invalid ciphertext...`; wpis cudzej ścieżki), nie blokuje purge (inne odmowy 400/422, np. brak klucza, to `503` i powtórzenie); także przy zamianie połączenia (`PUT`, `oauth/complete`): połączenie jest usuwane z audytem `provider_revoke_failed`; niedostępny magazyn daje `503` i powtórzenie.
 
 Zależność niedostępna (Redis, OpenBao, PostgreSQL; sprawdzane przy wstrzymanym kontenerze): operacja, która jej potrzebuje, daje
 `503 upstream_unavailable` w ciągu kilku sekund, nigdy sukces z pominiętą kontrolą ani `500`. Klient OpenBao po 3 wywołaniach z rzędu bez odpowiedzi

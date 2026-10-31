@@ -73,10 +73,14 @@ public class OffboardingService {
         List<RuntimeException> failures = new ArrayList<>();
         // The marker first: a PUT or an OAuth completion that waits for the lock of a connection finds it and refuses,
         // so it cannot write the user back between the steps below.
-        attempt(failures, () -> oauth.markPurging(sub));
-        // Flows first: a flow still open could create a connection after the others are gone.
-        attempt(failures, () -> flows.discardAll(sub, SystemRegistry.KNOWN_SYSTEMS));
-        attempt(failures, () -> removeConnections(requestId, sub));
+        attempt(failures, () -> oauth.markPurging(sub, retention.purgeMarkerTtl()));
+        // Without Redis neither the flows nor the locks can be reached, and each try costs its timeout: skip them. The
+        // registration, which needs only the database and the secret store, is still removed.
+        if (failures.isEmpty()) {
+            // Flows first: a flow still open could create a connection after the others are gone.
+            attempt(failures, () -> flows.discardAll(sub, SystemRegistry.KNOWN_SYSTEMS));
+            attempt(failures, () -> removeConnections(requestId, sub));
+        }
         attempt(failures, () -> authenticator.purge(requestId, sub));
         if (failures.isEmpty()) {
             summary.ok("user_purged");
@@ -100,7 +104,11 @@ public class OffboardingService {
         if (failures.isEmpty()) {
             attempt(failures, () -> secrets.deleteAllOf(sub));
         }
-        // A write that was already past the marker check when the purge started may have landed meanwhile.
+        // A write that was already past the marker check when the purge started has finished once the locks are taken in
+        // turn, so the second read of the rows sees it.
+        if (failures.isEmpty()) {
+            attempt(failures, () -> oauth.awaitWriters(sub));
+        }
         if (failures.isEmpty()) {
             attempt(failures, () -> {
                 for (Connection late : connections.findAll(sub)) {

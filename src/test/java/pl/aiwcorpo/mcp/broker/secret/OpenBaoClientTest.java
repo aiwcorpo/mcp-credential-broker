@@ -149,6 +149,16 @@ class OpenBaoClientTest {
         assertThatThrownBy(() -> client.delete("secret/data/bare")).isInstanceOf(SecretStoreUnavailableException.class);
     }
 
+    @Test
+    void aRefusalCarriesOpenBaosReasonButIsNotAnUnreadableEntry() {
+        server.createContext("/v1/secret/data/refused", exchange -> respond(exchange, 400, "{\"errors\":[\"encryption key not found\"]}"));
+        OpenBaoClient client = client();
+
+        assertThatThrownBy(() -> client.read("secret/data/refused")).isInstanceOf(StoreRefusedException.class)
+                .isNotInstanceOf(SecretUnreadableException.class)
+                .satisfies(e -> assertThat(((StoreRefusedException) e).reason()).isEqualTo("encryption key not found"));
+    }
+
     private void slowEndpoint() {
         server.createContext("/v1/secret/data/slow", exchange -> {
             calls.add("slow");

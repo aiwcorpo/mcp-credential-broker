@@ -103,6 +103,7 @@ public class OAuthService {
         AuditLog.Entry entry = portalEntry(caller, systemId);
         try {
             limiter.check("oauth-start", caller.sub(), limits.oauthStarts());
+            refuseWhilePurging(caller.sub());
             ConfiguredSystem system = oauthSystem(systemId);
             if (!ReturnPath.isValid(returnPath)) {
                 throw new InvalidRequestException("returnPath is not a path of the portal");
@@ -143,6 +144,7 @@ public class OAuthService {
         boolean stored = false;
         try {
             limiter.check("oauth-complete", caller.sub(), limits.oauthCompletions());
+            refuseWhilePurging(caller.sub());
             ConfiguredSystem system = oauthSystem(systemId);
             provider = system.oauth().orElseThrow();
             OAuthFlowStore.Flow pending = flows.peek(flowId).orElseThrow(() -> new SecretRejectedException("flow_invalid"));
@@ -177,7 +179,10 @@ public class OAuthService {
                                 accessExpiry(issued, now)),
                         new StoredCredential(CredentialType.USER_OAUTH, issued.accessToken(), issued.refreshToken()),
                         previous, true);
-                revokeGrantQuietly(system.oauth().orElseThrow(), oldGrant);
+                boolean revoked = revokeGrantQuietly(system.oauth().orElseThrow(), oldGrant);
+                if (previous.isPresent() && holdsGrant(previous.get()) && (oldGrant == null || !revoked)) {
+                    auditReplacedGrantNotRevoked(caller.requestId(), caller.sub(), system.id());
+                }
                 return previous.isPresent();
             });
             stored = true;
@@ -216,16 +221,31 @@ public class OAuthService {
     }
 
     /** A purge of the user is under way: writes that would put the user back are refused until its marker expires. */
-    public void markPurging(String sub) {
-        lock.markPurging(sub, Duration.ofMinutes(2));
+    public void markPurging(String sub, Duration ttl) {
+        lock.markPurging(sub, ttl);
+    }
+
+    /**
+     * Takes and releases the lock of every system's connection of the user: a write that held it when the marker was set
+     * has finished (and is seen by the next read of the rows), and one that comes later finds the marker. A lock that
+     * cannot be taken fails the purge; it is repeated.
+     */
+    public void awaitWriters(String sub) {
+        for (String systemId : SystemRegistry.KNOWN_SYSTEMS) {
+            underRefreshLock(sub, systemId, () -> null);
+        }
+    }
+
+    private void refuseWhilePurging(String sub) {
+        if (lock.purging(sub)) {
+            throw new UpstreamUnavailableException("this user is being offboarded");
+        }
     }
 
     /** {@link #underRefreshLock} for the writes of a connection (PUT secret, OAuth complete): refused while the user is being purged. */
     public <T> T underWriteLock(String sub, String systemId, Supplier<T> action) {
         return underRefreshLock(sub, systemId, () -> {
-            if (lock.purging(sub)) {
-                throw new UpstreamUnavailableException("this user is being offboarded");
-            }
+            refuseWhilePurging(sub);
             return action.get();
         });
     }
@@ -337,8 +357,19 @@ public class OAuthService {
     }
 
     /** Revokes the tokens of a grant that a new connection has just replaced; the first argument names its system. */
-    void revokeReplacedGrant(String systemId, StoredCredential grant) {
-        systems.find(systemId).flatMap(ConfiguredSystem::oauth).ifPresent(provider -> revokeGrantQuietly(provider, grant));
+    boolean revokeReplacedGrant(String systemId, StoredCredential grant) {
+        return systems.find(systemId).flatMap(ConfiguredSystem::oauth).map(provider -> revokeGrantQuietly(provider, grant)).orElse(true);
+    }
+
+    /** Whether the connection held a grant at a provider: what an unreadable stored value must not be mistaken for "nothing". */
+    boolean holdsGrant(Connection connection) {
+        return connection.type() == CredentialType.USER_OAUTH && connection.state() == Connection.StoredState.CONNECTED;
+    }
+
+    /** The replaced grant could not be revoked (unreadable value or the provider refused): one audit line, the replacement goes on. */
+    void auditReplacedGrantNotRevoked(String requestId, String sub, String systemId) {
+        audit.event("connection_change", requestId).user(sub, null, null).system(systemId)
+                .credentialType(CredentialType.USER_OAUTH.wire()).error("provider_revoke_failed", null);
     }
 
     private boolean revokeGrantQuietly(OAuthProvider provider, StoredCredential grant) {

@@ -76,13 +76,27 @@ public class OpenBaoSecretStore implements SecretStore {
             }
             throw new SecretUnreadableException("stored entry has no ciphertext");
         }
-        JsonNode decrypted = client.write(transitPath("decrypt"),
-                client.object().put("ciphertext", ciphertext.stringValue()));
+        JsonNode decrypted = decrypt(ciphertext.stringValue());
         JsonNode encoded = decrypted.path("data").path("plaintext");
         if (!encoded.isString()) {
             throw new SecretUnreadableException("transit decrypt returned no plaintext");
         }
         return Optional.of(parse(key, Base64.getDecoder().decode(encoded.stringValue())));
+    }
+
+    /**
+     * Only Transit's own verdicts on a damaged ciphertext make an entry unreadable for good. Any other refusal (a missing
+     * key, a policy) is the installation's fault and stays a failure to be retried.
+     */
+    private JsonNode decrypt(String ciphertext) {
+        try {
+            return client.write(transitPath("decrypt"), client.object().put("ciphertext", ciphertext));
+        } catch (StoreRefusedException e) {
+            if (e.reason().equals("cipher: message authentication failed") || e.reason().startsWith("invalid ciphertext")) {
+                throw new SecretUnreadableException("transit refused the stored ciphertext as damaged");
+            }
+            throw e;
+        }
     }
 
     @Override

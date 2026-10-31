@@ -175,6 +175,24 @@ class OAuthRefreshFailureIntegrationTest {
     }
 
     @Test
+    void replacingAnOAuthConnectionWhoseTokensAreUnreadableIsAuditedAsNotRevoked(CapturedOutput output) {
+        String sub = newSub();
+        GitLabStub.Grant grant = gitlab.issueCode("alice", 7200);
+        connect(sub, "alice", grant);
+        String path = "secret/data/mcp/connections/" + new SecretKey(sub, "gitlab", version(sub)).relativePath();
+        assertThat(env.bao("POST", path, "{\"data\":{\"ciphertext\":\"vault:v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}}").statusCode()).isLessThan(300);
+        gitlab.pat("glpat-replacement", "alice");
+        String rid = TestTokens.newRequestId();
+
+        BrokerClient.Response put = bff.send("PUT", "/v1/connections/gitlab/secret", tokens.bffUser(sub, "alice"), rid,
+                "{\"secret\":\"glpat-replacement\"}");
+
+        assertThat(put.status()).isEqualTo(200);
+        assertThat(output.getAll().lines().filter(line -> line.contains(rid) && line.contains("\"reason\":\"provider_revoke_failed\"")).count())
+                .isEqualTo(1);
+    }
+
+    @Test
     void theSweepRemovesStoredValuesNoRowPointsAtAndKeepsTheReferencedOnes() throws InterruptedException {
         String sub = newSub();
         GitLabStub.Grant grant = gitlab.issueCode("alice", 7200);

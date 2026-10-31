@@ -45,7 +45,7 @@ class OrphanSweepTest {
 
     private OffboardingService service(boolean delete, int maxDeletes, double maxFraction) {
         BrokerProperties.Retention retention = new BrokerProperties.Retention(Duration.ofDays(180), Duration.ofHours(1), 100,
-                Duration.ofHours(1), Duration.ofHours(6), delete, maxDeletes, maxFraction);
+                Duration.ofHours(1), Duration.ofHours(6), delete, maxDeletes, maxFraction, Duration.ofMinutes(30));
         return new OffboardingService(connections, secrets, mock(InvalidationPublisher.class), oauth, mock(OAuthFlowStore.class),
                 mock(AuthenticatorService.class), new AuditLog("mcp-credential-broker", Clock.fixed(NOW, ZoneOffset.UTC)),
                 Clock.fixed(NOW, ZoneOffset.UTC), retention);

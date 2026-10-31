@@ -237,7 +237,10 @@ public class CredentialService {
                         new Connection(caller.sub(), system.id(), CredentialType.USER_SECRET, Connection.StoredState.CONNECTED,
                                 identity.username(), expires, now.truncatedTo(ChronoUnit.SECONDS), null, null, null),
                         StoredCredential.of(CredentialType.USER_SECRET, secret), previous, true);
-                oauth.revokeReplacedGrant(system.id(), oldGrant);
+                boolean revoked = oauth.revokeReplacedGrant(system.id(), oldGrant);
+                if (previous.isPresent() && oauth.holdsGrant(previous.get()) && (oldGrant == null || !revoked)) {
+                    oauth.auditReplacedGrantNotRevoked(caller.requestId(), caller.sub(), system.id());
+                }
                 return new Replaced(written, previous);
             });
             Optional<Connection> previous = replaced.previous();

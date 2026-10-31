@@ -152,8 +152,9 @@ public class OpenBaoClient {
 
     private static void requireOk(Response response, String operation) {
         if (response.status() == 400 || response.status() == 422) {
-            // Transit refuses a ciphertext it cannot decrypt this way; asking again will not change the answer.
-            throw new SecretUnreadableException("secret store " + operation + " refused the request with HTTP " + response.status());
+            JsonNode errors = response.body().path("errors");
+            throw new StoreRefusedException(operation, response.status(),
+                    errors.isArray() && !errors.isEmpty() ? errors.get(0).asString("") : "");
         }
         if (response.status() < 200 || response.status() > 299) {
             throw new SecretStoreUnavailableException("secret store " + operation + " failed with HTTP " + response.status());

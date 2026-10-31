@@ -131,7 +131,8 @@ class OffboardingIntegrationTest {
         assertThat(env.bao("LIST", "secret/metadata/mcp/connections/" + hash + "/", null).statusCode()).isEqualTo(404);
 
         assertThat(complete(sub, pending, gitlab.issueCode("alice", 7200).code()).status())
-                .as("the OAuth flow in progress is gone").isEqualTo(422);
+                .as("the OAuth flow in progress is gone, and the purge marker refuses the completion first").isEqualTo(503);
+        assertThat(redis.hasKey("broker:oauth:flow:" + pending.flowId())).as("the flow itself was discarded").isFalse();
         assertThat(jdbc.sql("select count(*) from authenticator where sub = ?").param(sub).query(Long.class).single()).isZero();
         assertThat(env.bao("GET", "secret/data/mcp/authenticators/" + hash, null).statusCode()).isEqualTo(404);
         BrokerClient.Response status = authenticatorStatus(sub);
@@ -248,6 +249,8 @@ class OffboardingIntegrationTest {
 
         assertThat(putSecret(sub, "jira", "alice-pat").status()).as("the user is not written back").isEqualTo(503);
         assertThat(rows(sub)).isZero();
+        assertThat(bff.send("POST", "/v1/connections/gitlab/oauth/start", tokens.bffUser(sub, "alice"), null,
+                "{\"returnPath\":\"/catalog\"}").status()).as("no new flow while the purge marker stands").isEqualTo(503);
 
         redis.delete("broker:oauth:purging:" + SecretKey.hashOf(sub));
         assertThat(putSecret(sub, "jira", "alice-pat").status()).isEqualTo(200);
