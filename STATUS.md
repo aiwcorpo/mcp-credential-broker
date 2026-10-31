@@ -9,7 +9,10 @@ Kontrakty `mcp-contracts` 5.1.0. Zmiany: `AuditEvent` i `AuditLog` bez `virtualS
 Pkt B: zwolnienie `RefreshLock` skryptem Lua (właściciel, jeden krok); test dwóch procesów i zabicia instancji (`MultiInstanceIntegrationTest`, 10 testów);
 `FailClosedIntegrationTest` (nadużycie 15); `OpenBaoClient` odpowiada błędem od razu przez 2 s po wywołaniu bez odpowiedzi (purge przy OpenBao w dół trwał ponad 20 s);
 `TransactionException` mapowany na 503 z powodem `database_unavailable` (także w Authenticatorze). CI: `ci/run.sh`, `make ci`, nakładki GitLab/Jenkins/GitHub, `ci/Dockerfile`.
-Testy: 397 zielone (`ci/run.sh verify`). Porty testowe 18712-18717.
+Po przeglądach: bezpiecznik OpenBao otwiera się po 3 kolejnych błędach, zapis zrotowanego grantu (`putRotated`) go omija i jest ponawiany ok. 10 s, odczyt sekretu przed pytaniem dostawcy;
+CI: MR dostaje `ci/run.sh unit` bez gniazda i poświadczeń, `<<>>` w kontroli stylu, zero testów = błąd.
+Testy: 399 zielone (`ci/run.sh verify`). Porty testowe 18712-18717. `AuthenticatorIntegrationTest.invalidatedCodesAreBurnedAndNotCounted` raz padł na granicy kroku TOTP (30 s), przy powtórzeniu zielony.
+Obraz: `mcp-credential-broker:m5-850ce6c` (kod; późniejsze commity zmieniają tylko nakładki CI i STATUS). Stos nie ruszany.
 
 Ustalenia: stan TOTP był już w całości w bazie (blokada wiersza), kod authenticatora bez zmian. Stary opis "blokada bez właściciela" (M2) był naprawiony w M2; brakowało atomowego zwolnienia.
 Ograniczenia: rotacja refresh tokenu + śmierć instancji przed zapisem = połączenie `revoked` (README, "Wiele instancji"). Rate limit OAuth: `INCR` + `EXPIRE` nie są atomowe (licznik bez TTL dostaje TTL przy przekroczeniu), bez zmian.
@@ -599,3 +602,5 @@ Schemat Cedar bajtowo jak w 2.0.x; zmieniła się wersja zależności w `pom.xml
 - `409 credential_required` -> C10 `credential_required` z `connectUrl`; `503` -> `upstream_unavailable`;
   `400` (np. `subjectToken` dla systemu `user-secret`), `401`, `403` -> błąd gateway'a, nie użytkownika.
 - Do testów bez brokera w compose: `scripts/run-dev-host.sh` (testowy JWKS z `mcp-contracts`).
+
+M5: osiągnięty (2026-10-31) - kontrakty 5.1.0, HA na wspólnej bazie (test dwóch procesów i SIGKILL), fail-closed bez Redisa/OpenBao/PostgreSQL, ci/run.sh, obraz m5-850ce6c

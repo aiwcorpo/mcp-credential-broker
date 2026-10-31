@@ -20,7 +20,7 @@ unit:
   stage: verify
   tags: [isolated-no-docker]
   cache:
-    key: maven-main
+    key: maven-mr
     policy: pull
     paths: [.m2/repository]
   variables:
