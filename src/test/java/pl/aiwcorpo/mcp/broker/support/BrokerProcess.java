@@ -34,19 +34,23 @@ public final class BrokerProcess implements AutoCloseable {
         this.log = log;
     }
 
-    /** A start that fails before the port is open (the container runtime refusing a connection for a moment) is tried once more. */
+    /**
+     * A start that fails only because the database refused the first connection (the container runtime dropping it for a
+     * moment) is tried once more; every other failure is the test's result. The test of the migrations uses
+     * {@link #startWithoutRetry}, where a failed start is the thing under test.
+     */
     public static BrokerProcess start(TestEnvironment env, int port, Map<String, String> overrides) {
         try {
-            return startOnce(env, port, overrides);
+            return startWithoutRetry(env, port, overrides);
         } catch (IllegalStateException first) {
-            if (!first.getMessage().contains("exited")) {
+            if (!first.getMessage().contains("exited") || !first.getMessage().contains("The connection attempt failed")) {
                 throw first;
             }
-            return startOnce(env, port, overrides);
+            return startWithoutRetry(env, port, overrides);
         }
     }
 
-    private static BrokerProcess startOnce(TestEnvironment env, int port, Map<String, String> overrides) {
+    public static BrokerProcess startWithoutRetry(TestEnvironment env, int port, Map<String, String> overrides) {
         Map<String, String> properties = new LinkedHashMap<>();
         env.registerProperties(new DynamicPropertyRegistry() {
             @Override

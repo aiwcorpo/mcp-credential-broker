@@ -60,8 +60,15 @@ public class ConnectionStore {
         try {
             connections.upsert(next, clock.instant());
         } catch (RuntimeException e) {
-            deleteQuietly(key);
-            throw e;
+            // The upsert may have been committed with its answer lost: only the row can tell, and a version the row points at must stay.
+            Optional<Boolean> committed = pointsAt(template, key);
+            if (committed.isEmpty()) {
+                throw new RefreshOutcomeUnknownException(e);
+            }
+            if (!committed.get()) {
+                deleteQuietly(key);
+                throw e;
+            }
         }
         previous.ifPresent(old -> deleteQuietly(old.secretKey()));
         if (announce && previous.isPresent()) {

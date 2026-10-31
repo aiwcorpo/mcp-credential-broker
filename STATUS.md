@@ -18,7 +18,7 @@ Ustalenia: stan TOTP był już w całości w bazie (blokada wiersza), kod authen
 Ograniczenia: rotacja refresh tokenu + śmierć instancji przed zapisem = połączenie `revoked` (README, "Wiele instancji"). Rate limit OAuth: `INCR` + `EXPIRE` nie są atomowe (licznik bez TTL dostaje TTL przy przekroczeniu), bez zmian.
 Propozycje CC (status `open`, dla ws-00): (1) dopisać do znanych powodów audytu C8 (`reason` w `audit-event.schema.json`) wartości, które broker już emituje,
 a opis ich nie zna: `database_unavailable` (baza nie odpowiedziała, `error`/`upstream_unavailable`), `refresh_token_lost` (dostawca zrotował refresh token, a broker go nie zapisał; połączenie przechodzi w `error`),
-`secret_store_unavailable`, `jti_store_unavailable`, `token_refreshed`, `oauth_grant_revoked`, `connection_changed_during_refresh`, `provider_unavailable`, `connection_busy`. Pole ma wzorzec, nie enum, więc to doprecyzowanie opisu (patch).
+`secret_store_unavailable`, `jti_store_unavailable`, `user_offboarding` (zapis odmówiony, bo trwa albo przed chwilą był purge użytkownika), `token_refreshed`, `oauth_grant_revoked`, `connection_changed_during_refresh`, `provider_unavailable`, `connection_busy`. Pole ma wzorzec, nie enum, więc to doprecyzowanie opisu (patch).
 
 ## M4 (2026-10-29)
 

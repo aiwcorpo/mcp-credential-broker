@@ -122,7 +122,7 @@ OAuth w toku, rejestrację Authenticatora z oboma ziarnami i wiersz blokady (to 
 Kroki są niezależne: awaria jednego (np. OpenBao) nie zatrzymuje pozostałych, a po ich wykonaniu wywołanie kończy się `503`; powtórzenie
 dokańcza resztę (połączenie, którego sekretu nie dało się skasować, zostaje w bazie właśnie po to). Odpowiedź `204` jest ta sama dla użytkownika, którego
 broker nie zna i dla `sub` dłuższego niż 255 znaków. Zalecane jest powtórzenie po wylogowaniu back-channel w portalu: przepływ OAuth otwarty w trakcie mógł założyć połączenie po pierwszym wywołaniu.
-Po `purge` `sub` nie jest blokowany (okno do 60 min na wygaśnięcie tokenu C1 przyjęte przez człowieka).
+Po `purge` ten sam `sub` nie może założyć ani zamienić połączenia przez `broker.retention.purge-marker-ttl` (domyślnie 30 min; start odmawia, gdy jest krótszy niż `broker.oauth-flow.flow-ttl`): `PUT secret`, `oauth/start` i `oauth/complete` dają `503` z powodem audytu `user_offboarding`. Okno do 60 min na wygaśnięcie tokenu C1 jest przyjęte przez człowieka.
 
 Audyt `purge`: `connection_change` z powodem `user_purged` dla każdego połączenia (z `credentialType` i `backendUser`), `authenticator` z
 `authenticator_removed`, gdy była rejestracja albo trwała rejestracja, oraz **zawsze** jedno `admin_change` z powodem `user_purged` (`ok`, także gdy nic nie
@@ -257,9 +257,9 @@ bez dotykania magazynu ziaren (wcześniej przegrywający kasował ziarno zwycię
 (są tylko pamięci podręczne kluczy JWKS, tokenu OpenBao i sekretów klientów OAuth).
 
 Blokada zmian połączenia (`RefreshLock`): `SET NX PX` z losowym właścicielem, zwolnienie skryptem Lua (porównanie i `DEL` w jednym
-kroku; ACL brokera ma `eval` i `evalsha`), dzierżawa 60 s, oczekiwanie 3 s. Blokadę biorą odświeżanie, `PUT secret`, `DELETE`, `oauth/complete`
-i `purge` dla każdego systemu, nie tylko OAuth (inaczej `PUT` obok `purge` zapisałby użytkownika po offboardingu), więc te operacje wymagają
-Redisa (`503` bez niego). Zabita instancja zwalnia blokadę przez koniec dzierżawy; zapis po odświeżeniu jest warunkowy względem wersji
+kroku; ACL brokera ma `eval` i `evalsha`), dzierżawa 60 s, oczekiwanie 3 s. Blokadę biorą odświeżanie, `PUT secret`, `oauth/complete` i `purge` dla każdego systemu, nie tylko OAuth (inaczej `PUT` obok `purge`
+zapisałby użytkownika po offboardingu), więc te operacje wymagają Redisa (`503` bez niego). `DELETE` bierze ją tylko dla systemów z OAuth
+(odświeżanie w toku nie może go nadpisać); dla pozostałych działa bez Redisa, bo usunięcie nikogo nie przywraca. Zabita instancja zwalnia blokadę przez koniec dzierżawy; zapis po odświeżeniu jest warunkowy względem wersji
 sekretu (fencing). Zapis zrotowanych poświadczeń (`SecretStore.putRotated`) omija bezpiecznik klienta OpenBao i jest ponawiany do 15 s
 łącznie (jeden termin na zapis sekretu i przełączenie wiersza). Gdy odpowiedź bazy na przełączenie zginie, o wyniku decyduje odczyt wiersza:
 wersja równa nowej to sukces, inna to usunięcie nowej wersji, a brak odczytu to `503` bez usuwania czegokolwiek i bez odwoływania tokenów.
@@ -281,6 +281,16 @@ odpowiada błędem od razu przez 2 s, żeby awaria nie trzymała wątków żąda
 każda inna (też `errors` z treścią, np. "no handler for route") to `503`; ziarno TOTP nie jest wtedy uznawane za utracone. `oauth/start` nie potrzebuje OpenBao ani PostgreSQL
 (stan w Redisie). Polecenie wysłane do wstrzymanego Redisa wykonuje się po jego wznowieniu, więc blokada może zostać wzięta "dla nikogo" do końca dzierżawy
 (przy błędzie broker próbuje ją zwolnić tym samym właścicielem).
+
+### Znane ograniczenia (M5)
+
+- Licznik limitów OAuth (`INCR` i `EXPIRE` w Redisie) nie jest atomowy: licznik bez TTL po przerwaniu procesu dostaje TTL przy pierwszym przekroczeniu limitu.
+- Sprzątanie osieroconych ziaren Authenticatora i sekretów listuje magazyn, a potem usuwa; zapis między listowaniem a usunięciem chroni tylko karencja
+  (`ORPHAN_GRACE`, `orphan-secrets-after`). Sprzątanie sekretów domyślnie tylko raportuje.
+- Ponowne podłączenie tego samego `sub` w oknie znacznika purge jest odmawiane także wtedy, gdy purge był pomyłką; znacznik można zdjąć w Redisie
+  (`broker:oauth:purging:<sha256(sub)>`) albo poczekać.
+- Zrotowany refresh token zapisany tylko w pamięci instancji, która zginęła przed zapisem, jest nie do odzyskania (połączenie `revoked`).
+- Przy Redisie w dół `DELETE` połączenia OAuth, `PUT`, `oauth/*` i `purge` dają `503`; `resolve` i `verify` też (jti).
 
 ## Przechowywanie
 

@@ -1,6 +1,7 @@
 package pl.aiwcorpo.mcp.broker.it;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.doThrow;
@@ -172,6 +173,43 @@ class OAuthRefreshFailureIntegrationTest {
         assertThat(offboarding.send("POST", "/v1/admin/users/" + sub + "/purge", null, null, null).status()).isEqualTo(204);
         assertThat(gitlab.revokeRequests()).extracting(form -> form.get("token")).contains(grant.accessToken(), grant.refreshToken());
         assertThat(env.bao("GET", path, null).statusCode()).isEqualTo(404);
+    }
+
+    @Test
+    void transitVerdictsOnARealOpenBaoSeparateDamageFromATemporaryProblem() {
+        String sub = newSub();
+        SecretKey key = SecretKey.newVersion(sub, "jira");
+        secrets.put(key, StoredCredential.of(CredentialType.USER_SECRET, SecretValue.of("v")));
+        String path = "secret/data/mcp/connections/" + key.relativePath();
+
+        assertThat(env.bao("POST", path, "{\"data\":{\"ciphertext\":\"vault:v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}}").statusCode()).isLessThan(300);
+        assertThatThrownBy(() -> secrets.get(key)).as("cipher: message authentication failed")
+                .isInstanceOf(pl.aiwcorpo.mcp.broker.secret.SecretUnreadableException.class);
+
+        assertThat(env.bao("POST", path, "{\"data\":{\"ciphertext\":\"vault:v9:AAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}}").statusCode()).isLessThan(300);
+        assertThatThrownBy(() -> secrets.get(key)).as("invalid ciphertext: version is too new")
+                .isInstanceOf(pl.aiwcorpo.mcp.broker.secret.StoreRefusedException.class)
+                .isNotInstanceOf(pl.aiwcorpo.mcp.broker.secret.SecretUnreadableException.class);
+
+        secrets.delete(key);
+    }
+
+    @Test
+    void theRenewalSweepSkipsAnUnreadableConnectionAndRenewsTheOnesBehindIt() {
+        String damagedSub = newSub();
+        String healthySub = newSub();
+        GitLabStub.Grant damaged = gitlab.issueCode("alice", 100);
+        GitLabStub.Grant healthy = gitlab.issueCode("bob", 200);
+        connect(damagedSub, "alice", damaged);
+        connect(healthySub, "bob", healthy);
+        GitLabStub.Grant renewed = gitlab.rotateOnRefresh(healthy, 7200, 0);
+        String path = "secret/data/mcp/connections/" + new SecretKey(damagedSub, "gitlab", version(damagedSub)).relativePath();
+        assertThat(env.bao("POST", path, "{\"data\":{\"ciphertext\":\"vault:v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}}").statusCode()).isLessThan(300);
+
+        assertThat(oauthService.refreshDue()).isEqualTo(1);
+
+        assertThat(gitlab.tokenRequests("refresh_token", "refresh_token", healthy.refreshToken())).hasSize(1);
+        assertThat(resolve(healthySub, "bob").json().path("value").stringValue()).isEqualTo(renewed.accessToken());
     }
 
     @Test

@@ -128,6 +128,9 @@ public class OAuthService {
         } catch (InvalidRequestException e) {
             entry.denied("invalid_request", "invalid_argument");
             throw e;
+        } catch (UserBeingOffboardedException e) {
+            entry.error("user_offboarding", "upstream_unavailable");
+            throw e;
         } catch (SecretStoreUnavailableException e) {
             entry.error("flow_store_unavailable", "upstream_unavailable");
             throw e;
@@ -204,7 +207,8 @@ public class OAuthService {
             entry.denied("invalid_request", "invalid_argument");
             throw e;
         } catch (SecretStoreUnavailableException | UpstreamUnavailableException e) {
-            entry.error(e instanceof UpstreamUnavailableException ? "provider_unavailable" : "secret_store_unavailable",
+            entry.error(e instanceof UserBeingOffboardedException ? "user_offboarding"
+                    : e instanceof UpstreamUnavailableException ? "provider_unavailable" : "secret_store_unavailable",
                     "upstream_unavailable");
             throw e;
         } catch (RuntimeException e) {
@@ -238,7 +242,7 @@ public class OAuthService {
 
     private void refuseWhilePurging(String sub) {
         if (lock.purging(sub)) {
-            throw new UpstreamUnavailableException("this user is being offboarded");
+            throw new UserBeingOffboardedException();
         }
     }
 
@@ -253,6 +257,14 @@ public class OAuthService {
     /** A configured system without OAuth: its stored values hold no grant at a provider that deleting them would leave alive. */
     public boolean isPlainSecretSystem(String systemId) {
         return systems.find(systemId).filter(s -> s.oauth().isEmpty()).isPresent();
+    }
+
+    /**
+     * DELETE of a connection: the lock of the connection is taken for OAuth systems (a refresh in flight must not write over
+     * it), not for the others. A delete cannot put anybody back, so it keeps working when Redis is down.
+     */
+    public <T> T underDisconnectLock(String sub, String systemId, Supplier<T> action) {
+        return isPlainSecretSystem(systemId) ? action.get() : underRefreshLock(sub, systemId, action);
     }
 
     /**
@@ -303,6 +315,9 @@ public class OAuthService {
                 renewed++;
             } catch (CredentialRequiredException e) {
                 log.info("Connection to {} no longer renewable", connection.system());
+            } catch (SecretUnreadableException e) {
+                // One damaged value must not stop the renewal of everybody behind it; it is logged on every sweep until fixed.
+                log.warn("Tokens of a connection to {} are unreadable, skipped by the sweep: {}", connection.system(), e.getMessage());
             } catch (SecretStoreUnavailableException e) {
                 log.warn("Token sweep stopped, the secret store or lock is unavailable: {}", e.getMessage());
                 break;
@@ -326,12 +341,17 @@ public class OAuthService {
      * @return false when there was a grant to revoke and the provider could not be told (the caller audits it)
      */
     public boolean revokeAtProvider(Connection connection) {
+        return revokeAtProvider(connection, () -> { });
+    }
+
+    /** @param onUnreadable called when the stored tokens answer but cannot be read (the purge counts them) */
+    public boolean revokeAtProvider(Connection connection, Runnable onUnreadable) {
         Optional<ConfiguredSystem> system = systems.find(connection.system());
+        boolean hadGrant = holdsGrant(connection);
         if (system.isEmpty() || system.get().oauth().isEmpty()) {
-            return true;
+            return !hadGrant;
         }
-        boolean hadGrant = connection.type() == CredentialType.USER_OAUTH && connection.state() == Connection.StoredState.CONNECTED;
-        StoredCredential grant = grantToRevoke(connection);
+        StoredCredential grant = grantToRevoke(connection, onUnreadable);
         if (grant == null) {
             return !hadGrant;
         }
@@ -344,12 +364,17 @@ public class OAuthService {
      * An entry that answers but cannot be read is not repeatable and counts as "could not revoke".
      */
     StoredCredential grantToRevoke(Connection connection) {
+        return grantToRevoke(connection, () -> { });
+    }
+
+    private StoredCredential grantToRevoke(Connection connection, Runnable onUnreadable) {
         if (connection.type() != CredentialType.USER_OAUTH || connection.state() != Connection.StoredState.CONNECTED) {
             return null;
         }
         try {
             return secrets.get(connection.secretKey()).orElse(null);
         } catch (SecretUnreadableException e) {
+            onUnreadable.run();
             // Repeating will not make it readable; the caller audits provider_revoke_failed and goes on, or the offboarding would never end.
             log.warn("Stored tokens for {} are unreadable ({}); not revoked at the provider", connection.system(), e.getMessage());
             return null;

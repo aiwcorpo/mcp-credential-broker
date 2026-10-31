@@ -92,7 +92,9 @@ public class OpenBaoSecretStore implements SecretStore {
         try {
             return client.write(transitPath("decrypt"), client.object().put("ciphertext", ciphertext));
         } catch (StoreRefusedException e) {
-            if (e.reason().equals("cipher: message authentication failed") || e.reason().startsWith("invalid ciphertext")) {
+            // "version is too new" is a key that is not (yet) here, as after a restore: not damage, and retrying may help.
+            if (e.reason().equals("cipher: message authentication failed")
+                    || e.reason().startsWith("invalid ciphertext") && !e.reason().contains("version is too new")) {
                 throw new SecretUnreadableException("transit refused the stored ciphertext as damaged");
             }
             throw e;

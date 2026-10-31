@@ -32,11 +32,15 @@ import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
  * check "not locked, not disabled", the 5-in-15-minutes and 20-in-24-hours counters and the lock are one atomic step
  * per {@code sub}.
  *
- * <p>No call to the secret store happens while that lock is held. A seed is read (and, for a confirmed enrollment,
- * written) before the transaction, and the transaction only compares ids and changes metadata. The order keeps one
- * invariant: a row in state {@code active} always has its seed in the store. Writes that precede a commit can leave
- * an entry that no row accounts for, and deletes that follow a commit can fail; {@link #sweepOrphanSeeds} removes
- * such entries after {@link AuthenticatorLimits#ORPHAN_GRACE}.
+ * <p>verify, remove, reset, purge and the burning of codes call the secret store only outside that row lock: a seed is read
+ * before the transaction, and the transaction compares ids and changes metadata. The confirmation of an enrollment is the
+ * exception by design: it runs in one transaction under a transaction-scoped advisory lock of the user (not the row lock, so
+ * verify never waits for it), and inside it reads the pending seed, writes the active seed, updates the row under its lock
+ * and removes the seed it no longer needs. Confirmations of one user are therefore exclusive, and two parallel ones cannot
+ * delete each other's seed. The order keeps one invariant: a row in state {@code active} always has its seed in the
+ * store. Writes that precede a commit can leave an entry that no row accounts for, and a commit that fails after the
+ * deletes leaves the row pending without its pending seed (the user starts again); {@link #sweepOrphanSeeds} removes
+ * orphaned entries after {@link AuthenticatorLimits#ORPHAN_GRACE}.
  */
 public class AuthenticatorService {
 
@@ -188,9 +192,7 @@ public class AuthenticatorService {
      */
     private ConfirmOutcome confirm(String sub, String enrollmentId, String code) {
         String[] written = new String[1];
-        ConfirmOutcome outcome = tx.execute(status -> confirmExclusively(sub, enrollmentId, code, written));
-        cleanAfterConfirm(sub, outcome, written[0]);
-        return outcome;
+        return tx.execute(status -> confirmExclusively(sub, enrollmentId, code, written));
     }
 
     private ConfirmOutcome confirmExclusively(String sub, String enrollmentId, String code, String[] writtenRegistrationId) {
@@ -216,7 +218,11 @@ public class AuthenticatorService {
                 seeds.putActive(sub, registrationId, pending.bytes());
                 writtenRegistrationId[0] = registrationId;
             }
-            return confirmLocked(sub, enrollmentId, code, pending, registrationId);
+            ConfirmOutcome outcome = confirmLocked(sub, enrollmentId, code, pending, registrationId);
+            // Still under the advisory lock: a confirm or a new enrollment of this user cannot slip in between the decision
+            // and the removal of the seed it no longer needs, and delete the seed of the one that follows.
+            cleanAfterConfirm(sub, outcome, registrationId);
+            return outcome;
         } finally {
             if (pending != null) {
                 Arrays.fill(pending.bytes(), (byte) 0);

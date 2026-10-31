@@ -254,8 +254,17 @@ public class BrokerConfiguration {
     OffboardingService offboardingService(ConnectionRepository connections, SecretStore secrets,
             InvalidationPublisher invalidations, OAuthService oauth, OAuthFlowStore flows, AuthenticatorService authenticator,
             AuditLog audit, Clock clock, BrokerProperties properties) {
+        requireMarkerCoversFlows(properties.retention().purgeMarkerTtl(), properties.oauthFlow().flowTtl());
         return new OffboardingService(connections, secrets, invalidations, oauth, flows, authenticator, audit, clock,
                 properties.retention());
+    }
+
+    /** A flow started just before a purge can be completed until its TTL ends; the marker must outlive it or the user could be written back. */
+    static void requireMarkerCoversFlows(java.time.Duration markerTtl, java.time.Duration flowTtl) {
+        if (markerTtl.compareTo(flowTtl) < 0) {
+            throw new IllegalStateException("broker.retention.purge-marker-ttl (" + markerTtl
+                    + ") must not be shorter than broker.oauth-flow.flow-ttl (" + flowTtl + ")");
+        }
     }
 
     @Bean

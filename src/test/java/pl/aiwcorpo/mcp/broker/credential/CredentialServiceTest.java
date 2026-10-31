@@ -161,6 +161,7 @@ class CredentialServiceTest {
     private static OAuthService passThroughOAuth() {
         OAuthService oauth = mock(OAuthService.class);
         when(oauth.underRefreshLock(any(), any(), any())).thenAnswer(call -> ((Supplier<Object>) call.getArgument(2)).get());
+        when(oauth.underDisconnectLock(any(), any(), any())).thenAnswer(call -> ((Supplier<Object>) call.getArgument(2)).get());
         when(oauth.underWriteLock(any(), any(), any())).thenAnswer(call -> ((Supplier<Object>) call.getArgument(2)).get());
         return oauth;
     }

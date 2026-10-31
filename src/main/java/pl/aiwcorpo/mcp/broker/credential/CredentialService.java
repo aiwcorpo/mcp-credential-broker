@@ -254,7 +254,8 @@ public class CredentialService {
             entry.denied("invalid_request", "invalid_argument");
             throw e;
         } catch (SecretStoreUnavailableException | UpstreamUnavailableException e) {
-            entry.error(e instanceof UpstreamUnavailableException ? "system_unavailable" : "secret_store_unavailable",
+            entry.error(e instanceof UserBeingOffboardedException ? "user_offboarding"
+                    : e instanceof UpstreamUnavailableException ? "system_unavailable" : "secret_store_unavailable",
                     "upstream_unavailable");
             throw e;
         } catch (RuntimeException e) {
@@ -291,7 +292,7 @@ public class CredentialService {
             if (!SystemRegistry.KNOWN_SYSTEMS.contains(systemId)) {
                 throw new InvalidRequestException("unknown system");
             }
-            return oauth.underRefreshLock(caller.sub(), systemId, () -> {
+            return oauth.underDisconnectLock(caller.sub(), systemId, () -> {
                 Optional<Connection> existing = connections.find(caller.sub(), systemId);
                 if (existing.isEmpty()) {
                     entry.ok("nothing_to_disconnect");

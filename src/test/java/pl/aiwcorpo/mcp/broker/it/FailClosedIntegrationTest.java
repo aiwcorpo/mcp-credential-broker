@@ -81,7 +81,7 @@ class FailClosedIntegrationTest {
         expected.put("oauth start", 503);
         expected.put("enrollment start", 201);
         expected.put("bff authenticator status", 200);
-        expected.put("delete connection", 503);
+        expected.put("delete connection", 204);
         expected.put("purge", 503);
         runWith(env.redis, expected, output);
     }

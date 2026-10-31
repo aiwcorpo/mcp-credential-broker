@@ -297,8 +297,8 @@ class MultiInstanceIntegrationTest {
         ExecutorService pool = Executors.newFixedThreadPool(2);
         List<BrokerProcess> started = new ArrayList<>();
         try {
-            Future<BrokerProcess> one = pool.submit(() -> BrokerProcess.start(env, 18715, overrides));
-            Future<BrokerProcess> two = pool.submit(() -> BrokerProcess.start(env, 18716, overrides));
+            Future<BrokerProcess> one = pool.submit(() -> BrokerProcess.startWithoutRetry(env, 18715, overrides));
+            Future<BrokerProcess> two = pool.submit(() -> BrokerProcess.startWithoutRetry(env, 18716, overrides));
             started.add(one.get());
             started.add(two.get());
             try (Connection db = DriverManager.getConnection(emptyUrl, env.postgres.getUsername(), env.postgres.getPassword());

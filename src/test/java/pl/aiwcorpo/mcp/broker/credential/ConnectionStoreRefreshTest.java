@@ -82,6 +82,29 @@ class ConnectionStoreRefreshTest {
     }
 
     @Test
+    void anUpsertCommittedWithItsAnswerLostKeepsTheNewVersion() {
+        org.mockito.Mockito.doAnswer(call -> {
+            rowVersion.set(((Connection) call.getArgument(0)).secretVersion());
+            throw new QueryTimeoutException("answer lost");
+        }).when(repository).upsert(any(), any());
+        when(repository.find("s", "gitlab")).thenAnswer(call -> Optional.of(rowNow()));
+
+        Connection saved = store().replace(current, rotated, Optional.empty(), false);
+
+        assertThat(saved.secretVersion()).isEqualTo(rowVersion.get());
+        assertThat(deleted).as("the version the row points at is kept").isEmpty();
+    }
+
+    @Test
+    void anUpsertWhoseOutcomeCannotBeReadDeletesNothing() {
+        org.mockito.Mockito.doThrow(new QueryTimeoutException("lost")).when(repository).upsert(any(), any());
+        when(repository.find("s", "gitlab")).thenThrow(new QueryTimeoutException("still down"));
+
+        assertThatThrownBy(() -> store().replace(current, rotated, Optional.empty(), false)).isInstanceOf(RefreshOutcomeUnknownException.class);
+        assertThat(deleted).isEmpty();
+    }
+
+    @Test
     void whenTheRowCannotBeReadNothingIsDeletedAndTheOutcomeIsUnknown() {
         when(repository.switchSecretVersion(any(), any(), any(), any(), any(), any())).thenThrow(new QueryTimeoutException("lost"));
         when(repository.find("s", "gitlab")).thenThrow(new QueryTimeoutException("still down"));

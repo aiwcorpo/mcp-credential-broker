@@ -29,6 +29,8 @@ import pl.aiwcorpo.mcp.broker.system.UpstreamUnavailableException;
 public class OffboardingService {
 
     private static final int MAX_PASSES = 50;
+    /** Unreadable stored values in one purge after which it stops: one is damage, several look like a wrong key or a broken store. */
+    private static final int MAX_UNREADABLE_PER_PURGE = 3;
     private static final Logger log = LoggerFactory.getLogger(OffboardingService.class);
 
     private final ConnectionRepository connections;
@@ -94,9 +96,15 @@ public class OffboardingService {
 
     private void removeConnections(String requestId, String sub) {
         List<RuntimeException> failures = new ArrayList<>();
+        java.util.concurrent.atomic.AtomicInteger unreadable = new java.util.concurrent.atomic.AtomicInteger();
         attempt(failures, () -> {
             for (Connection connection : connections.findAll(sub)) {
-                attempt(failures, () -> remove(requestId, connection, "user_purged", null));
+                attempt(failures, () -> {
+                    if (unreadable.get() >= MAX_UNREADABLE_PER_PURGE) {
+                        throw new SecretStoreUnavailableException("several stored values are unreadable in one purge");
+                    }
+                    remove(requestId, connection, "user_purged", null, unreadable::incrementAndGet);
+                });
             }
         });
         // Values no row points at: a delete that failed once, or a row that was lost. Only when every connection went:
@@ -112,7 +120,7 @@ public class OffboardingService {
         if (failures.isEmpty()) {
             attempt(failures, () -> {
                 for (Connection late : connections.findAll(sub)) {
-                    attempt(failures, () -> remove(requestId, late, "user_purged", null));
+                    attempt(failures, () -> remove(requestId, late, "user_purged", null, unreadable::incrementAndGet));
                 }
             });
             if (failures.isEmpty()) {
@@ -221,6 +229,10 @@ public class OffboardingService {
 
     /** @param unusedSince when not null, the connection is removed only if its last use is before this instant */
     private boolean remove(String requestId, Connection candidate, String reason, Instant unusedSince) {
+        return remove(requestId, candidate, reason, unusedSince, () -> { });
+    }
+
+    private boolean remove(String requestId, Connection candidate, String reason, Instant unusedSince, Runnable onUnreadable) {
         AuditLog.Entry entry = audit.event("connection_change", requestId)
                 .user(candidate.sub(), null, null)
                 .system(candidate.system())
@@ -233,7 +245,7 @@ public class OffboardingService {
                     return null;
                 }
                 Connection existing = current.get();
-                if (!oauth.revokeAtProvider(existing)) {
+                if (!oauth.revokeAtProvider(existing, onUnreadable)) {
                     audit.event("connection_change", requestId)
                             .user(existing.sub(), null, null)
                             .system(existing.system())
