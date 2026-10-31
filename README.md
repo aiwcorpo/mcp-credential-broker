@@ -437,6 +437,13 @@ curl -s -o /dev/null -w '%{http_code}\n' --cacert $d/ca/ca.crt -X POST \
 (obraz `mcp-credential-broker:m5-<sha>` z czystego drzewa). `ci/Dockerfile` daje obraz z JDK 25; testy potrzebują gniazda Dockera i wolnych portów
 18712-18717. `.gitlab-ci.yml`, `Jenkinsfile` i `.github/workflows/ci.yml` tylko wołają ten skrypt.
 
+Zaufanie do kodu: pełny `verify` (kontenery testowe, gniazdo Dockera, dane dostępowe do rejestru Maven) uruchamia się wyłącznie dla gałęzi
+głównej, na dedykowanym agencie (`docker-dedicated`). Zmiana z MR dostaje `ci/run.sh unit` (testy bez kontenerów), bez gniazda i bez
+poświadczeń, offline z cache (`MCP_MAVEN_OFFLINE=true`). W GitLabie zmienne `MCP_MAVEN_REPOSITORY_*` muszą być "masked" i "protected";
+skrypt używa `.ci/settings.xml` tylko wtedy, gdy hasło jest ustawione, więc MR bez zmiennych nie wysyła poświadczeń nigdzie. W GitHub Actions
+workflow startuje tylko z `push` na `main` (bez `pull_request`, bo sekrety i Docker są dostępne tylko dla zaufanego kodu). Kontrole
+stylu czytają nazwy plików przez `<<>>`, więc nazwa pliku nie wykonuje polecenia.
+
 ## Struktura
 
 ```

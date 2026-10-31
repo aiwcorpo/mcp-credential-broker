@@ -1,22 +1,45 @@
-// Thin wrapper: all logic is in ci/run.sh. The agent needs the Docker socket (the tests start containers) and the
-// credentials MCP_MAVEN_REPOSITORY_URL, MCP_MAVEN_REPOSITORY_USER, MCP_MAVEN_REPOSITORY_PASSWORD for the mcp-contracts artifacts.
+// Thin wrapper: all logic is in ci/run.sh. Code of a change request is not trusted with the Docker socket or with
+// credentials: it runs ci/run.sh unit, offline, in a container without the socket. The full verify (tests start
+// containers) runs only for the main branch, on the dedicated agent labelled docker-dedicated.
 pipeline {
-    agent {
-        docker {
-            image 'maven:3.9.12-eclipse-temurin-25'
-            args '-v /var/run/docker.sock:/var/run/docker.sock'
-        }
-    }
+    agent none
     stages {
-        stage('verify') {
+        stage('unit (change request)') {
+            when { changeRequest() }
+            agent {
+                docker {
+                    image 'maven:3.9.12-eclipse-temurin-25'
+                }
+            }
+            environment {
+                MCP_MAVEN_OFFLINE = 'true'
+            }
+            steps {
+                sh 'ci/run.sh unit'
+            }
+        }
+        stage('verify (main)') {
+            when { branch 'main' }
+            agent {
+                docker {
+                    label 'docker-dedicated'
+                    image 'maven:3.9.12-eclipse-temurin-25'
+                    args '-v /var/run/docker.sock:/var/run/docker.sock'
+                }
+            }
+            environment {
+                MCP_MAVEN_REPOSITORY_URL = credentials('mcp-maven-repository-url')
+                MCP_MAVEN_REPOSITORY_USER = credentials('mcp-maven-repository-user')
+                MCP_MAVEN_REPOSITORY_PASSWORD = credentials('mcp-maven-repository-password')
+            }
             steps {
                 sh 'ci/run.sh verify'
             }
-        }
-    }
-    post {
-        always {
-            junit 'target/surefire-reports/TEST-*.xml'
+            post {
+                always {
+                    junit 'target/surefire-reports/TEST-*.xml'
+                }
+            }
         }
     }
 }

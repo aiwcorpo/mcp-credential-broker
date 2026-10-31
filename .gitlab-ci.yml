@@ -1,8 +1,11 @@
 # Thin wrapper: all logic is in ci/run.sh, which also runs in a developer's shell.
 #
 # Maven registry with the mcp-contracts artifacts: MCP_MAVEN_REPOSITORY_URL, MCP_MAVEN_REPOSITORY_USER,
-# MCP_MAVEN_REPOSITORY_PASSWORD (masked CI/CD variables). The tests start PostgreSQL, Redis and OpenBao with
-# Testcontainers: use a runner with the Docker socket mounted, or set DOCKER_HOST to a Docker-in-Docker service.
+# MCP_MAVEN_REPOSITORY_PASSWORD, all three masked AND protected CI/CD variables, so merge request pipelines of unprotected
+# branches never receive them (code of a merge request, including .ci/settings.xml, must not decide where credentials go).
+# The merge request job runs offline against the cache, without the Docker socket. The default branch job starts
+# PostgreSQL, Redis and OpenBao with Testcontainers: it needs a dedicated runner tagged docker-dedicated with the socket
+# mounted, or DOCKER_HOST pointing at a Docker-in-Docker service.
 stages:
   - verify
 
@@ -15,8 +18,22 @@ default:
 variables:
   MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
 
+unit:
+  stage: verify
+  variables:
+    MCP_MAVEN_OFFLINE: "true"
+  script:
+    - ci/run.sh unit
+  artifacts:
+    when: always
+    reports:
+      junit: "target/surefire-reports/TEST-*.xml"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
 verify:
   stage: verify
+  tags: [docker-dedicated]
   script:
     - ci/run.sh verify
   artifacts:
@@ -24,5 +41,4 @@ verify:
     reports:
       junit: "target/surefire-reports/TEST-*.xml"
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

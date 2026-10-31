@@ -8,14 +8,24 @@ import java.time.ZoneOffset;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
+
+import org.springframework.context.annotation.Configuration;
 
 import pl.aiwcorpo.mcp.broker.support.Contracts;
 import tools.jackson.databind.JsonNode;
 
+// An empty context only so that Spring Boot installs logback-spring.xml (the AUDIT logger); without it the test passes
+// or fails depending on which test class ran earlier in the JVM.
+@SpringBootTest(classes = AuditLogTest.NoBeans.class)
 @ExtendWith(OutputCaptureExtension.class)
 class AuditLogTest {
+
+    @Configuration
+    static class NoBeans {
+    }
 
     private final AuditLog audit = new AuditLog("mcp-credential-broker",
             Clock.fixed(Instant.parse("2026-10-27T12:00:00.123Z"), ZoneOffset.UTC));

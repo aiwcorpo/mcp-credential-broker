@@ -6,6 +6,7 @@
 #
 #   ci/run.sh                 verify (default)
 #   ci/run.sh verify          hygiene checks, then unit and integration tests (mvnw clean verify)
+#   ci/run.sh unit            hygiene, then only the tests that need no container runtime (for change requests, see README "CI")
 #   ci/run.sh hygiene         only the text checks of the sources (non-ASCII quotes and spaces, tool traces)
 #   ci/run.sh image           verify, then build the container image mcp-credential-broker:m5-<short sha> from the jar
 #                             (needs a clean checkout, so that the tag names the code it holds)
@@ -22,12 +23,14 @@ if [[ -z "${JAVA_HOME:-}" ]] && ! command -v java >/dev/null; then
   exit 1
 fi
 
+# MCP_MAVEN_OFFLINE=true resolves from the local repository only: the mode for code that is not trusted with credentials.
 mvnw() {
-  if [[ -n "${MCP_MAVEN_REPOSITORY_URL:-}" ]]; then
-    ./mvnw -B -s .ci/settings.xml "$@"
-  else
-    ./mvnw -B "$@"
+  local extra=()
+  [[ "${MCP_MAVEN_OFFLINE:-}" == "true" ]] && extra+=(-o)
+  if [[ -n "${MCP_MAVEN_REPOSITORY_URL:-}" && -n "${MCP_MAVEN_REPOSITORY_PASSWORD:-}" ]]; then
+    extra+=(-s .ci/settings.xml)
   fi
+  ./mvnw -B "${extra[@]}" "$@"
 }
 
 tracked_sources() {
@@ -37,7 +40,7 @@ tracked_sources() {
 # The two checks of the house style: characters that give away generated text, and phrases left by tools.
 hygiene() {
   local failed=0
-  if tracked_sources | xargs -0 perl -ne 'if (/[\x{00A0}\x{200B}\x{202F}\x{FEFF}\x{2018}\x{2019}\x{201C}\x{201D}\x{2026}]/) { print "$ARGV:$.: $_"; $bad = 1 } END { exit($bad ? 1 : 0) }' -CSD; then
+  if tracked_sources | xargs -0 perl -CSD -e 'while (<<>>) { if (/[\x{00A0}\x{200B}\x{202F}\x{FEFF}\x{2018}\x{2019}\x{201C}\x{201D}\x{2026}]/) { print "$ARGV:$.: $_"; $bad = 1 } } continue { close ARGV if eof } exit($bad ? 1 : 0)' --; then
     :
   else
     echo "ci/run.sh: non-ASCII quotes, spaces or ellipsis found (above)" >&2
@@ -62,6 +65,16 @@ verify() {
   fi
 }
 
+# Tests that start no container: for change requests, whose code must not get the Docker socket.
+unit() {
+  hygiene
+  mvnw clean test '-Dtest=!*IntegrationTest'
+  if [[ -z "$(find target/surefire-reports -name 'TEST-*.xml' 2>/dev/null)" ]]; then
+    echo "ci/run.sh: no test reports; zero tests is a failure" >&2
+    exit 1
+  fi
+}
+
 image() {
   if [[ -n "$(git status --porcelain)" ]]; then
     echo "ci/run.sh image: the working tree has uncommitted changes; the tag would not name the code in the image" >&2
@@ -76,7 +89,8 @@ image() {
 
 case "${1:-verify}" in
   verify) verify ;;
+  unit) unit ;;
   hygiene) hygiene ;;
   image) image ;;
-  *) echo "usage: ci/run.sh [verify|hygiene|image]" >&2; exit 2 ;;
+  *) echo "usage: ci/run.sh [verify|unit|hygiene|image]" >&2; exit 2 ;;
 esac
