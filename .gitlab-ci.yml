@@ -11,15 +11,18 @@ stages:
 
 default:
   image: maven:3.9.12-eclipse-temurin-25
-  cache:
-    key: maven
-    paths: [.m2/repository]
-
 variables:
   MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
 
+# Merge request code must not poison the cache the main job reads: its cache has another key and is pull-only.
+# tags: an isolated runner without the Docker socket (runner isolation itself is M6).
 unit:
   stage: verify
+  tags: [isolated-no-docker]
+  cache:
+    key: maven-main
+    policy: pull
+    paths: [.m2/repository]
   variables:
     MCP_MAVEN_OFFLINE: "true"
   script:
@@ -33,6 +36,10 @@ unit:
 
 verify:
   stage: verify
+  cache:
+    key: maven-main
+    policy: pull-push
+    paths: [.m2/repository]
   tags: [docker-dedicated]
   script:
     - ci/run.sh verify
