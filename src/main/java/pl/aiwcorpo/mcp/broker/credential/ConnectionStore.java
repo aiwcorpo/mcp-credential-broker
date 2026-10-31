@@ -23,6 +23,8 @@ public class ConnectionStore {
 
     private static final Logger log = LoggerFactory.getLogger(ConnectionStore.class);
     private static final long[] RETRY_BACKOFF_MILLIS = {200, 600};
+    /** Longer than the breaker of the secret store stays open: the provider has spent the old refresh token, so the new one is worth ~10 s of trying. */
+    private static final long[] ROTATION_RETRY_BACKOFF_MILLIS = {200, 500, 1000, 2000, 3000, 4000};
 
     private final ConnectionRepository connections;
     private final SecretStore secrets;
@@ -65,11 +67,14 @@ public class ConnectionStore {
      */
     Optional<Connection> refresh(Connection current, StoredCredential credential, Instant accessExpiresAt) {
         SecretKey key = SecretKey.newVersion(current.sub(), current.system());
-        retryingVoid(() -> secrets.put(key, credential));
+        retrying(ROTATION_RETRY_BACKOFF_MILLIS, () -> {
+            secrets.putRotated(key, credential);
+            return null;
+        });
         boolean switched;
         try {
-            switched = retrying(() -> connections.switchSecretVersion(current.sub(), current.system(), current.secretVersion(),
-                    key.version(), accessExpiresAt, clock.instant()));
+            switched = retrying(ROTATION_RETRY_BACKOFF_MILLIS, () -> connections.switchSecretVersion(current.sub(), current.system(),
+                    current.secretVersion(), key.version(), accessExpiresAt, clock.instant()));
         } catch (RuntimeException e) {
             deleteQuietly(key);
             throw e;
@@ -105,14 +110,18 @@ public class ConnectionStore {
     }
 
     private <T> T retrying(Supplier<T> action) {
+        return retrying(RETRY_BACKOFF_MILLIS, action);
+    }
+
+    private <T> T retrying(long[] backoff, Supplier<T> action) {
         RuntimeException last = null;
-        for (int attempt = 0; attempt < RETRY_BACKOFF_MILLIS.length + 1; attempt++) {
+        for (int attempt = 0; attempt < backoff.length + 1; attempt++) {
             try {
                 return action.get();
             } catch (RuntimeException e) {
                 last = e;
-                if (attempt < RETRY_BACKOFF_MILLIS.length) {
-                    pause(RETRY_BACKOFF_MILLIS[attempt]);
+                if (attempt < backoff.length) {
+                    pause(backoff[attempt]);
                 }
             }
         }

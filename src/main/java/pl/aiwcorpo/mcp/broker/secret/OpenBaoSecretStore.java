@@ -55,6 +55,14 @@ public class OpenBaoSecretStore implements SecretStore {
     }
 
     @Override
+    public void putRotated(SecretKey key, StoredCredential credential) {
+        client.bypassingBreaker(() -> {
+            put(key, credential);
+            return null;
+        });
+    }
+
+    @Override
     public Optional<StoredCredential> get(SecretKey key) {
         JsonNode stored = client.read(dataPath(key));
         if (stored == null) {

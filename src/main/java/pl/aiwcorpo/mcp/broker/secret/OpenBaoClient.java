@@ -7,6 +7,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,17 +37,21 @@ public class OpenBaoClient {
     private static final long RETRY_SECONDS = 10;
 
     /**
-     * After a call that got no answer (timeout, refused or reset connection) the next calls fail at once for this long.
-     * Without it every request, and every step of a purge, waits for the full timeout on a store that is down, which
+     * After this many calls in a row that got no answer (timeout, refused or reset connection) the next calls fail at
+     * once for {@link #UNREACHABLE_BACKOFF_NANOS}. One lost call proves little, and a write that must not be lost
+     * (see {@link #bypassingBreaker}) is never refused by it. Without the breaker every request, and every step of a purge, waits for the full timeout on a store that is down, which
      * holds the request threads of the instance and pushes the answers past the caller's own timeout.
      */
     private static final long UNREACHABLE_BACKOFF_NANOS = 2_000_000_000L;
+    private static final int OPEN_AFTER_FAILURES = 3;
+    private static final ThreadLocal<Boolean> BYPASS = ThreadLocal.withInitial(() -> false);
 
     private final BrokerProperties.OpenBao config;
     private final HttpClient http;
     private final JsonMapper json;
     private final Clock clock;
 
+    private final AtomicInteger consecutiveFailures = new AtomicInteger();
     private volatile long unreachableUntilNanos;
     private volatile boolean unreachableSet;
 
@@ -92,6 +98,20 @@ public class OpenBaoClient {
         Response response = call("DELETE", path, null);
         if (response.status() != 404) {
             requireOk(response, "delete");
+        }
+    }
+
+    /**
+     * Runs {@code action} so that its calls try the network even while the breaker is open. For the write of a
+     * credential the provider has already rotated: the old one is spent, so refusing the write without trying loses
+     * the user's connection.
+     */
+    public <T> T bypassingBreaker(Supplier<T> action) {
+        BYPASS.set(true);
+        try {
+            return action.get();
+        } finally {
+            BYPASS.remove();
         }
     }
 
@@ -178,7 +198,7 @@ public class OpenBaoClient {
     }
 
     private Response send(String method, String path, ObjectNode body, String vaultToken) {
-        if (unreachableSet && System.nanoTime() - unreachableUntilNanos < 0) {
+        if (!BYPASS.get() && unreachableSet && System.nanoTime() - unreachableUntilNanos < 0) {
             throw new SecretStoreUnavailableException("secret store unreachable: recent call got no answer");
         }
         URI uri = config.address().resolve("/v1/" + path);
@@ -197,11 +217,14 @@ public class OpenBaoClient {
         try {
             HttpResponse<byte[]> response = http.send(request.build(), HttpResponse.BodyHandlers.ofByteArray());
             byte[] raw = response.body();
+            consecutiveFailures.set(0);
             JsonNode parsed = raw == null || raw.length == 0 ? json.createObjectNode() : json.readTree(raw);
             return new Response(response.statusCode(), parsed);
         } catch (IOException e) {
-            unreachableUntilNanos = System.nanoTime() + UNREACHABLE_BACKOFF_NANOS;
-            unreachableSet = true;
+            if (consecutiveFailures.incrementAndGet() >= OPEN_AFTER_FAILURES) {
+                unreachableUntilNanos = System.nanoTime() + UNREACHABLE_BACKOFF_NANOS;
+                unreachableSet = true;
+            }
             throw new SecretStoreUnavailableException("secret store unreachable: " + e.getClass().getSimpleName());
         } catch (JacksonException e) {
             throw new SecretStoreUnavailableException("secret store unreachable: " + e.getClass().getSimpleName());

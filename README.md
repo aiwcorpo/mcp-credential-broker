@@ -255,12 +255,13 @@ wyłącznie w bazie: licznik błędnych kodów, blokada, `last_accepted_step`, `
 instancji nie ma nic, na czym opiera się werdykt (są tylko pamięci podręczne kluczy JWKS, tokenu OpenBao i sekretów klientów OAuth).
 Blokada odświeżania (`RefreshLock`): `SET NX PX` z losowym właścicielem, zwolnienie skryptem Lua (porównanie i `DEL` w jednym
 kroku; ACL brokera ma `eval` i `evalsha`), dzierżawa 60 s. Zabita instancja zwalnia blokadę przez koniec dzierżawy; zapis po
-odświeżeniu jest warunkowy względem wersji sekretu (fencing). Ograniczenie: gdy dostawca rotuje refresh token, a instancja
+odświeżeniu jest warunkowy względem wersji sekretu (fencing). Zapis zrotowanych poświadczeń (`SecretStore.putRotated`) omija ten bezpiecznik i jest ponawiany przez ok. 10 s; przed pytaniem dostawcy
+broker czyta sekret z magazynu, żeby nie zużyć tokenu, którego nie da się zapisać. Ograniczenie: gdy dostawca rotuje refresh token, a instancja
 zginie po jego wydaniu przed zapisem, stary token jest zużyty i połączenie wymaga ponownego połączenia przez użytkownika
 (`invalid_grant` -> `revoked`).
 
 Zależność niedostępna (Redis, OpenBao, PostgreSQL; sprawdzane przy wstrzymanym kontenerze): operacja, która jej potrzebuje, daje
-`503 upstream_unavailable` w ciągu kilku sekund, nigdy sukces z pominiętą kontrolą ani `500`. Klient OpenBao po wywołaniu bez odpowiedzi
+`503 upstream_unavailable` w ciągu kilku sekund, nigdy sukces z pominiętą kontrolą ani `500`. Klient OpenBao po 3 wywołaniach z rzędu bez odpowiedzi
 odpowiada błędem od razu przez 2 s, żeby awaria nie trzymała wątków żądań po 5 s na każdy krok. Świadome wyjątki: przy Redisie
 w dół `PUT secret` i `DELETE` połączenia bez OAuth przechodzą (`credential.invalidated` jest skrótem, gateway cache'uje najwyżej
 `cacheTtlSeconds` = 60 s), a `oauth/start` nie potrzebuje OpenBao ani PostgreSQL. Polecenie wysłane do wstrzymanego Redisa

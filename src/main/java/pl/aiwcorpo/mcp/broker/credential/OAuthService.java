@@ -347,9 +347,9 @@ public class OAuthService {
                 throw new CredentialRequiredException(systemId);
             }
             entry.backendUser(current.backendUser());
-            StoredCredential credential = seen != null && current.secretVersion() != null
-                    && current.secretVersion().equals(seen.secretVersion()) ? seenCredential
-                    : secrets.get(current.secretKey()).orElseThrow(() -> new CredentialRequiredException(systemId));
+            // Read again even when the caller holds the value: the read proves the store answers before the provider is
+            // asked to spend a refresh token that could then not be replaced.
+            StoredCredential credential = secrets.get(current.secretKey()).orElseThrow(() -> new CredentialRequiredException(systemId));
             if (!due(current, clock.instant().plus(window))) {
                 return new Fresh(current, credential);
             }

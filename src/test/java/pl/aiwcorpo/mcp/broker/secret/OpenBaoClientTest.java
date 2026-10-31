@@ -51,6 +51,7 @@ class OpenBaoClientTest {
             calls.add("read:" + exchange.getRequestHeaders().getFirst("X-Vault-Token"));
             respond(exchange, 200, "{\"data\":{\"data\":{}}}");
         });
+        server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
         server.start();
     }
 
@@ -93,8 +94,45 @@ class OpenBaoClientTest {
     }
 
     @Test
-    void aCallThatGotNoAnswerMakesTheNextOnesFailAtOnceForAWhile() throws InterruptedException {
+    void severalCallsInARowWithoutAnswerMakeTheNextOnesFailAtOnceForAWhile() throws InterruptedException {
         OpenBaoClient client = client(Duration.ofMillis(300));
+        slowEndpoint();
+        client.read("secret/data/x");
+        calls.clear();
+
+        assertThatThrownBy(() -> client.read("secret/data/slow")).isInstanceOf(SecretStoreUnavailableException.class);
+        client.read("secret/data/x");
+        assertThatThrownBy(() -> client.read("secret/data/slow")).isInstanceOf(SecretStoreUnavailableException.class);
+        assertThatThrownBy(() -> client.read("secret/data/slow")).isInstanceOf(SecretStoreUnavailableException.class);
+        assertThatThrownBy(() -> client.read("secret/data/slow")).isInstanceOf(SecretStoreUnavailableException.class);
+        calls.clear();
+
+        long start = System.nanoTime();
+        assertThatThrownBy(() -> client.read("secret/data/x")).isInstanceOf(SecretStoreUnavailableException.class);
+        assertThat(Duration.ofNanos(System.nanoTime() - start)).as("no network call").isLessThan(Duration.ofMillis(100));
+        assertThat(calls).isEmpty();
+
+        Thread.sleep(2200);
+        client.read("secret/data/x");
+        assertThat(calls).containsExactly("read:t1");
+    }
+
+    @Test
+    void aWriteOfRotatedCredentialsTriesTheNetworkWhileTheBreakerIsOpen() {
+        OpenBaoClient client = client(Duration.ofMillis(300));
+        slowEndpoint();
+        client.read("secret/data/x");
+        for (int i = 0; i < 3; i++) {
+            assertThatThrownBy(() -> client.read("secret/data/slow")).isInstanceOf(SecretStoreUnavailableException.class);
+        }
+        assertThatThrownBy(() -> client.read("secret/data/x")).isInstanceOf(SecretStoreUnavailableException.class);
+        calls.clear();
+
+        client.bypassingBreaker(() -> client.read("secret/data/x"));
+        assertThat(calls).containsExactly("read:t1");
+    }
+
+    private void slowEndpoint() {
         server.createContext("/v1/secret/data/slow", exchange -> {
             calls.add("slow");
             try {
@@ -104,15 +142,6 @@ class OpenBaoClientTest {
             }
             exchange.close();
         });
-        assertThatThrownBy(() -> client.read("secret/data/slow")).isInstanceOf(SecretStoreUnavailableException.class);
-        long start = System.nanoTime();
-        assertThatThrownBy(() -> client.read("secret/data/x")).isInstanceOf(SecretStoreUnavailableException.class);
-        assertThat(Duration.ofNanos(System.nanoTime() - start)).as("no network call").isLessThan(Duration.ofMillis(100));
-        assertThat(calls).containsExactly("login", "slow");
-
-        Thread.sleep(2200);
-        client.read("secret/data/x");
-        assertThat(calls).last().isEqualTo("read:t1");
     }
 
     private OpenBaoClient client() {

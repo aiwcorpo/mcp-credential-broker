@@ -10,6 +10,14 @@ public interface SecretStore {
 
     void put(SecretKey key, StoredCredential credential);
 
+    /**
+     * Writes a credential the provider has just rotated, replacing one it has already spent. Same as {@link #put}
+     * unless the implementation has a fast-failure mode, which this write must not be refused by.
+     */
+    default void putRotated(SecretKey key, StoredCredential credential) {
+        put(key, credential);
+    }
+
     Optional<StoredCredential> get(SecretKey key);
 
     /** Removes every version of the secret. Idempotent. */

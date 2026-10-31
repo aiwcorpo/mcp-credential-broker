@@ -15,7 +15,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -35,6 +38,7 @@ import pl.aiwcorpo.mcp.broker.support.TestTokens;
  * These tests break the broker's own secret store after the provider has answered.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ExtendWith(OutputCaptureExtension.class)
 class OAuthRefreshFailureIntegrationTest {
 
     private static final TestEnvironment env = TestEnvironment.get();
@@ -98,7 +102,26 @@ class OAuthRefreshFailureIntegrationTest {
     }
 
     @Test
-    void aLostRefreshTokenIsAnErrorNotARevocationAndTheNewGrantIsNotLeftAlive() {
+    void aStoreThatComesBackWithinTheRetryWindowKeepsTheRotatedGrant() {
+        String sub = newSub();
+        GitLabStub.Grant first = gitlab.issueCode("alice", 60);
+        connect(sub, "alice", first);
+        GitLabStub.Grant second = gitlab.rotateOnRefresh(first, 7200, 0);
+        doThrow(new SecretStoreUnavailableException("down 1"), new SecretStoreUnavailableException("down 2"),
+                new SecretStoreUnavailableException("down 3"), new SecretStoreUnavailableException("down 4"))
+                .doCallRealMethod().when(secrets).putRotated(any(), any());
+
+        BrokerClient.Response resolved = resolve(sub, "alice");
+        assertThat(resolved.status()).isEqualTo(200);
+        assertThat(resolved.json().path("value").stringValue()).isEqualTo(second.accessToken());
+        assertThat(state(sub)).isEqualTo("connected");
+        Mockito.reset(secrets);
+        assertThat(resolve(sub, "alice").json().path("value").stringValue()).isEqualTo(second.accessToken());
+        assertThat(gitlab.tokenRequests("refresh_token", "refresh_token", first.refreshToken())).hasSize(1);
+    }
+
+    @Test
+    void aLostRefreshTokenIsAnErrorNotARevocationAndTheNewGrantIsNotLeftAlive(CapturedOutput output) {
         String sub = newSub();
         GitLabStub.Grant first = gitlab.issueCode("alice", 60);
         connect(sub, "alice", first);
@@ -113,6 +136,9 @@ class OAuthRefreshFailureIntegrationTest {
                 .contains(second.accessToken(), second.refreshToken());
         assertThat(resolve(sub, "alice").status()).isEqualTo(409);
         assertThat(gitlab.tokenRequests("refresh_token", "refresh_token", first.refreshToken())).hasSize(1);
+        assertThat(output.getAll()).doesNotContain(first.accessToken()).doesNotContain(first.refreshToken())
+                .doesNotContain(second.accessToken()).doesNotContain(second.refreshToken());
+        assertThat(output.getAll()).contains("\"reason\":\"refresh_token_lost\"");
     }
 
     @Test
