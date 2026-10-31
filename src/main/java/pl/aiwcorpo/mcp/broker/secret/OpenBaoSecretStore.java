@@ -95,6 +95,57 @@ public class OpenBaoSecretStore implements SecretStore {
         deleteBelow(config.kvMount() + "/metadata/" + config.pathPrefix() + "/" + SecretKey.hashOf(sub) + "/");
     }
 
+    @Override
+    public java.util.List<Stored> listStored() {
+        String root = config.kvMount() + "/metadata/" + config.pathPrefix() + "/";
+        java.util.List<Stored> found = new java.util.ArrayList<>();
+        for (String hash : names(client.list(root))) {
+            if (!hash.endsWith("/")) {
+                continue;
+            }
+            String subHash = hash.substring(0, hash.length() - 1);
+            for (String systemEntry : names(client.list(root + hash))) {
+                if (systemEntry.endsWith("/")) {
+                    String system = systemEntry.substring(0, systemEntry.length() - 1);
+                    for (String version : names(client.list(root + hash + systemEntry))) {
+                        if (!version.endsWith("/")) {
+                            found.add(new Stored(subHash, system, version, updatedAt(root + hash + systemEntry + version)));
+                        }
+                    }
+                } else {
+                    found.add(new Stored(subHash, systemEntry, null, updatedAt(root + hash + systemEntry)));
+                }
+            }
+        }
+        return found;
+    }
+
+    @Override
+    public void deleteStored(Stored stored) {
+        client.delete(config.kvMount() + "/metadata/" + config.pathPrefix() + "/" + stored.subHash() + "/" + stored.system()
+                + (stored.version() == null ? "" : "/" + stored.version()));
+    }
+
+    private static java.util.List<String> names(JsonNode listed) {
+        java.util.List<String> names = new java.util.ArrayList<>();
+        if (listed != null) {
+            for (JsonNode entry : listed.path("data").path("keys")) {
+                String name = entry.asString("");
+                if (name.isEmpty() || name.contains("..") || name.startsWith("/")) {
+                    throw new SecretStoreUnavailableException("secret store listed an unexpected entry");
+                }
+                names.add(name);
+            }
+        }
+        return names;
+    }
+
+    private java.time.Instant updatedAt(String metadataPath) {
+        JsonNode metadata = client.read(metadataPath);
+        String updated = metadata == null ? null : metadata.path("data").path("updated_time").asString(null);
+        return updated == null ? java.time.Instant.EPOCH : java.time.Instant.parse(updated);
+    }
+
     /** KV v2 lists a folder as {@code name/} and a secret as {@code name}; a metadata delete removes all versions of a secret. */
     private void deleteBelow(String folder) {
         JsonNode listed = client.list(folder);

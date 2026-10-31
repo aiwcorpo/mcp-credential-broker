@@ -92,8 +92,11 @@ public class OffboardingService {
                 attempt(failures, () -> remove(requestId, connection, "user_purged", null));
             }
         });
-        // Values no row points at: a delete that failed once, or a row that was lost.
-        attempt(failures, () -> secrets.deleteAllOf(sub));
+        // Values no row points at: a delete that failed once, or a row that was lost. Only when every connection went:
+        // a connection that stayed still has tokens to revoke at the provider on the repeat, and this would delete them.
+        if (failures.isEmpty()) {
+            attempt(failures, () -> secrets.deleteAllOf(sub));
+        }
         if (!failures.isEmpty()) {
             RuntimeException first = failures.get(0);
             failures.stream().skip(1).forEach(first::addSuppressed);
@@ -136,6 +139,29 @@ public class OffboardingService {
                             e instanceof UpstreamUnavailableException ? e.getMessage() : "see audit");
                 }
             }
+        }
+        return removed;
+    }
+
+    /**
+     * Removes stored values no row points at and older than {@code orphan-secrets-after}: a new version whose row switch
+     * failed, or a delete that failed after the switch. The store is listed first and the rows read after, so a row
+     * switched in between is seen; the grace period covers writes still in flight.
+     *
+     * @return how many values were removed
+     */
+    public int sweepOrphanSecrets() {
+        Instant cutoff = clock.instant().minus(retention.orphanSecretsAfter());
+        List<SecretStore.Stored> listed = secrets.listStored();
+        java.util.Set<String> referenced = connections.referencedSecretPaths();
+        int removed = 0;
+        for (SecretStore.Stored stored : listed) {
+            String path = stored.subHash() + "/" + stored.system() + (stored.version() == null ? "" : "/" + stored.version());
+            if (stored.updatedAt().isAfter(cutoff) || referenced.contains(path)) {
+                continue;
+            }
+            secrets.deleteStored(stored);
+            removed++;
         }
         return removed;
     }

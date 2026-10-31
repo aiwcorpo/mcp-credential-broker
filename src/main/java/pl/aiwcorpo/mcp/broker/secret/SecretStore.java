@@ -20,6 +20,19 @@ public interface SecretStore {
 
     Optional<StoredCredential> get(SecretKey key);
 
+    /** One stored value as the store lists it, without reading it. {@code version} is null for a value from before versions. */
+    record Stored(String subHash, String system, String version, java.time.Instant updatedAt) {
+    }
+
+    /** Every stored value, for the sweep of values no connection row points at. */
+    default java.util.List<Stored> listStored() {
+        return java.util.List.of();
+    }
+
+    /** Removes one listed value with all its KV versions. Idempotent. */
+    default void deleteStored(Stored stored) {
+    }
+
     /** Removes every version of the secret. Idempotent. */
     void delete(SecretKey key);
 

@@ -89,6 +89,25 @@ class AuthenticatorIntegrationTest {
         }
     }
 
+    @Test
+    void parallelConfirmsOfOneEnrollmentLeaveOneRegistrationThatCanVerify() throws Exception {
+        for (int parallelism : new int[] {2, 4}) {
+            for (int round = 0; round < 10; round++) {
+                String sub = newSub();
+                String bffToken = tokens.bffUser(sub, "ivan");
+                Enrolled enrolled = startOnly(bffToken);
+                String code = currentCode(enrolled.seed);
+                List<String> statuses = parallel(parallelism, () -> String.valueOf(confirm(bffToken, enrolled.id, code).status()));
+
+                assertThat(count(statuses, "200")).as(parallelism + " parallel confirms: " + statuses).isEqualTo(1);
+                assertThat(statuses).containsOnly("200", "422");
+                assertThat(gatewayStatus(sub).json().path("state").stringValue()).isEqualTo("active");
+                assertThat(verify(sub, nextCode(enrolled.seed)).json().path("result").stringValue())
+                        .as("the registration that won has its seed").isEqualTo("ok");
+            }
+        }
+    }
+
     // Registration ---------------------------------------------------------------------------------------
 
     @Test

@@ -101,7 +101,9 @@ public record BrokerProperties(
     public record Retention(
             @DefaultValue("180d") @NotNull Duration unusedAfter,
             @DefaultValue("1h") @NotNull Duration cleanupInterval,
-            @DefaultValue("100") @Min(1) int batchSize) {
+            @DefaultValue("100") @Min(1) int batchSize,
+            @DefaultValue("1h") @NotNull Duration orphanSecretsAfter,
+            @DefaultValue("6h") @NotNull Duration orphanSweepInterval) {
     }
 
     /**
@@ -127,7 +129,7 @@ public record BrokerProperties(
             @DefaultValue("2m") @NotNull Duration refreshMargin,
             @DefaultValue("5m") @NotNull Duration sweepWindow,
             @DefaultValue("1m") @NotNull Duration sweepInterval,
-            @DefaultValue("5s") @NotNull Duration refreshLockWait,
+            @DefaultValue("3s") @NotNull Duration refreshLockWait,
             @DefaultValue("60s") @NotNull Duration refreshLockLease,
             @DefaultValue("broker:oauth:") @NotBlank String redisPrefix) {
     }

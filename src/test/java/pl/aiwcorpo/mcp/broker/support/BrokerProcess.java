@@ -34,7 +34,19 @@ public final class BrokerProcess implements AutoCloseable {
         this.log = log;
     }
 
+    /** A start that fails before the port is open (the container runtime refusing a connection for a moment) is tried once more. */
     public static BrokerProcess start(TestEnvironment env, int port, Map<String, String> overrides) {
+        try {
+            return startOnce(env, port, overrides);
+        } catch (IllegalStateException first) {
+            if (!first.getMessage().contains("exited")) {
+                throw first;
+            }
+            return startOnce(env, port, overrides);
+        }
+    }
+
+    private static BrokerProcess startOnce(TestEnvironment env, int port, Map<String, String> overrides) {
         Map<String, String> properties = new LinkedHashMap<>();
         env.registerProperties(new DynamicPropertyRegistry() {
             @Override

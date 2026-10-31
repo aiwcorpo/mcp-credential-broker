@@ -78,6 +78,22 @@ class CredentialServiceTest {
     }
 
     @Test
+    void aVersionDeletedByAConcurrentSwitchIsReadAgainFromTheRow() {
+        when(connections.find("alice-sub", "jira")).thenReturn(Optional.of(connection(null)), Optional.of(connectionAt("v2")));
+        when(secrets.get(new SecretKey("alice-sub", "jira", "v1"))).thenReturn(Optional.empty());
+        when(secrets.get(new SecretKey("alice-sub", "jira", "v2")))
+                .thenReturn(Optional.of(StoredCredential.of(CredentialType.USER_SECRET, SecretValue.of("alice-pat"))));
+        assertThat(service.resolve(gateway("alice-sub"), "jira", null, null).value().reveal()).isEqualTo("alice-pat");
+    }
+
+    @Test
+    void aMissingSecretWhoseRowDidNotChangeStillNeedsReconnect() {
+        when(connections.find("alice-sub", "jira")).thenReturn(Optional.of(connection(null)));
+        when(secrets.get(any())).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> service.resolve(gateway("alice-sub"), "jira", null, null)).isInstanceOf(CredentialRequiredException.class);
+    }
+
+    @Test
     void expiredConnectionNeedsReconnect() {
         when(connections.find("alice-sub", "jira")).thenReturn(Optional.of(connection(NOW.minusSeconds(1))));
         assertThatThrownBy(() -> service.resolve(gateway("alice-sub"), "jira", null, null)).isInstanceOf(CredentialRequiredException.class);
@@ -189,6 +205,10 @@ class CredentialServiceTest {
         return new BrokerProperties.SystemConfig(URI.create("http://jira.test"), "atlassian-dc",
                 List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET, CredentialScheme.BEARER,
                 List.of(), Duration.ofSeconds(1), null, null);
+    }
+
+    private static Connection connectionAt(String version) {
+        return connection(null).withSecretVersion(version);
     }
 
     private static Connection connection(Instant expiresAt) {

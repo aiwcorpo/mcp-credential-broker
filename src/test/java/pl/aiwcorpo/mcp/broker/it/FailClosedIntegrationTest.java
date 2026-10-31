@@ -41,10 +41,8 @@ import pl.aiwcorpo.mcp.broker.support.TestTokens;
  * {@code 503 upstream_unavailable} within seconds. Never a success that skipped a check, never a 500, never a hang,
  * and nothing latches: when the dependency is back the same requests work.
  *
- * <p>Two answers are not 503 on purpose and are pinned here: with Redis down {@code PUT secret} and {@code DELETE}
- * of a connection without OAuth succeed, because {@code credential.invalidated} is only a shortcut and the gateway
- * never caches longer than {@code cacheTtlSeconds} (60 s); and {@code oauth/start} does not need OpenBao or
- * PostgreSQL (its state lives in Redis).
+ * <p>{@code PUT secret} and {@code DELETE} need Redis for the lock of the connection, so a purge cannot race them.
+ * {@code oauth/start} does not need OpenBao or PostgreSQL (its state lives in Redis).
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ExtendWith(OutputCaptureExtension.class)
@@ -79,11 +77,11 @@ class FailClosedIntegrationTest {
         expected.put("gateway authenticator status", 503);
         expected.put("invalidate-codes", 503);
         expected.put("list connections", 200);
-        expected.put("put secret", 200);
+        expected.put("put secret", 503);
         expected.put("oauth start", 503);
         expected.put("enrollment start", 201);
         expected.put("bff authenticator status", 200);
-        expected.put("delete connection", 204);
+        expected.put("delete connection", 503);
         expected.put("purge", 503);
         runWith(env.redis, expected, output);
     }

@@ -216,12 +216,11 @@ public class OAuthService {
 
     /**
      * Runs a change of one connection while holding the lock that refreshes take, so a refresh in flight cannot
-     * write over it and it cannot interleave with another change. Systems without OAuth need no lock.
+     * write over it and it cannot interleave with another change. Every system takes the lock, not only those with
+     * OAuth: a PUT of a PAT that ran beside a purge could otherwise write the user back after the offboarding had
+     * removed them. The price is that PUT and DELETE need Redis (503 without it), which offboarding safety is worth.
      */
     public <T> T underRefreshLock(String sub, String systemId, Supplier<T> action) {
-        if (systems.find(systemId).filter(s -> s.oauth().isPresent()).isEmpty()) {
-            return action.get();
-        }
         String owner = lock.acquire(sub, systemId, settings.refreshLockWait())
                 .orElseThrow(() -> new UpstreamUnavailableException("another change of this connection is in progress"));
         try {
@@ -298,17 +297,15 @@ public class OAuthService {
         return revokeGrantQuietly(system.get().oauth().get(), grant);
     }
 
-    /** The stored tokens of a connected user-oauth connection, or null when there is nothing to revoke or the store fails. */
+    /**
+     * The stored tokens of a connected user-oauth connection, or null when there is nothing to revoke. A store that does
+     * not answer is an error, not "nothing": the removal then fails and is repeated, while the tokens still exist to revoke.
+     */
     StoredCredential grantToRevoke(Connection connection) {
         if (connection.type() != CredentialType.USER_OAUTH || connection.state() != Connection.StoredState.CONNECTED) {
             return null;
         }
-        try {
-            return secrets.get(connection.secretKey()).orElse(null);
-        } catch (SecretStoreUnavailableException e) {
-            log.warn("Token for {} not revoked at the provider: {}", connection.system(), e.getMessage());
-            return null;
-        }
+        return secrets.get(connection.secretKey()).orElse(null);
     }
 
     /** Revokes the tokens of a grant that a new connection has just replaced; the first argument names its system. */
@@ -380,6 +377,11 @@ public class OAuthService {
             Optional<Connection> saved;
             try {
                 saved = store.refresh(current, next, accessExpiry(tokens, now));
+            } catch (RefreshOutcomeUnknownException e) {
+                // The new value may be the one the row points at: neither revoke nor mark the connection.
+                entryClosed = true;
+                entry.error("database_unavailable", "upstream_unavailable");
+                throw e;
             } catch (RuntimeException e) {
                 entryClosed = true;
                 if (rotated) {

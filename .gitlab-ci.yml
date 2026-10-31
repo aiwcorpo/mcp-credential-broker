@@ -37,9 +37,13 @@ unit:
 verify:
   stage: verify
   cache:
-    key: maven-main
-    policy: pull-push
-    paths: [.m2/repository]
+    - key: maven-main
+      policy: pull-push
+      paths: [.m2/repository]
+    # The same repository under the key the merge request job pulls: only this trusted job writes it.
+    - key: maven-mr
+      policy: push
+      paths: [.m2/repository]
   tags: [docker-dedicated]
   script:
     - ci/run.sh verify

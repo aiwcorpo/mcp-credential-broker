@@ -25,7 +25,12 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
+import pl.aiwcorpo.mcp.broker.credential.CredentialType;
 import pl.aiwcorpo.mcp.broker.credential.OAuthService;
+import pl.aiwcorpo.mcp.broker.credential.OffboardingService;
+import pl.aiwcorpo.mcp.broker.secret.SecretKey;
+import pl.aiwcorpo.mcp.broker.secret.SecretValue;
+import pl.aiwcorpo.mcp.broker.secret.StoredCredential;
 import pl.aiwcorpo.mcp.broker.secret.SecretStore;
 import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
 import pl.aiwcorpo.mcp.broker.support.BrokerClient;
@@ -51,6 +56,7 @@ class OAuthRefreshFailureIntegrationTest {
     static void properties(DynamicPropertyRegistry registry) {
         env.registerProperties(registry);
         registry.add("broker.systems.gitlab.oauth.client-secret", () -> "");
+        registry.add("broker.retention.orphan-secrets-after", () -> "PT1S");
         registry.add("broker.openbao.oauth-clients-prefix", () -> "mcp/oauth-clients-it");
         var stored = env.bao("POST", "secret/data/mcp/oauth-clients-it/gitlab",
                 "{\"data\":{\"client_id\":\"" + TestEnvironment.GITLAB_CLIENT_ID + "\",\"client_secret\":\""
@@ -70,14 +76,19 @@ class OAuthRefreshFailureIntegrationTest {
     @MockitoSpyBean
     SecretStore secrets;
 
+    @Autowired
+    OffboardingService offboardingService;
+
     BrokerClient gateway;
     BrokerClient bff;
+    BrokerClient offboarding;
     TestTokens tokens = env.tokens;
 
     @BeforeEach
     void clients() {
         gateway = new BrokerClient(env.pki.clientContext(env.gatewayClient), port);
         bff = new BrokerClient(env.pki.clientContext(env.bffClient), port);
+        offboarding = new BrokerClient(env.pki.clientContext(env.offboardingClient), port);
         gitlab.revokeAccepts();
         jdbc.sql("delete from connection where type = 'user-oauth'").update();
     }
@@ -142,6 +153,44 @@ class OAuthRefreshFailureIntegrationTest {
     }
 
     @Test
+    void aPurgeThatCouldNotRevokeKeepsTheSecretsSoTheRepeatCanRevokeTheGrant() {
+        String sub = newSub();
+        GitLabStub.Grant grant = gitlab.issueCode("alice", 7200);
+        connect(sub, "alice", grant);
+        String path = "secret/data/mcp/connections/" + new SecretKey(sub, "gitlab", version(sub)).relativePath();
+        doThrow(new SecretStoreUnavailableException("down")).when(secrets).get(any());
+
+        assertThat(offboarding.send("POST", "/v1/admin/users/" + sub + "/purge", null, null, null).status()).isEqualTo(503);
+        Mockito.reset(secrets);
+
+        assertThat(state(sub)).as("the row stays").isEqualTo("connected");
+        assertThat(env.bao("GET", path, null).statusCode()).as("the value stays, not swept by deleteAllOf").isEqualTo(200);
+        assertThat(gitlab.revokeRequests()).extracting(form -> form.get("token")).doesNotContain(grant.accessToken(), grant.refreshToken());
+
+        assertThat(offboarding.send("POST", "/v1/admin/users/" + sub + "/purge", null, null, null).status()).isEqualTo(204);
+        assertThat(gitlab.revokeRequests()).extracting(form -> form.get("token")).contains(grant.accessToken(), grant.refreshToken());
+        assertThat(env.bao("GET", path, null).statusCode()).isEqualTo(404);
+    }
+
+    @Test
+    void theSweepRemovesStoredValuesNoRowPointsAtAndKeepsTheReferencedOnes() throws InterruptedException {
+        String sub = newSub();
+        GitLabStub.Grant grant = gitlab.issueCode("alice", 7200);
+        connect(sub, "alice", grant);
+        String referenced = "secret/data/mcp/connections/" + new SecretKey(sub, "gitlab", version(sub)).relativePath();
+        SecretKey orphan = SecretKey.newVersion(sub, "gitlab");
+        secrets.put(orphan, StoredCredential.of(CredentialType.USER_OAUTH, SecretValue.of("orphan-value")));
+        String orphanPath = "secret/data/mcp/connections/" + orphan.relativePath();
+        assertThat(env.bao("GET", orphanPath, null).statusCode()).isEqualTo(200);
+
+        Thread.sleep(1_500);
+        assertThat(offboardingService.sweepOrphanSecrets()).isPositive();
+
+        assertThat(env.bao("GET", orphanPath, null).statusCode()).isEqualTo(404);
+        assertThat(env.bao("GET", referenced, null).statusCode()).isEqualTo(200);
+    }
+
+    @Test
     void theSweepStopsAtTheFirstStoreFailureInsteadOfSpendingEveryRefreshToken() {
         GitLabStub.Grant aliceFirst = gitlab.issueCode("alice", 100);
         GitLabStub.Grant bobFirst = gitlab.issueCode("bob", 100);
@@ -165,6 +214,10 @@ class OAuthRefreshFailureIntegrationTest {
         connect(newSub(), "alice", grant);
         assertThat(gitlab.tokenRequests("authorization_code", "code", grant.code()).getFirst())
                 .containsEntry("client_secret", CLIENT_SECRET_IN_OPENBAO);
+    }
+
+    private String version(String sub) {
+        return jdbc.sql("select secret_version from connection where sub = ? and system = 'gitlab'").param(sub).query(String.class).single();
     }
 
     private String state(String sub) {

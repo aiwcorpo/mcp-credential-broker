@@ -5,7 +5,7 @@ do systemów docelowych, per (`sub`, system). Gateway pobiera z niego poświadcz
 narzędzia (`resolve`), portal BFF zapisuje je w imieniu zalogowanego użytkownika. Kontrakt: C4 z
 `mcp-contracts` 5.1.0 (`openapi/credential-broker.v1.yaml`), audyt C8, zdarzenie C4.3.
 
-Stan: kamień M4 (wszystkie cztery typy poświadczeń, offboarding, czyszczenie nieużywanych połączeń, limity; poza tym Authenticator TOTP z M3, PAT i "Połącz przez OAuth" dla GitLaba z M1-M2). Co działa, czego jeszcze nie ma i odstępstwa od briefu: [STATUS.md](STATUS.md).
+Stan: kamień M5, kod gotowy do dowodu z runnera CI (kontrakty 5.1.0, praca w kilku instancjach na jednej bazie, fail-closed bez Redisa, OpenBao i PostgreSQL, `ci/run.sh`; poza tym wszystkie cztery typy poświadczeń, offboarding, limity z M4, Authenticator TOTP z M3, PAT i "Połącz przez OAuth" z M1-M2). Co działa, czego jeszcze nie ma i odstępstwa od briefu: [STATUS.md](STATUS.md).
 
 ## API w tej wersji
 
@@ -39,7 +39,7 @@ zgodnie z `x-allowed-client-cn` (inaczej 403), token pasujący do CN (inaczej 40
 tokenu; ścieżka, query i ciało nie mogą go wskazać (nieznane pola w JSON -> 400). Ciało jest ograniczone do
 16 KB liczonych przy czytaniu, więc limit działa także dla `Transfer-Encoding: chunked` bez `Content-Length`.
 
-Wewnętrzny JWT C2 sprawdzany jest dokładnie według wektorów `test-vectors/jwt` z 2.1.1 (wszystkie 51
+Wewnętrzny JWT C2 sprawdzany jest dokładnie według wektorów `test-vectors/jwt` z 5.1.0 (wszystkie
 przechodzą, także co do powodu odrzucenia): tylko ES256, `kid` z JWKS gateway'a, podpis, kształt claimów
 wariantu, `iss`, `aud` jako napis, `exp` z tolerancją 30 s, `iat` nie z przyszłości, czas życia do 60 s,
 `rid == X-Request-Id`, wariant serwisowy tylko dla `GET /v1/systems`, `tool` wymagany przy `resolve` i
@@ -127,7 +127,7 @@ Po `purge` `sub` nie jest blokowany (okno do 60 min na wygaśnięcie tokenu C1 p
 Audyt `purge`: `connection_change` z powodem `user_purged` dla każdego połączenia (z `credentialType` i `backendUser`), `authenticator` z
 `authenticator_removed`, gdy była rejestracja albo trwała rejestracja, oraz **zawsze** jedno `admin_change` z powodem `user_purged` (`ok`, także gdy nic nie
 było do usunięcia; `error`, gdy któryś krok się nie udał). Nieudane odwołanie tokenów u dostawcy (przy `purge` i przy zwykłym `DELETE`) zostawia dodatkowe
-`connection_change` z powodem `provider_revoke_failed` i wynikiem `error`; połączenie jest usuwane mimo to.
+`connection_change` z powodem `provider_revoke_failed` i wynikiem `error`; połączenie jest usuwane mimo to. Gdy to magazyn sekretów nie odpowiada (tokenów nie da się odczytać do odwołania), usunięcie kończy się `503` i jest powtarzane.
 
 **Czyszczenie nieużywanych połączeń (CC-155).** Zadanie w tle (`broker.retention.cleanup-interval`, domyślnie 1 h) usuwa połączenia, których ostatnie użycie
 (a gdy nigdy nie użyto, utworzenie) jest starsze niż `broker.retention.unused-after` (domyślnie 180 dni), tą samą drogą co `DELETE`; audyt
@@ -251,21 +251,31 @@ spalanie kodów i odczyt stanu dla gateway'a wolno wołać tylko z CN `mcp-gatew
 
 Broker działa w kilku replikach na jednej bazie PostgreSQL, jednym Redisie i jednym OpenBao. Stan krytyczny dla TOTP jest
 wyłącznie w bazie: licznik błędnych kodów, blokada, `last_accepted_step`, `burned_through` zmienia się w transakcji z
-`select ... for update` na wierszu użytkownika, więc dwie instancje szeregują się tak jak dwa wątki jednej. W pamięci
-instancji nie ma nic, na czym opiera się werdykt (są tylko pamięci podręczne kluczy JWKS, tokenu OpenBao i sekretów klientów OAuth).
-Blokada odświeżania (`RefreshLock`): `SET NX PX` z losowym właścicielem, zwolnienie skryptem Lua (porównanie i `DEL` w jednym
-kroku; ACL brokera ma `eval` i `evalsha`), dzierżawa 60 s. Zabita instancja zwalnia blokadę przez koniec dzierżawy; zapis po
-odświeżeniu jest warunkowy względem wersji sekretu (fencing). Zapis zrotowanych poświadczeń (`SecretStore.putRotated`) omija ten bezpiecznik i jest ponawiany przez ok. 10 s; przed pytaniem dostawcy
-broker czyta sekret z magazynu, żeby nie zużyć tokenu, którego nie da się zapisać. Ograniczenie: gdy dostawca rotuje refresh token, a instancja
-zginie po jego wydaniu przed zapisem, stary token jest zużyty i połączenie wymaga ponownego połączenia przez użytkownika
-(`invalid_grant` -> `revoked`).
+`select ... for update` na wierszu użytkownika, więc dwie instancje szeregują się tak jak dwa wątki jednej. Potwierdzenia rejestracji
+jednego użytkownika są wyłączne (`pg_try_advisory_xact_lock` na `sub`): drugie równoległe potwierdzenie dostaje `422 enrollment_invalid`
+bez dotykania magazynu ziaren (wcześniej przegrywający kasował ziarno zwycięzcy). W pamięci instancji nie ma nic, na czym opiera się werdykt
+(są tylko pamięci podręczne kluczy JWKS, tokenu OpenBao i sekretów klientów OAuth).
+
+Blokada zmian połączenia (`RefreshLock`): `SET NX PX` z losowym właścicielem, zwolnienie skryptem Lua (porównanie i `DEL` w jednym
+kroku; ACL brokera ma `eval` i `evalsha`), dzierżawa 60 s, oczekiwanie 3 s. Blokadę biorą odświeżanie, `PUT secret`, `DELETE`, `oauth/complete`
+i `purge` dla każdego systemu, nie tylko OAuth (inaczej `PUT` obok `purge` zapisałby użytkownika po offboardingu), więc te operacje wymagają
+Redisa (`503` bez niego). Zabita instancja zwalnia blokadę przez koniec dzierżawy; zapis po odświeżeniu jest warunkowy względem wersji
+sekretu (fencing). Zapis zrotowanych poświadczeń (`SecretStore.putRotated`) omija bezpiecznik klienta OpenBao i jest ponawiany do 15 s
+łącznie (jeden termin na zapis sekretu i przełączenie wiersza). Gdy odpowiedź bazy na przełączenie zginie, o wyniku decyduje odczyt wiersza:
+wersja równa nowej to sukces, inna to usunięcie nowej wersji, a brak odczytu to `503` bez usuwania czegokolwiek i bez odwoływania tokenów.
+Przed pytaniem dostawcy broker czyta sekret z magazynu, żeby nie zużyć tokenu, którego nie da się zapisać. Wersje sekretów, na które nie wskazuje
+żaden wiersz, usuwa po godzinie zadanie co 6 h (`broker.retention.orphan-secrets-after`, `orphan-sweep-interval`). Ograniczenie: gdy dostawca rotuje
+refresh token, a instancja zginie po jego wydaniu przed zapisem, stary token jest zużyty i połączenie wymaga ponownego połączenia przez
+użytkownika (`invalid_grant` -> `revoked`). `purge` kasuje wartości bez wiersza (`deleteAllOf`) dopiero, gdy usunięto wszystkie połączenia;
+inaczej kończy się błędem i powtórzenie odwoła grant u dostawcy. Nie ma blokady dla systemu, którego wiersza użytkownik jeszcze nie ma, więc `PUT`
+dokładnie w chwili `purge` takiego użytkownika może go zapisać po offboardingu (zamyka to ważność tokenu C1).
 
 Zależność niedostępna (Redis, OpenBao, PostgreSQL; sprawdzane przy wstrzymanym kontenerze): operacja, która jej potrzebuje, daje
 `503 upstream_unavailable` w ciągu kilku sekund, nigdy sukces z pominiętą kontrolą ani `500`. Klient OpenBao po 3 wywołaniach z rzędu bez odpowiedzi
-odpowiada błędem od razu przez 2 s, żeby awaria nie trzymała wątków żądań po 5 s na każdy krok. Świadome wyjątki: przy Redisie
-w dół `PUT secret` i `DELETE` połączenia bez OAuth przechodzą (`credential.invalidated` jest skrótem, gateway cache'uje najwyżej
-`cacheTtlSeconds` = 60 s), a `oauth/start` nie potrzebuje OpenBao ani PostgreSQL. Polecenie wysłane do wstrzymanego Redisa
-wykonuje się po jego wznowieniu, więc blokada może zostać wzięta "dla nikogo" do końca dzierżawy.
+odpowiada błędem od razu przez 2 s, żeby awaria nie trzymała wątków żądań po 5 s na każdy krok. Odpowiedź `404` bez ciała OpenBao (`errors` albo `data`)
+nie znaczy "brak sekretu", tylko `503`; ziarno TOTP nie jest wtedy uznawane za utracone. `oauth/start` nie potrzebuje OpenBao ani PostgreSQL
+(stan w Redisie). Polecenie wysłane do wstrzymanego Redisa wykonuje się po jego wznowieniu, więc blokada może zostać wzięta "dla nikogo" do końca dzierżawy
+(przy błędzie broker próbuje ją zwolnić tym samym właścicielem).
 
 ## Przechowywanie
 
@@ -351,7 +361,7 @@ docker build -t mcp-credential-broker:dev .
 | Test | Co sprawdza |
 | --- | --- |
 | `InternalJwtVectorTest` | wszystkie wektory C2 z `mcp-contracts` 5.1.0 (także `dev-` z `devstackProfile` i wywołania `authenticator` z `tool`) (wynik i powód, `allowTestKeys` z wektora), klucz testowy pod produkcyjnym `kid` (SPKI), replay |
-| `MultiInstanceIntegrationTest` | dwie JVM brokera (porty 18712-18717) na wspólnej bazie: zapis i potwierdzenie rejestracji na różnych instancjach, 5 błędów dokładnie raz, jeden kod raz, spalenie kodów, zabicie instancji (SIGKILL) w trakcie prób, jedno odświeżenie na dwóch instancjach, martwy właściciel blokady, równoczesne migracje pustej bazy |
+| `MultiInstanceIntegrationTest` | dwie JVM brokera (porty 18712-18717) na wspólnej bazie: zapis i potwierdzenie rejestracji na różnych instancjach, równoległe potwierdzenia, 5 błędów dokładnie raz, jeden kod raz, spalenie kodów, zabicie instancji (SIGKILL) w trakcie prób, jedno odświeżenie na dwóch instancjach, martwy właściciel blokady, równoczesne migracje pustej bazy |
 | `FailClosedIntegrationTest` | nadużycie 15: 12 operacji przy wstrzymanym Redisie, OpenBao i PostgreSQL, kody i czasy, brak `internal_error`, powrót po wznowieniu |
 | `ReturnPathTest` | walidator `returnPath` (CC-032) na wektorach `return-paths/`, używany przez `oauth/start` |
 | `OAuthIntegrationTest` | przepływ GitLaba na stubie WireMock: PKCE, state jednorazowy i związany z użytkownikiem, cudzy `flowId`/`state` (zły `state` nie spala przepływu), ponowne użycie, konto o innym loginie (połączone, widoczne jako `backendUser`), błąd i timeout dostawcy, wygasły przepływ, zapis w OpenBao, odświeżanie (rotacja, równoległe, odwołany grant, awaria dostawcy, `DELETE` w trakcie odświeżania, utrata blokady, odwołanie zastąpionego grantu), limit rozmiaru i czasu odpowiedzi dostawcy, zadanie w tle, `DELETE` z odwołaniem, PAT GitLaba; brak tokenów w odpowiedziach poza `resolve` i w logach |
@@ -441,7 +451,7 @@ curl -s -o /dev/null -w '%{http_code}\n' --cacert $d/ca/ca.crt -X POST \
 Zaufanie do kodu: pełny `verify` (kontenery testowe, gniazdo Dockera, dane dostępowe do rejestru Maven) uruchamia się wyłącznie dla gałęzi
 głównej, na dedykowanym agencie (`docker-dedicated`). Zmiana z MR dostaje `ci/run.sh unit` (testy bez kontenerów), bez gniazda i bez
 poświadczeń, offline z cache (`MCP_MAVEN_OFFLINE=true`). W GitLabie zmienne `MCP_MAVEN_REPOSITORY_*` muszą być "masked" i "protected";
-skrypt używa `.ci/settings.xml` tylko wtedy, gdy hasło jest ustawione, więc MR bez zmiennych nie wysyła poświadczeń nigdzie. W GitHub Actions
+skrypt używa `.ci/settings.xml` tylko wtedy, gdy hasło jest ustawione, więc MR bez zmiennych nie wysyła poświadczeń nigdzie. Runner z tagiem `docker-dedicated` musi być oznaczony jako protected (konfiguracja runnera, M6), a zadanie `main` zapisuje też cache `maven-mr`, z którego czyta zadanie MR. W GitHub Actions
 workflow startuje tylko z `push` na `main` (bez `pull_request`, bo sekrety i Docker są dostępne tylko dla zaufanego kodu). Sekrety GitHub są w Environment `ci-main`. Cache GitLaba dla MR ma osobny klucz i `policy: pull`, a zadanie MR ma tag
 `isolated-no-docker`. Jenkins: gałąź w `Jenkinsfile` nie egzekwuje granicy sama (kto zmienia plik, zmienia warunki), więc
 poświadczenia i agent z gniazdem Dockera muszą być ograniczone w konfiguracji Jenkinsa do zadania z `main`; reszta izolacji runnerów to M6. Kontrole

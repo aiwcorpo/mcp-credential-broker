@@ -26,11 +26,19 @@ fi
 # MCP_MAVEN_OFFLINE=true resolves from the local repository only: the mode for code that is not trusted with credentials.
 mvnw() {
   local extra=()
-  [[ "${MCP_MAVEN_OFFLINE:-}" == "true" ]] && extra+=(-o)
+  if [[ "${MCP_MAVEN_OFFLINE:-}" == "true" ]]; then
+    extra+=(-o)
+    # The wrapper downloads its Maven distribution; offline, the image's own mvn is used.
+    if command -v mvn >/dev/null; then
+      mvn -B ${extra[@]+"${extra[@]}"} "$@"
+      return
+    fi
+  fi
   if [[ -n "${MCP_MAVEN_REPOSITORY_URL:-}" && -n "${MCP_MAVEN_REPOSITORY_PASSWORD:-}" ]]; then
     extra+=(-s .ci/settings.xml)
   fi
-  ./mvnw -B "${extra[@]}" "$@"
+  # ${extra[@]+...}: an empty array is "unbound" under set -u in bash 3.2 (macOS).
+  ./mvnw -B ${extra[@]+"${extra[@]}"} "$@"
 }
 
 tracked_sources() {

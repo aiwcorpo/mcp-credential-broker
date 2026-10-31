@@ -180,29 +180,43 @@ public class AuthenticatorService {
         }
     }
 
+    /**
+     * Confirmations of one user are exclusive: the first takes a transaction-scoped advisory lock, the others return
+     * "invalid" at once without touching the secret store. Two parallel confirms of the same enrollment used to both
+     * write the active seed, and the loser then deleted the winner's seed (an active row without a seed). The row lock
+     * of verify is not held here; it is taken only for the final update, after the seeds are written.
+     */
     private ConfirmOutcome confirm(String sub, String enrollmentId, String code) {
+        String[] written = new String[1];
+        ConfirmOutcome outcome = tx.execute(status -> confirmExclusively(sub, enrollmentId, code, written));
+        cleanAfterConfirm(sub, outcome, written[0]);
+        return outcome;
+    }
+
+    private ConfirmOutcome confirmExclusively(String sub, String enrollmentId, String code, String[] writtenRegistrationId) {
+        if (!repository.tryConfirmLock(sub)) {
+            return new ConfirmOutcome.Invalid(false);
+        }
         Instant now = clock.instant();
+        // Read after the lock: a confirm that held it before has committed by now.
         AuthenticatorRecord peek = repository.find(sub).orElse(null);
         if (peek == null || peek.pendingId == null || !peek.pendingId.equals(enrollmentId)) {
             return new ConfirmOutcome.Invalid(false);
         }
         Seed pending = seeds.getPending(sub).orElse(null);
-        String registrationId = null;
         try {
+            String registrationId = null;
             if (peek.state != State.ACTIVE && pending != null && pending.id().equals(enrollmentId)
                     && !pendingExpired(peek, now)
                     && Totp.matchingStep(pending.bytes(), code, now, AuthenticatorLimits.WINDOW_STEPS).isPresent()) {
-                // The active seed is written before the transaction that makes the registration active. The old
+                // The active seed is written before the update that makes the registration active. The old
                 // entry is deleted first (all KV versions): a disabled registration's seed must not stay in the history.
                 registrationId = randomHex(16);
                 seeds.deleteActive(sub);
                 seeds.putActive(sub, registrationId, pending.bytes());
+                writtenRegistrationId[0] = registrationId;
             }
-            String written = registrationId;
-            Seed pendingSeed = pending;
-            ConfirmOutcome outcome = tx.execute(status -> confirmLocked(sub, enrollmentId, code, pendingSeed, written));
-            cleanAfterConfirm(sub, outcome, written);
-            return outcome;
+            return confirmLocked(sub, enrollmentId, code, pending, registrationId);
         } finally {
             if (pending != null) {
                 Arrays.fill(pending.bytes(), (byte) 0);

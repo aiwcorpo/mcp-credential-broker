@@ -65,6 +65,17 @@ public class ConnectionRepository {
                 .list();
     }
 
+    /** {@code <sha256(sub)>/<system>/<version>} of every stored value a row points at (no version for a value from M1). */
+    public java.util.Set<String> referencedSecretPaths() {
+        java.util.Set<String> paths = new java.util.HashSet<>();
+        jdbc.sql("select sub, system, secret_version from connection").query((rs, row) -> {
+            String version = rs.getString("secret_version");
+            paths.add(new pl.aiwcorpo.mcp.broker.secret.SecretKey(rs.getString("sub"), rs.getString("system"), version).relativePath());
+            return 0;
+        }).list();
+        return paths;
+    }
+
     public void delete(String sub, String system) {
         jdbc.sql("delete from connection where sub = :sub and system = :system")
                 .param("sub", sub)

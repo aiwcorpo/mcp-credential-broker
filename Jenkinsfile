@@ -17,6 +17,11 @@ pipeline {
             steps {
                 sh 'ci/run.sh unit'
             }
+            post {
+                always {
+                    junit 'target/surefire-reports/TEST-*.xml'
+                }
+            }
         }
         stage('verify (main)') {
             when { branch 'main' }

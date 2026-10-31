@@ -71,7 +71,7 @@ public class OpenBaoClient {
 
     public JsonNode read(String path) {
         Response response = call("GET", path, null);
-        if (response.status() == 404) {
+        if (absent(response)) {
             return null;
         }
         requireOk(response, "read");
@@ -81,7 +81,7 @@ public class OpenBaoClient {
     /** Keys below a KV v2 metadata path (LIST); null when there are none. */
     public JsonNode list(String path) {
         Response response = call("GET", path + "?list=true", null);
-        if (response.status() == 404) {
+        if (absent(response)) {
             return null;
         }
         requireOk(response, "list");
@@ -96,7 +96,7 @@ public class OpenBaoClient {
 
     public void delete(String path) {
         Response response = call("DELETE", path, null);
-        if (response.status() != 404) {
+        if (!absent(response)) {
             requireOk(response, "delete");
         }
     }
@@ -127,6 +127,21 @@ public class OpenBaoClient {
             response = send(method, path, body, currentToken());
         }
         return response;
+    }
+
+    /**
+     * A 404 means "nothing stored" only when OpenBao says it: its body is a JSON object with {@code errors} (empty for a
+     * missing secret) or {@code data} (a deleted KV version). A 404 from a proxy, a wrong address or a wrong mount has
+     * neither, and treating it as "no secret" would, for a TOTP seed, drop a registration that is still there.
+     */
+    private static boolean absent(Response response) {
+        if (response.status() != 404) {
+            return false;
+        }
+        if (!response.body().isObject() || !(response.body().has("errors") || response.body().has("data"))) {
+            throw new SecretStoreUnavailableException("secret store answered 404 in a form that is not OpenBao's");
+        }
+        return true;
     }
 
     private static void requireOk(Response response, String operation) {

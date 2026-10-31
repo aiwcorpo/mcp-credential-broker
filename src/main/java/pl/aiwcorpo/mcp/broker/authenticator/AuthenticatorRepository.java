@@ -51,6 +51,12 @@ class AuthenticatorRepository {
                 .optional();
     }
 
+    /** Transaction-scoped; false when another transaction of this user holds it. Not the row lock: verify never waits for it. */
+    boolean tryConfirmLock(String sub) {
+        return Boolean.TRUE.equals(jdbc.sql("select pg_try_advisory_xact_lock(hashtextextended(:key, 0))")
+                .param("key", "authenticator-confirm:" + sub).query(Boolean.class).single());
+    }
+
     AuthenticatorRecord lockOrCreate(String sub, Instant now) {
         jdbc.sql("""
                 insert into authenticator (sub, sub_hash, state, updated_at) values (:sub, :hash, 'none', :now)

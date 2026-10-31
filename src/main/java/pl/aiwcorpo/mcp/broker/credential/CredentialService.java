@@ -7,6 +7,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 import org.slf4j.Logger;
@@ -153,12 +154,21 @@ public class CredentialService {
             throw new CredentialRequiredException(system.id());
         }
         Connection found = connection.get();
+        Optional<StoredCredential> read = secrets.get(found.secretKey());
+        if (read.isEmpty()) {
+            // A refresh or a new PUT may have switched the row to a newer version and deleted this one between the two reads.
+            Optional<Connection> again = connections.find(user.sub(), system.id());
+            if (again.isPresent() && !Objects.equals(again.get().secretVersion(), found.secretVersion())
+                    && again.get().status(now, expiringThreshold).usable()) {
+                found = again.get();
+                read = secrets.get(found.secretKey());
+            }
+        }
         entry.credentialType(found.type().wire());
-        StoredCredential stored = secrets.get(found.secretKey())
-                .orElseThrow(() -> {
-                    log.warn("Connection metadata without a stored secret for system {}", system.id());
-                    return new CredentialRequiredException(system.id());
-                });
+        StoredCredential stored = read.orElseThrow(() -> {
+            log.warn("Connection metadata without a stored secret for system {}", system.id());
+            return new CredentialRequiredException(system.id());
+        });
         if (stored.type() != found.type()) {
             throw new SecretStoreUnavailableException("stored credential type differs from connection metadata");
         }

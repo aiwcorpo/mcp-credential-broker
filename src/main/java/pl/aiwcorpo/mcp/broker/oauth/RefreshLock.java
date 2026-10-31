@@ -61,6 +61,8 @@ public class RefreshLock {
                 Thread.sleep(POLL_MILLIS);
             }
         } catch (DataAccessException e) {
+            // The command may have reached Redis although the answer did not come back: release with the same owner, best effort.
+            release(sub, system, owner);
             throw new SecretStoreUnavailableException("refresh lock unavailable: " + e.getClass().getSimpleName());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

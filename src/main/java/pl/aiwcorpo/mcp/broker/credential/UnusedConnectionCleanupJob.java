@@ -26,4 +26,16 @@ public class UnusedConnectionCleanupJob {
             log.warn("Cleanup of unused connections failed ({})", e.getClass().getSimpleName());
         }
     }
+
+    @Scheduled(initialDelayString = "${broker.retention.orphan-sweep-interval:PT6H}", fixedDelayString = "${broker.retention.orphan-sweep-interval:PT6H}")
+    public void orphanSecrets() {
+        try {
+            int removed = offboarding.sweepOrphanSecrets();
+            if (removed > 0) {
+                log.info("Removed {} stored secrets that no connection points at", removed);
+            }
+        } catch (RuntimeException e) {
+            log.warn("Sweep of orphaned secrets failed ({})", e.getClass().getSimpleName());
+        }
+    }
 }

@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 
 import pl.aiwcorpo.mcp.broker.authenticator.Base32;
 import pl.aiwcorpo.mcp.broker.authenticator.Totp;
+import pl.aiwcorpo.mcp.broker.secret.SecretKey;
 import pl.aiwcorpo.mcp.broker.support.BrokerClient;
 import pl.aiwcorpo.mcp.broker.support.BrokerProcess;
 import pl.aiwcorpo.mcp.broker.support.GitLabStub;
@@ -93,6 +94,25 @@ class MultiInstanceIntegrationTest {
 
         assertThat(verify(a, sub, nextCode(seed))).isEqualTo("ok");
         assertThat(verify(b, sub, nextCode(seed))).as("the step spent on A is spent on B").isEqualTo("replayed");
+    }
+
+    @Test
+    void parallelConfirmsOnBothInstancesLeaveOneRegistrationThatCanVerify() throws Exception {
+        for (int round = 0; round < 10; round++) {
+            String sub = newSub();
+            String bffToken = tokens.bffUser(sub, "judy");
+            BrokerClient.Response started = bff(a).send("POST", "/v1/authenticator/enrollment", bffToken, null, null);
+            byte[] seed = Base32.decode(started.json().path("secret").stringValue());
+            String body = "{\"enrollmentId\":\"" + started.json().path("enrollmentId").stringValue() + "\",\"code\":\""
+                    + currentCode(seed) + "\"}";
+            AtomicInteger turn = new AtomicInteger();
+            List<String> statuses = parallel(4, () -> String.valueOf(bff(turn.getAndIncrement() % 2 == 0 ? a : b)
+                    .send("POST", "/v1/authenticator/enrollment/confirm", bffToken, null, body).status()));
+
+            assertThat(count(statuses, "200")).as(statuses.toString()).isEqualTo(1);
+            assertThat(statuses).containsOnly("200", "422");
+            assertThat(verify(b, sub, nextCode(seed))).isEqualTo("ok");
+        }
     }
 
     @Test
@@ -220,10 +240,11 @@ class MultiInstanceIntegrationTest {
         String sub = newSub();
         GitLabStub.Grant first = gitlab.issueCode("alice", 90);
         connect(a, gitlab, sub, "alice", first);
-        gitlab.rotateOnRefresh(first, 7200, 4000);
+        gitlab.rotateOnRefresh(first, 7200, 6000);
 
-        Map<String, String> shortLease = Map.of("broker.oauth-flow.refresh-lock-lease", "PT7S",
+        Map<String, String> shortLease = Map.of("broker.oauth-flow.refresh-lock-lease", "PT10S",
                 "broker.systems.gitlab.timeout", "10s");
+        String holderOutput;
         try (BrokerProcess holder = BrokerProcess.start(env, PORT_KILLED, shortLease)) {
             ExecutorService pool = Executors.newSingleThreadExecutor();
             try {
@@ -234,22 +255,27 @@ class MultiInstanceIntegrationTest {
                         // The connection is cut when the holder is killed.
                     }
                 });
-                awaitRequest(gitlab, first.refreshToken());
+                awaitLock(sub);
+                // The lock is taken before the provider is asked; the provider takes 6 s, so the holder dies inside the call.
+                Thread.sleep(500);
                 holder.kill();
                 blocked.get();
             } finally {
                 pool.shutdownNow();
             }
+            holderOutput = holder.output();
         }
 
         BrokerClient.Response during = resolve(b, sub, "gitlab");
         assertThat(during.status()).as("the access token still works, so the caller is served with it").isEqualTo(200);
         assertThat(during.json().path("value").stringValue()).isEqualTo(first.accessToken());
         assertThat(gitlab.tokenRequests("refresh_token", "refresh_token", first.refreshToken()))
-                .as("the survivor does not spend the refresh token while the dead holder's lease runs").hasSize(1);
+                .as("the survivor does not spend the refresh token while the dead holder's lease runs; holder log: %s; survivor log: %s",
+                        tail(holderOutput), tail(b.output()))
+                .hasSize(1);
 
         GitLabStub.Grant second = gitlab.rotateOnRefresh(first, 7200, 0);
-        Thread.sleep(8_000);
+        Thread.sleep(7_000);
         BrokerClient.Response after = resolve(b, sub, "gitlab");
         assertThat(after.status()).isEqualTo(200);
         assertThat(after.json().path("value").stringValue()).as("the lease is over, the survivor renews").isEqualTo(second.accessToken());
@@ -354,12 +380,26 @@ class MultiInstanceIntegrationTest {
         assertThat(complete.status()).isEqualTo(200);
     }
 
-    private static void awaitRequest(GitLabStub gitlab, String refreshToken) throws InterruptedException {
-        long deadline = System.nanoTime() + 15_000_000_000L;
-        while (gitlab.tokenRequests("refresh_token", "refresh_token", refreshToken).isEmpty()) {
-            assertThat(System.nanoTime()).as("the holder reached the provider").isLessThan(deadline);
-            Thread.sleep(50);
+    /** Waits until some instance holds the refresh lock of the user's GitLab connection (read with the admin user of Redis). */
+    private static void awaitLock(String sub) throws InterruptedException {
+        String key = "broker:oauth:refresh:" + SecretKey.hashOf(sub) + ":gitlab";
+        io.lettuce.core.RedisClient client = io.lettuce.core.RedisClient.create(io.lettuce.core.RedisURI.builder()
+                .withHost(env.redis.getHost()).withPort(env.redis.getMappedPort(6379))
+                .withAuthentication("admin", TestEnvironment.REDIS_ADMIN_PASSWORD.toCharArray()).build());
+        try (var connection = client.connect()) {
+            long deadline = System.nanoTime() + 20_000_000_000L;
+            while (connection.sync().get(key) == null) {
+                assertThat(System.nanoTime()).as("the holder took the lock").isLessThan(deadline);
+                Thread.sleep(25);
+            }
+        } finally {
+            client.shutdown();
         }
+    }
+
+    private static String tail(String output) {
+        String[] lines = output.split("\n");
+        return String.join(" | ", java.util.Arrays.copyOfRange(lines, Math.max(0, lines.length - 15), lines.length));
     }
 
     private static int failures(String sub) {

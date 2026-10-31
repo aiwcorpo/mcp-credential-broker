@@ -24,14 +24,25 @@ public class ConnectionStore {
     private static final Logger log = LoggerFactory.getLogger(ConnectionStore.class);
     private static final long[] RETRY_BACKOFF_MILLIS = {200, 600};
     /** Longer than the breaker of the secret store stays open: the provider has spent the old refresh token, so the new one is worth ~10 s of trying. */
-    private static final long[] ROTATION_RETRY_BACKOFF_MILLIS = {200, 500, 1000, 2000, 3000, 4000};
+    private static final long[] DEFAULT_ROTATION_RETRY_BACKOFF_MILLIS = {200, 500, 1000, 2000, 3000, 4000};
 
     private final ConnectionRepository connections;
     private final SecretStore secrets;
     private final InvalidationPublisher invalidations;
     private final Clock clock;
 
+    /** One budget for the secret write and the row switch together: the lock lease of the refresh is 60 s. */
+    private static final long ROTATION_BUDGET_NANOS = 15_000_000_000L;
+
+    private final long[] rotationRetryBackoffMillis;
+
     public ConnectionStore(ConnectionRepository connections, SecretStore secrets, InvalidationPublisher invalidations, Clock clock) {
+        this(connections, secrets, invalidations, clock, DEFAULT_ROTATION_RETRY_BACKOFF_MILLIS);
+    }
+
+    ConnectionStore(ConnectionRepository connections, SecretStore secrets, InvalidationPublisher invalidations, Clock clock,
+            long[] rotationRetryBackoffMillis) {
+        this.rotationRetryBackoffMillis = rotationRetryBackoffMillis;
         this.connections = connections;
         this.secrets = secrets;
         this.invalidations = invalidations;
@@ -67,17 +78,30 @@ public class ConnectionStore {
      */
     Optional<Connection> refresh(Connection current, StoredCredential credential, Instant accessExpiresAt) {
         SecretKey key = SecretKey.newVersion(current.sub(), current.system());
-        retrying(ROTATION_RETRY_BACKOFF_MILLIS, () -> {
+        long deadline = System.nanoTime() + ROTATION_BUDGET_NANOS;
+        retrying(rotationRetryBackoffMillis, deadline, () -> {
             secrets.putRotated(key, credential);
             return null;
         });
         boolean switched;
         try {
-            switched = retrying(ROTATION_RETRY_BACKOFF_MILLIS, () -> connections.switchSecretVersion(current.sub(), current.system(),
+            switched = retrying(rotationRetryBackoffMillis, deadline, () -> connections.switchSecretVersion(current.sub(), current.system(),
                     current.secretVersion(), key.version(), accessExpiresAt, clock.instant()));
         } catch (RuntimeException e) {
-            deleteQuietly(key);
-            throw e;
+            // The update may have been committed with its answer lost on the way back: only the row can tell.
+            switched = pointsAt(current, key).orElseThrow(() -> new RefreshOutcomeUnknownException(e));
+            if (!switched) {
+                deleteQuietly(key);
+                throw e;
+            }
+        }
+        if (!switched) {
+            // A retry after a lost answer finds the version already changed and reports no match; the row decides.
+            Optional<Boolean> now = pointsAt(current, key);
+            if (now.isEmpty()) {
+                throw new RefreshOutcomeUnknownException(null);
+            }
+            switched = now.get();
         }
         if (!switched) {
             deleteQuietly(key);
@@ -85,6 +109,16 @@ public class ConnectionStore {
         }
         deleteQuietly(current.secretKey());
         return Optional.of(current.withSecretVersion(key.version()).withAccessExpiresAt(accessExpiresAt));
+    }
+
+    /** Whether the row of the connection now holds the version {@code key}; empty when the row cannot be read. */
+    private Optional<Boolean> pointsAt(Connection current, SecretKey key) {
+        try {
+            return Optional.of(connections.find(current.sub(), current.system())
+                    .map(row -> key.version().equals(row.secretVersion())).orElse(false));
+        } catch (RuntimeException e) {
+            return Optional.empty();
+        }
     }
 
     /**
@@ -110,10 +144,11 @@ public class ConnectionStore {
     }
 
     private <T> T retrying(Supplier<T> action) {
-        return retrying(RETRY_BACKOFF_MILLIS, action);
+        return retrying(RETRY_BACKOFF_MILLIS, Long.MAX_VALUE, action);
     }
 
-    private <T> T retrying(long[] backoff, Supplier<T> action) {
+    /** @param deadlineNanos {@link System#nanoTime()} after which no further attempt is started (shared by the writes of one refresh) */
+    private <T> T retrying(long[] backoff, long deadlineNanos, Supplier<T> action) {
         RuntimeException last = null;
         for (int attempt = 0; attempt < backoff.length + 1; attempt++) {
             try {
@@ -121,7 +156,11 @@ public class ConnectionStore {
             } catch (RuntimeException e) {
                 last = e;
                 if (attempt < backoff.length) {
-                    pause(backoff[attempt]);
+                    long wait = backoff[attempt];
+                    if (deadlineNanos != Long.MAX_VALUE && deadlineNanos - System.nanoTime() <= wait * 1_000_000L) {
+                        break;
+                    }
+                    pause(wait);
                 }
             }
         }
@@ -145,9 +184,9 @@ public class ConnectionStore {
 
     void deleteQuietly(SecretKey key) {
         try {
-            secrets.delete(key);
+            retryingVoid(() -> secrets.delete(key));
         } catch (RuntimeException e) {
-            log.error("Unreferenced secret for system {} could not be removed ({})", key.system(),
+            log.error("Unreferenced secret for system {} could not be removed, the orphan sweep will ({})", key.system(),
                     e.getClass().getSimpleName());
         }
     }

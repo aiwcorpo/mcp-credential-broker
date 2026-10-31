@@ -102,7 +102,7 @@ broker:
     refresh-margin: 2m
     sweep-window: 5m
     sweep-interval: PT1M
-    refresh-lock-wait: 5s
+    refresh-lock-wait: 3s
     refresh-lock-lease: 60s
   systems:
     jira:
