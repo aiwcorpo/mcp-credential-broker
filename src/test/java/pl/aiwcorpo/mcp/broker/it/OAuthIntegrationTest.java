@@ -486,7 +486,7 @@ class OAuthIntegrationTest {
         ExecutorService pool = Executors.newSingleThreadExecutor();
         try {
             Future<BrokerClient.Response> during = pool.submit(() -> resolve(sub, "alice", "gitlab"));
-            Thread.sleep(250);
+            awaitRefreshInFlight(sub, first);
             assertThat(bff.send("DELETE", "/v1/connections/gitlab", tokens.bffUser(sub, "alice"), null, null).status()).isEqualTo(204);
             assertThat(during.get().status()).isEqualTo(200);
             assertThat(rows(sub)).as("the connection stays gone").isZero();
@@ -496,6 +496,19 @@ class OAuthIntegrationTest {
                     .contains(second.accessToken(), second.refreshToken());
         } finally {
             pool.shutdownNow();
+        }
+    }
+
+    /**
+     * The disconnect must come while the refresh holds the lock and is waiting for the provider; a fixed sleep let it come
+     * first on a loaded machine. The stub delays its answer by 700 ms, which is the room this leaves.
+     */
+    private void awaitRefreshInFlight(String sub, GitLabStub.Grant first) throws InterruptedException {
+        long deadline = System.nanoTime() + 10_000_000_000L;
+        while (!Boolean.TRUE.equals(redis.hasKey(refreshLockKey(sub)))
+                || gitlab.tokenRequests("refresh_token", "refresh_token", first.refreshToken()).isEmpty()) {
+            assertThat(System.nanoTime()).as("the refresh reached the provider").isLessThan(deadline);
+            Thread.sleep(5);
         }
     }
 
@@ -509,7 +522,7 @@ class OAuthIntegrationTest {
         ExecutorService pool = Executors.newSingleThreadExecutor();
         try {
             Future<BrokerClient.Response> during = pool.submit(() -> resolve(sub, "alice", "gitlab"));
-            Thread.sleep(250);
+            awaitRefreshInFlight(sub, first);
             redis.delete(refreshLockKey(sub));
             assertThat(bff.send("DELETE", "/v1/connections/gitlab", tokens.bffUser(sub, "alice"), null, null).status()).isEqualTo(204);
 
