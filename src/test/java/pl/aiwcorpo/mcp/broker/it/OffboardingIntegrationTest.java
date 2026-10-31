@@ -280,7 +280,7 @@ class OffboardingIntegrationTest {
     }
 
     @Test
-    void aDatabaseOutageDoesNotKeepThePurgeFromDeletingSecrets() {
+    void aDatabaseOutageFailsThePurgeAndLeavesTheSecretsForTheRepeatToRevokeAndDelete() {
         String sub = newSub();
         assertThat(putSecret(sub, "jira", "alice-pat").status()).isEqualTo(200);
         String path = "secret/data/mcp/connections/" + new SecretKey(sub, "jira", version(sub, "jira")).relativePath();
@@ -293,9 +293,10 @@ class OffboardingIntegrationTest {
         }
         assertThat(failed.status()).isEqualTo(503);
         assertThat(env.bao("GET", path.replace("/data/", "/metadata/"), null).statusCode())
-                .as("the secret store step ran although the database did not answer").isEqualTo(404);
+                .as("without the rows the connections are unknown, so nothing is deleted that a grant may still need").isEqualTo(200);
         assertThat(offboarding.send("POST", "/v1/admin/users/" + sub + "/purge", null, null, null).status()).isEqualTo(204);
         assertThat(rows(sub)).isZero();
+        assertThat(env.bao("GET", path.replace("/data/", "/metadata/"), null).statusCode()).isEqualTo(404);
     }
 
     @Test
