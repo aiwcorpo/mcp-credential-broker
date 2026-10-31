@@ -161,10 +161,13 @@ class MultiInstanceIntegrationTest {
             AtomicInteger unreachable = new AtomicInteger();
             AtomicInteger turn = new AtomicInteger();
             List<String> results = parallel(60, () -> {
-                BrokerProcess target = turn.getAndIncrement() % 2 == 0 ? doomed : b;
+                int n = turn.getAndIncrement();
+                // Staggered, so that requests are still being sent when the instance dies.
+                Thread.sleep(n * 15L);
+                BrokerProcess target = n % 2 == 0 ? doomed : b;
                 try {
                     String result = verify(target, user.sub, wrong);
-                    if (target == doomed && answered.incrementAndGet() == 2) {
+                    if (target == doomed && answered.incrementAndGet() == 1) {
                         doomed.kill();
                     }
                     return result;
