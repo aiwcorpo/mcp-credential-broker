@@ -112,7 +112,7 @@ public class ApiExceptionHandler {
                     .system(Operation.systemOf(request.getRequestURI()));
             switch (request.getAttribute(CallerAuthenticationFilter.CALLER)) {
                 case Caller.Gateway gateway -> entry.user(gateway.claims().sub(), gateway.claims().usr(), gateway.claims().azp())
-                        .gatewayContext(gateway.claims().vs(), gateway.claims().tool(), gateway.claims().prv());
+                        .gatewayContext(gateway.claims().tool(), gateway.claims().prv());
                 case Caller.PortalUser user -> entry.user(user.sub(), user.username(), user.azp());
                 case null, default -> {
                 }

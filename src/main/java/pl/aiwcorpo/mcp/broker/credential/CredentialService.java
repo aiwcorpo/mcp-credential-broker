@@ -90,7 +90,7 @@ public class CredentialService {
         InternalJwtClaims user = caller.claims();
         AuditLog.Entry entry = audit.event("credential_resolve", caller.requestId())
                 .user(user.sub(), user.usr(), user.azp())
-                .gatewayContext(user.vs(), user.tool(), user.prv())
+                .gatewayContext(user.tool(), user.prv())
                 .system(systemId);
         try {
             ConfiguredSystem system = systems.find(systemId).orElseThrow(() -> SystemRegistry.KNOWN_SYSTEMS.contains(systemId)

@@ -36,23 +36,11 @@ public class InternalJwtVerifier {
     private static final Pattern POLICY_REVISION = Pattern.compile("^[0-9]{14}-[0-9a-f]{7}$");
     private static final Pattern GROUP_NAME = Pattern.compile("^mcp-[A-Za-z0-9][A-Za-z0-9._-]*$");
     private static final Pattern TOOL_NAME = Pattern.compile("^[a-z][a-z0-9]*(_[a-z0-9]+)*$");
-    private static final Pattern SLUG = Pattern.compile("^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$");
     private static final Pattern COMPONENT_ID = Pattern.compile("^mcp-[a-z0-9]+(-[a-z0-9]+)*$");
 
     private static final Set<String> COMMON_CLAIMS = Set.of("iss", "aud", "sub", "grp", "rid", "prv", "iat", "exp", "jti");
     private static final Set<String> USER_REQUIRED = union(COMMON_CLAIMS, Set.of("usr", "azp"));
-    private static final Set<String> USER_ALLOWED = union(USER_REQUIRED, Set.of("tool", "vs", "vsc", "mfa"));
-
-    /** vsc fields and the id pattern of each (common.schema.json, CC-056); at most 50 ids per field. */
-    private static final Map<String, Pattern> VSC_ID_PATTERNS = Map.of(
-            "jiraProjects", Pattern.compile("^[A-Z][A-Z0-9_]{1,9}$"),
-            "confluenceSpaces", Pattern.compile("^[A-Za-z0-9]{1,255}$"),
-            "gitlabGroups", Pattern.compile(
-                    "^(?!.*\\.(?:git|atom)$)[A-Za-z0-9](?:[._-]?[A-Za-z0-9])*(?:/[A-Za-z0-9](?:[._-]?[A-Za-z0-9])*){0,19}$"),
-            "opensearchIndexPrefixes", Pattern.compile("^(?!\\.{1,2}$)[a-z0-9.][a-z0-9._-]{0,253}[a-z0-9_]$|^[a-z0-9]$"),
-            "servicedeskQueues", Pattern.compile("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"));
-    private static final int VSC_MAX_IDS = 50;
-    private static final int GITLAB_PATH_MAX_LENGTH = 1024;
+    private static final Set<String> USER_ALLOWED = union(USER_REQUIRED, Set.of("tool", "mfa"));
 
     /**
      * SHA-256 of the SPKI of every EC key published in mcp-contracts test-vectors/keys (gateway A and B,
@@ -216,7 +204,7 @@ public class InternalJwtVerifier {
             throw new TokenRejectedException("invalid_claims");
         }
         commonShape(claims);
-        return new InternalJwtClaims(InternalJwtClaims.SERVICE_SUB, null, List.of(), null, null, null,
+        return new InternalJwtClaims(InternalJwtClaims.SERVICE_SUB, null, List.of(), null, null,
                 (String) claims.get("rid"), (String) claims.get("prv"), (String) claims.get("jti"), true);
     }
 
@@ -239,23 +227,11 @@ public class InternalJwtVerifier {
             }
         }
         List<String> grp = groups(claims.get("grp"));
-        boolean hasVs = claims.containsKey("vs");
-        if (hasVs != claims.containsKey("vsc")) {
-            throw new TokenRejectedException("invalid_claims");
-        }
-        String vs = null;
-        if (hasVs) {
-            vs = string(claims, "vs", 63);
-            if (!SLUG.matcher(vs).matches()) {
-                throw new TokenRejectedException("invalid_claims");
-            }
-            virtualServerScopes(claims.get("vsc"));
-        }
         if (claims.containsKey("mfa") && (!(claims.get("mfa") instanceof Number mfa) || mfa.longValue() < 0
                 || mfa.doubleValue() != mfa.longValue())) {
             throw new TokenRejectedException("invalid_claims");
         }
-        return new InternalJwtClaims(sub, usr, grp, azp, tool, vs,
+        return new InternalJwtClaims(sub, usr, grp, azp, tool,
                 (String) claims.get("rid"), (String) claims.get("prv"), (String) claims.get("jti"), false);
     }
 
@@ -288,24 +264,6 @@ public class InternalJwtVerifier {
             throw new TokenRejectedException("invalid_claims");
         }
         return List.copyOf(groups);
-    }
-
-    private static void virtualServerScopes(Object value) {
-        if (!(value instanceof Map<?, ?> vsc) || !VSC_ID_PATTERNS.keySet().containsAll(vsc.keySet())) {
-            throw new TokenRejectedException("invalid_claims");
-        }
-        for (Map.Entry<?, ?> field : vsc.entrySet()) {
-            Pattern pattern = VSC_ID_PATTERNS.get(field.getKey());
-            if (!(field.getValue() instanceof List<?> list) || list.isEmpty() || list.size() > VSC_MAX_IDS
-                    || new HashSet<>(list).size() != list.size()) {
-                throw new TokenRejectedException("invalid_claims");
-            }
-            for (Object id : list) {
-                if (!(id instanceof String s) || s.length() > GITLAB_PATH_MAX_LENGTH || !pattern.matcher(s).matches()) {
-                    throw new TokenRejectedException("invalid_claims");
-                }
-            }
-        }
     }
 
     private static String string(Map<String, Object> claims, String name, int maxLength) {

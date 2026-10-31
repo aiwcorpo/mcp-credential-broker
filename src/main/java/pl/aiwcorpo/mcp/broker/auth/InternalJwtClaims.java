@@ -12,7 +12,6 @@ public record InternalJwtClaims(
         List<String> grp,
         String azp,
         String tool,
-        String vs,
         String rid,
         String prv,
         String jti,

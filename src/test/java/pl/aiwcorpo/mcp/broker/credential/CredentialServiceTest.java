@@ -201,7 +201,7 @@ class CredentialServiceTest {
     }
 
     private static Caller.Gateway gateway(String sub) {
-        return new Caller.Gateway(RID, new InternalJwtClaims(sub, "alice", List.of(), "claude-code", "get_issue", null,
+        return new Caller.Gateway(RID, new InternalJwtClaims(sub, "alice", List.of(), "claude-code", "get_issue",
                 RID, "20261026120000-a1b2c3d", "jti-1", false));
     }
 

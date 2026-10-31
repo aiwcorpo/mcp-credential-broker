@@ -557,7 +557,7 @@ public class AuthenticatorService {
         InternalJwtClaims claims = caller.claims();
         return audit.event("authenticator", caller.requestId())
                 .user(claims.sub(), claims.usr(), claims.azp())
-                .gatewayContext(claims.vs(), claims.tool(), claims.prv());
+                .gatewayContext(claims.tool(), claims.prv());
     }
 
     private RuntimeException failed(AuditLog.Entry entry, RuntimeException e) {

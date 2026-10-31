@@ -66,7 +66,6 @@ public class AuditLog {
         private String username;
         private String backendUser;
         private String client;
-        private String virtualServer;
         private String server;
         private String tool;
         private String policyRevision;
@@ -106,8 +105,7 @@ public class AuditLog {
             return this;
         }
 
-        public Entry gatewayContext(String virtualServer, String tool, String policyRevision) {
-            this.virtualServer = virtualServer;
+        public Entry gatewayContext(String tool, String policyRevision) {
             this.tool = tool;
             this.policyRevision = policyRevision;
             return this;
@@ -150,7 +148,7 @@ public class AuditLog {
         private void emit(String outcome) {
             Instant now = clock.instant();
             AuditEvent line = new AuditEvent(TS.format(now.truncatedTo(ChronoUnit.MILLIS)), requestId, "broker",
-                    componentId, event, sub, username, backendUser, client, virtualServer, server, tool, policyRevision,
+                    componentId, event, sub, username, backendUser, client, server, tool, policyRevision,
                     credentialType, decision, reason, outcome, errorCode,
                     Math.max(0, now.toEpochMilli() - start.toEpochMilli()));
             audit.info(serialize(line));
