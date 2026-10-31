@@ -3,7 +3,7 @@
 Credential broker platformy MCP (strumień ws-06): jedyne miejsce, w którym leżą poświadczenia użytkowników
 do systemów docelowych, per (`sub`, system). Gateway pobiera z niego poświadczenie przy wywołaniu
 narzędzia (`resolve`), portal BFF zapisuje je w imieniu zalogowanego użytkownika. Kontrakt: C4 z
-`mcp-contracts` 4.1.0 (`openapi/credential-broker.v1.yaml`), audyt C8, zdarzenie C4.3.
+`mcp-contracts` 5.1.0 (`openapi/credential-broker.v1.yaml`), audyt C8, zdarzenie C4.3.
 
 Stan: kamień M4 (wszystkie cztery typy poświadczeń, offboarding, czyszczenie nieużywanych połączeń, limity; poza tym Authenticator TOTP z M3, PAT i "Połącz przez OAuth" dla GitLaba z M1-M2). Co działa, czego jeszcze nie ma i odstępstwa od briefu: [STATUS.md](STATUS.md).
 
@@ -43,7 +43,7 @@ Wewnętrzny JWT C2 sprawdzany jest dokładnie według wektorów `test-vectors/jw
 przechodzą, także co do powodu odrzucenia): tylko ES256, `kid` z JWKS gateway'a, podpis, kształt claimów
 wariantu, `iss`, `aud` jako napis, `exp` z tolerancją 30 s, `iat` nie z przyszłości, czas życia do 60 s,
 `rid == X-Request-Id`, wariant serwisowy tylko dla `GET /v1/systems`, `tool` wymagany przy `resolve` i
-zabroniony przy `GET /v1/systems` (CC-038), `vsc` według wzorców identyfikatorów i najwyżej 50 na pole
+zabroniony przy `GET /v1/systems` (CC-038), `vs` i `vsc` nie istnieją (token z którymkolwiek to `401 invalid_claims`, CC-173)
 (CC-056), `jti` jednorazowy (Redis, `SET NX EX` pod `jti:mcp-credential-broker:`). Opublikowane klucze testowe
 (`kid` z prefiksem `test-` i, niezależnie od `kid`, klucze o skrócie SPKI z `test-vectors/keys`) są odrzucane
 z powodem `test_key_not_allowed`, chyba że `MCP_ALLOW_TEST_KEYS=true` (CC-044). Klucze z `kid` zaczynającym się od `dev-`
@@ -242,10 +242,29 @@ spalanie kodów i odczyt stanu dla gateway'a wolno wołać tylko z CN `mcp-gatew
   `authenticator_enrollment_failed`, `authenticator_removed`, `authenticator_reset_by_admin`, `totp_verified`, `totp_invalid`,
   `totp_replayed`, `totp_burned`, `totp_locked` (z `errorCode: rate_limited`), `totp_disabled`, `totp_not_registered`,
   `totp_steps_burned` i `authenticator_disabled` (osobna linia przy błędzie, który wyłączył Authenticator). Wywołania
-  gateway'a niosą `client`, `tool`, `virtualServer`, `policyRevision` z JWT. Kodu, ziarna ani `otpauthUri` nie ma w zdarzeniu.
+  gateway'a niosą `client`, `tool`, `policyRevision` z JWT. Kodu, ziarna ani `otpauthUri` nie ma w zdarzeniu.
 - **OpenBao:** wymaga klucza Transit `mcp-authenticators` i polityki na `secret/data/mcp/authenticators/*`,
   `secret/metadata/mcp/authenticators/*` oraz `transit/encrypt|decrypt/mcp-authenticators` dla AppRole brokera
   (szczegóły w [STATUS.md](STATUS.md), sekcja "Czego broker potrzebuje od innych").
+
+## Wiele instancji (M5)
+
+Broker działa w kilku replikach na jednej bazie PostgreSQL, jednym Redisie i jednym OpenBao. Stan krytyczny dla TOTP jest
+wyłącznie w bazie: licznik błędnych kodów, blokada, `last_accepted_step`, `burned_through` zmienia się w transakcji z
+`select ... for update` na wierszu użytkownika, więc dwie instancje szeregują się tak jak dwa wątki jednej. W pamięci
+instancji nie ma nic, na czym opiera się werdykt (są tylko pamięci podręczne kluczy JWKS, tokenu OpenBao i sekretów klientów OAuth).
+Blokada odświeżania (`RefreshLock`): `SET NX PX` z losowym właścicielem, zwolnienie skryptem Lua (porównanie i `DEL` w jednym
+kroku; ACL brokera ma `eval` i `evalsha`), dzierżawa 60 s. Zabita instancja zwalnia blokadę przez koniec dzierżawy; zapis po
+odświeżeniu jest warunkowy względem wersji sekretu (fencing). Ograniczenie: gdy dostawca rotuje refresh token, a instancja
+zginie po jego wydaniu przed zapisem, stary token jest zużyty i połączenie wymaga ponownego połączenia przez użytkownika
+(`invalid_grant` -> `revoked`).
+
+Zależność niedostępna (Redis, OpenBao, PostgreSQL; sprawdzane przy wstrzymanym kontenerze): operacja, która jej potrzebuje, daje
+`503 upstream_unavailable` w ciągu kilku sekund, nigdy sukces z pominiętą kontrolą ani `500`. Klient OpenBao po wywołaniu bez odpowiedzi
+odpowiada błędem od razu przez 2 s, żeby awaria nie trzymała wątków żądań po 5 s na każdy krok. Świadome wyjątki: przy Redisie
+w dół `PUT secret` i `DELETE` połączenia bez OAuth przechodzą (`credential.invalidated` jest skrótem, gateway cache'uje najwyżej
+`cacheTtlSeconds` = 60 s), a `oauth/start` nie potrzebuje OpenBao ani PostgreSQL. Polecenie wysłane do wstrzymanego Redisa
+wykonuje się po jego wznowieniu, więc blokada może zostać wzięta "dla nikogo" do końca dzierżawy.
 
 ## Przechowywanie
 
@@ -330,7 +349,9 @@ docker build -t mcp-credential-broker:dev .
 
 | Test | Co sprawdza |
 | --- | --- |
-| `InternalJwtVectorTest` | wszystkie wektory C2 z `mcp-contracts` 4.1.0 (także `dev-` z `devstackProfile` i wywołania `authenticator` z `tool`) (wynik i powód, `allowTestKeys` z wektora), klucz testowy pod produkcyjnym `kid` (SPKI), replay |
+| `InternalJwtVectorTest` | wszystkie wektory C2 z `mcp-contracts` 5.1.0 (także `dev-` z `devstackProfile` i wywołania `authenticator` z `tool`) (wynik i powód, `allowTestKeys` z wektora), klucz testowy pod produkcyjnym `kid` (SPKI), replay |
+| `MultiInstanceIntegrationTest` | dwie JVM brokera (porty 18712-18717) na wspólnej bazie: zapis i potwierdzenie rejestracji na różnych instancjach, 5 błędów dokładnie raz, jeden kod raz, spalenie kodów, zabicie instancji (SIGKILL) w trakcie prób, jedno odświeżenie na dwóch instancjach, martwy właściciel blokady, równoczesne migracje pustej bazy |
+| `FailClosedIntegrationTest` | nadużycie 15: 12 operacji przy wstrzymanym Redisie, OpenBao i PostgreSQL, kody i czasy, brak `internal_error`, powrót po wznowieniu |
 | `ReturnPathTest` | walidator `returnPath` (CC-032) na wektorach `return-paths/`, używany przez `oauth/start` |
 | `OAuthIntegrationTest` | przepływ GitLaba na stubie WireMock: PKCE, state jednorazowy i związany z użytkownikiem, cudzy `flowId`/`state` (zły `state` nie spala przepływu), ponowne użycie, konto o innym loginie (połączone, widoczne jako `backendUser`), błąd i timeout dostawcy, wygasły przepływ, zapis w OpenBao, odświeżanie (rotacja, równoległe, odwołany grant, awaria dostawcy, `DELETE` w trakcie odświeżania, utrata blokady, odwołanie zastąpionego grantu), limit rozmiaru i czasu odpowiedzi dostawcy, zadanie w tle, `DELETE` z odwołaniem, PAT GitLaba; brak tokenów w odpowiedziach poza `resolve` i w logach |
 | `TotpVectorTest` | wszystkie scenariusze `test-vectors/totp/` (RFC 6238, okno, jednorazowość kroku, blokada 5/15, limit dzienny, rejestracja, spalanie) na prawdziwym serwisie, PostgreSQL i OpenBao Transit z zegarem ustawianym na `at` kroku; przykłady `rfc6238-sha1` i `otpauth-uri`; sprzątanie nieudanych rejestracji, ziaren bez wiersza (po karencji), nieudane kasowanie ziarna przy usunięciu, utrata ziarna aktywnej rejestracji |
@@ -345,7 +366,7 @@ docker build -t mcp-credential-broker:dev .
 | `OpenBaoClientTest` | `renew-self`, ponowne logowanie przy `token_max_ttl`, praca na ważnym tokenie po nieudanym logowaniu |
 | `KeySourceTest` | JWKS gateway'a przeterminowany -> 503, niedostępny JWKS IdP -> 503 zamiast 401 |
 | `CredentialServiceTest`, `ConnectionTest`, `AuditLogTest`, `TransportSecurityTest` | fail-closed, wersje sekretów, `email_verified`, porównanie ASCII, `subjectToken`, TTL, `lastUsedAt`, escapowanie audytu, `backendUser` w audycie (poprawny, odrzucany, surogaty, błąd zapisu po whoami), wymóg https |
-| `AuditEventVectorTest` | wszystkie wektory `audit-events/` z `mcp-contracts` 4.1.0 względem schematu C8 i zgodność `AuditLog.validBackendUser` z wektorami `backendUser` |
+| `AuditEventVectorTest` | wszystkie wektory `audit-events/` z `mcp-contracts` 5.1.0 względem schematu C8 i zgodność `AuditLog.validBackendUser` z wektorami `backendUser` |
 
 ## Uruchomienie lokalne w `mcp-platform-dev` (ws-01)
 
@@ -409,6 +430,12 @@ curl -s --cacert $d/ca/ca.crt --cert $d/mcp-gateway/tls.crt --key $d/mcp-gateway
 curl -s -o /dev/null -w '%{http_code}\n' --cacert $d/ca/ca.crt -X POST \
   https://localhost:18710/v1/credentials/resolve                            # bez certyfikatu: błąd TLS, kod 000
 ```
+
+## CI
+
+`ci/run.sh` (`make ci`) jest jedynym punktem wejścia: `verify` (kontrole stylu, `mvnw clean verify`, zero testów = błąd), `hygiene`, `image`
+(obraz `mcp-credential-broker:m5-<sha>` z czystego drzewa). `ci/Dockerfile` daje obraz z JDK 25; testy potrzebują gniazda Dockera i wolnych portów
+18712-18717. `.gitlab-ci.yml`, `Jenkinsfile` i `.github/workflows/ci.yml` tylko wołają ten skrypt.
 
 ## Struktura
 

@@ -14,6 +14,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.RecoverableDataAccessException;
 import org.springframework.dao.TransientDataAccessException;
+import org.springframework.transaction.TransactionException;
 
 import pl.aiwcorpo.mcp.broker.audit.AuditLog;
 import pl.aiwcorpo.mcp.broker.auth.Caller;
@@ -310,9 +311,9 @@ public class CredentialService {
         }
     }
 
-    static boolean unavailableDatabase(RuntimeException e) {
+    public static boolean unavailableDatabase(RuntimeException e) {
         return e instanceof DataAccessResourceFailureException || e instanceof TransientDataAccessException
-                || e instanceof RecoverableDataAccessException;
+                || e instanceof RecoverableDataAccessException || e instanceof TransactionException;
     }
 
     private static Instant parseTimestamp(String value) {

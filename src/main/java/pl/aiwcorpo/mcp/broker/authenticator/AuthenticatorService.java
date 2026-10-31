@@ -23,6 +23,7 @@ import pl.aiwcorpo.mcp.broker.auth.InternalJwtClaims;
 import pl.aiwcorpo.mcp.broker.authenticator.AuthenticatorRecord.State;
 import pl.aiwcorpo.mcp.broker.authenticator.AuthenticatorSeedStore.Seed;
 import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
+import pl.aiwcorpo.mcp.broker.credential.CredentialService;
 import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
 
 /**
@@ -565,6 +566,8 @@ public class AuthenticatorService {
             entry.error("authenticator_seed_missing", "upstream_unavailable");
         } else if (e instanceof SecretStoreUnavailableException) {
             entry.error("secret_store_unavailable", "upstream_unavailable");
+        } else if (CredentialService.unavailableDatabase(e)) {
+            entry.error("database_unavailable", "upstream_unavailable");
         } else {
             log.warn("Authenticator operation failed: {}", e.getClass().getSimpleName());
             entry.error("internal_error", "upstream_unavailable");

@@ -3,10 +3,15 @@ package pl.aiwcorpo.mcp.broker.oauth;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.List;
 import java.util.Optional;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.core.script.RedisScript;
 
 import pl.aiwcorpo.mcp.broker.secret.SecretKey;
 import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
@@ -15,14 +20,19 @@ import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
  * One writer per (user, system) at a time across broker instances: token refresh, disconnect, and replacing
  * a connection. Providers rotate refresh tokens, so two parallel refreshes would make the second fail with
  * invalid_grant and look like a revoked grant. SET NX PX with a random owner value and a lease longer than
- * the longest refresh the broker allows; only the owner releases the lock. The release compares and deletes
- * in two commands because the Redis ACL of the broker has no scripting; the window between them matters only
- * if the lease runs out in that instant, and the database write of every holder is conditional on the secret
- * version it read (fencing), so a lock lost to expiry cannot overwrite a newer state.
+ * the longest refresh the broker allows; only the owner releases the lock, by a script that compares and deletes
+ * in one step on the Redis server (a plain GET and DEL could delete the lock of the next holder when the lease runs
+ * out between them). A holder whose lease ran out while it worked still finishes, so the database write of every
+ * holder is conditional on the secret version it read (fencing): a lock lost to expiry cannot overwrite a newer
+ * state. The lock is held in Redis only, never in the memory of an instance, so a killed instance frees it when
+ * its lease ends.
  */
 public class RefreshLock {
 
     private static final long POLL_MILLIS = 100;
+    private static final Logger log = LoggerFactory.getLogger(RefreshLock.class);
+    private static final RedisScript<Long> RELEASE = new DefaultRedisScript<>(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end", Long.class);
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final StringRedisTemplate redis;
@@ -61,11 +71,9 @@ public class RefreshLock {
     public void release(String sub, String system, String owner) {
         String key = key(sub, system);
         try {
-            if (owner.equals(redis.opsForValue().get(key))) {
-                redis.delete(key);
-            }
+            redis.execute(RELEASE, List.of(key), owner);
         } catch (DataAccessException e) {
-            // The lease expires on its own.
+            log.warn("Refresh lock not released, the lease will expire ({})", e.getClass().getSimpleName());
         }
     }
 

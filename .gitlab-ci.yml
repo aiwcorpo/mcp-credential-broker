@@ -1,0 +1,28 @@
+# Thin wrapper: all logic is in ci/run.sh, which also runs in a developer's shell.
+#
+# Maven registry with the mcp-contracts artifacts: MCP_MAVEN_REPOSITORY_URL, MCP_MAVEN_REPOSITORY_USER,
+# MCP_MAVEN_REPOSITORY_PASSWORD (masked CI/CD variables). The tests start PostgreSQL, Redis and OpenBao with
+# Testcontainers: use a runner with the Docker socket mounted, or set DOCKER_HOST to a Docker-in-Docker service.
+stages:
+  - verify
+
+default:
+  image: maven:3.9.12-eclipse-temurin-25
+  cache:
+    key: maven
+    paths: [.m2/repository]
+
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+
+verify:
+  stage: verify
+  script:
+    - ci/run.sh verify
+  artifacts:
+    when: always
+    reports:
+      junit: "target/surefire-reports/TEST-*.xml"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

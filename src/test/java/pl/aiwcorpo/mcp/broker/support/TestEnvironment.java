@@ -46,7 +46,7 @@ public final class TestEnvironment {
 
     private static final String REDIS_DATA_COMMANDS = "-@all +get +set +setnx +getdel +getex +mget +del +unlink "
             + "+exists +expire +pexpire +ttl +pttl +incr +incrby +decr +hset +hget +hdel +hgetall +hexists +hincrby "
-            + "+multi +exec +discard +ping +auth +hello +client|setname +client|setinfo +reset +quit";
+            + "+eval +evalsha +multi +exec +discard +ping +auth +hello +client|setname +client|setinfo +reset +quit";
 
     private static final String BAO_POLICY = """
             path "secret/data/mcp/connections/*"     { capabilities = ["create", "read", "update", "delete"] }
@@ -98,7 +98,9 @@ public final class TestEnvironment {
             Files.writeString(workDir.resolve("gateway-jwks.json"), Contracts.text(TestTokens.GATEWAY_JWKS_PATH));
 
             postgres = new PostgreSQLContainer(DockerImageName.parse("postgres:18.6-alpine"))
-                    .withDatabaseName("broker").withUsername("broker").withPassword("test-only-db");
+                    .withDatabaseName("broker").withUsername("broker").withPassword("test-only-db")
+                    // Every cached Spring context and every broker JVM of MultiInstanceIntegrationTest holds a pool.
+                    .withCommand("postgres", "-c", "max_connections=400");
             postgres.start();
 
             String acl = "user default off resetkeys resetchannels -@all\n"

@@ -1,0 +1,21 @@
+# Thin wrapper: all logic is in ci/run.sh. Repository secrets MCP_MAVEN_REPOSITORY_URL, MCP_MAVEN_REPOSITORY_USER and
+# MCP_MAVEN_REPOSITORY_PASSWORD point at the registry with the mcp-contracts artifacts.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - run: ci/run.sh verify
+        env:
+          MCP_MAVEN_REPOSITORY_URL: ${{ secrets.MCP_MAVEN_REPOSITORY_URL }}
+          MCP_MAVEN_REPOSITORY_USER: ${{ secrets.MCP_MAVEN_REPOSITORY_USER }}
+          MCP_MAVEN_REPOSITORY_PASSWORD: ${{ secrets.MCP_MAVEN_REPOSITORY_PASSWORD }}

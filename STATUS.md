@@ -1,7 +1,19 @@
 # Status ws-06 (mcp-credential-broker)
 
-Kamień: **M4** (strona brokera: CHANGELOG 4.0.0 kontraktów, CC-133 ... CC-162 dotyczące brokera). Kontrakty: `mcp-contracts` **4.1.0**
+Kamień: **M5** (sekcja M5 niżej), poprzednio **M4** (strona brokera: CHANGELOG 4.0.0 kontraktów, CC-133 ... CC-162 dotyczące brokera). Kontrakty: `mcp-contracts` **4.1.0**
 (tag v4.0.0, w `~/.m2`). Poniżej sekcja M4, dalej M3, M2 i M1 bez zmian.
+
+## M5 (2026-10-31)
+
+Kontrakty `mcp-contracts` 5.1.0. Zmiany: `AuditEvent` i `AuditLog` bez `virtualServer`, `InternalJwtClaims`/`InternalJwtVerifier` bez `vs` i `vsc` (token z nimi daje 401 `invalid_claims`), `/mcp` zarezerwowane w `returnPath`.
+Pkt B: zwolnienie `RefreshLock` skryptem Lua (właściciel, jeden krok); test dwóch procesów i zabicia instancji (`MultiInstanceIntegrationTest`, 10 testów);
+`FailClosedIntegrationTest` (nadużycie 15); `OpenBaoClient` odpowiada błędem od razu przez 2 s po wywołaniu bez odpowiedzi (purge przy OpenBao w dół trwał ponad 20 s);
+`TransactionException` mapowany na 503 z powodem `database_unavailable` (także w Authenticatorze). CI: `ci/run.sh`, `make ci`, nakładki GitLab/Jenkins/GitHub, `ci/Dockerfile`.
+Testy: 397 zielone (`ci/run.sh verify`). Porty testowe 18712-18717.
+
+Ustalenia: stan TOTP był już w całości w bazie (blokada wiersza), kod authenticatora bez zmian. Stary opis "blokada bez właściciela" (M2) był naprawiony w M2; brakowało atomowego zwolnienia.
+Ograniczenia: rotacja refresh tokenu + śmierć instancji przed zapisem = połączenie `revoked` (README, "Wiele instancji"). Rate limit OAuth: `INCR` + `EXPIRE` nie są atomowe (licznik bez TTL dostaje TTL przy przekroczeniu), bez zmian.
+Propozycje CC: brak.
 
 ## M4 (2026-10-29)
 

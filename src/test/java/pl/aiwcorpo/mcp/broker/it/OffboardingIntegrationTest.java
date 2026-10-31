@@ -255,6 +255,7 @@ class OffboardingIntegrationTest {
         } finally {
             env.openbao.getDockerClient().unpauseContainerCmd(env.openbao.getContainerId()).exec();
         }
+        sleepThroughSecretStoreBackoff();
         assertThat(failed.status()).isEqualTo(503);
         assertThat(rows(sub)).as("a connection whose secret could not be deleted stays, so the repeat can finish it").isEqualTo(1);
         assertThat(jdbc.sql("select count(*) from authenticator where sub = ?").param(sub).query(Long.class).single())
@@ -267,6 +268,15 @@ class OffboardingIntegrationTest {
         assertThat(env.bao("GET", path.replace("/data/", "/metadata/"), null).statusCode()).isEqualTo(404);
         assertThat(env.bao("GET", "secret/data/mcp/authenticators/" + SecretKey.hashOf(sub), null).statusCode()).isEqualTo(404);
         assertThat(registered.seed).isNotEmpty();
+    }
+
+    /** The client of the secret store fails fast for 2 s after a call that got no answer (OpenBaoClient). */
+    private static void sleepThroughSecretStoreBackoff() {
+        try {
+            Thread.sleep(2_200);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     @Test

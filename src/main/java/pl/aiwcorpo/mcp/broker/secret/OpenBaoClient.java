@@ -34,10 +34,20 @@ public class OpenBaoClient {
     /** After a failed renewal and login, how long the still valid token is used before trying again. */
     private static final long RETRY_SECONDS = 10;
 
+    /**
+     * After a call that got no answer (timeout, refused or reset connection) the next calls fail at once for this long.
+     * Without it every request, and every step of a purge, waits for the full timeout on a store that is down, which
+     * holds the request threads of the instance and pushes the answers past the caller's own timeout.
+     */
+    private static final long UNREACHABLE_BACKOFF_NANOS = 2_000_000_000L;
+
     private final BrokerProperties.OpenBao config;
     private final HttpClient http;
     private final JsonMapper json;
     private final Clock clock;
+
+    private volatile long unreachableUntilNanos;
+    private volatile boolean unreachableSet;
 
     private String token;
     private Instant tokenRenewAt = Instant.EPOCH;
@@ -168,6 +178,9 @@ public class OpenBaoClient {
     }
 
     private Response send(String method, String path, ObjectNode body, String vaultToken) {
+        if (unreachableSet && System.nanoTime() - unreachableUntilNanos < 0) {
+            throw new SecretStoreUnavailableException("secret store unreachable: recent call got no answer");
+        }
         URI uri = config.address().resolve("/v1/" + path);
         HttpRequest.Builder request = HttpRequest.newBuilder(uri)
                 .timeout(config.timeout())
@@ -186,7 +199,11 @@ public class OpenBaoClient {
             byte[] raw = response.body();
             JsonNode parsed = raw == null || raw.length == 0 ? json.createObjectNode() : json.readTree(raw);
             return new Response(response.statusCode(), parsed);
-        } catch (IOException | JacksonException e) {
+        } catch (IOException e) {
+            unreachableUntilNanos = System.nanoTime() + UNREACHABLE_BACKOFF_NANOS;
+            unreachableSet = true;
+            throw new SecretStoreUnavailableException("secret store unreachable: " + e.getClass().getSimpleName());
+        } catch (JacksonException e) {
             throw new SecretStoreUnavailableException("secret store unreachable: " + e.getClass().getSimpleName());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

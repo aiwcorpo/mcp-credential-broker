@@ -11,6 +11,7 @@ import org.springframework.dao.TransientDataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.transaction.TransactionException;
 import org.springframework.web.HttpMediaTypeException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -129,7 +130,7 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler({SecretStoreUnavailableException.class, UpstreamUnavailableException.class, RateLimitUnavailableException.class,
             DataAccessResourceFailureException.class, TransientDataAccessException.class,
-            RecoverableDataAccessException.class})
+            RecoverableDataAccessException.class, TransactionException.class})
     ResponseEntity<ApiError> unavailable(RuntimeException e) {
         log.warn("Dependency unavailable: {}", e instanceof SecretStoreUnavailableException || e instanceof UpstreamUnavailableException || e instanceof RateLimitUnavailableException
                 ? e.getMessage() : e.getClass().getSimpleName());

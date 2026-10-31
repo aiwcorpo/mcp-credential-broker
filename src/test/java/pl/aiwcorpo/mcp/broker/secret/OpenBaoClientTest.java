@@ -92,10 +92,37 @@ class OpenBaoClientTest {
         assertThatThrownBy(() -> client.read("secret/data/x")).isInstanceOf(SecretStoreUnavailableException.class);
     }
 
+    @Test
+    void aCallThatGotNoAnswerMakesTheNextOnesFailAtOnceForAWhile() throws InterruptedException {
+        OpenBaoClient client = client(Duration.ofMillis(300));
+        server.createContext("/v1/secret/data/slow", exchange -> {
+            calls.add("slow");
+            try {
+                Thread.sleep(1500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            exchange.close();
+        });
+        assertThatThrownBy(() -> client.read("secret/data/slow")).isInstanceOf(SecretStoreUnavailableException.class);
+        long start = System.nanoTime();
+        assertThatThrownBy(() -> client.read("secret/data/x")).isInstanceOf(SecretStoreUnavailableException.class);
+        assertThat(Duration.ofNanos(System.nanoTime() - start)).as("no network call").isLessThan(Duration.ofMillis(100));
+        assertThat(calls).containsExactly("login", "slow");
+
+        Thread.sleep(2200);
+        client.read("secret/data/x");
+        assertThat(calls).last().isEqualTo("read:t1");
+    }
+
     private OpenBaoClient client() {
+        return client(Duration.ofSeconds(2));
+    }
+
+    private OpenBaoClient client(Duration timeout) {
         BrokerProperties.OpenBao config = new BrokerProperties.OpenBao(
                 URI.create("http://127.0.0.1:" + server.getAddress().getPort()), "role", "secret", "secret",
-                "mcp/connections", "mcp/oauth-clients", "mcp/service-accounts", "transit", "mcp-credential-broker", Duration.ofSeconds(2));
+                "mcp/connections", "mcp/oauth-clients", "mcp/service-accounts", "transit", "mcp-credential-broker", timeout);
         return new OpenBaoClient(config, HttpClient.newHttpClient(), JsonMapper.builder().build(), clock);
     }
 
