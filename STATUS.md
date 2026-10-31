@@ -11,8 +11,8 @@ Pkt B: zwolnienie `RefreshLock` skryptem Lua (właściciel, jeden krok); test dw
 `TransactionException` mapowany na 503 z powodem `database_unavailable` (także w Authenticatorze). CI: `ci/run.sh`, `make ci`, nakładki GitLab/Jenkins/GitHub, `ci/Dockerfile`.
 Po przeglądach: bezpiecznik OpenBao otwiera się po 3 kolejnych błędach, zapis zrotowanego grantu (`putRotated`) go omija i jest ponawiany ok. 10 s, odczyt sekretu przed pytaniem dostawcy;
 CI: MR dostaje `ci/run.sh unit` bez gniazda i poświadczeń, `<<>>` w kontroli stylu, zero testów = błąd.
-Testy: 418 zielone, `make ci` dwa razy pod rząd. (`ci/run.sh verify`). Porty testowe 18712-18717. `AuthenticatorIntegrationTest.invalidatedCodesAreBurnedAndNotCounted` raz padł na granicy kroku TOTP (30 s), przy powtórzeniu zielony.
-Obraz: `mcp-credential-broker:m5-8b57154` (po przeglądach Opus; kod w tym commicie, STATUS dopisany po nim). Stos nie ruszany.
+Testy: 425 zielone, `make ci` dwa razy pod rząd. (`ci/run.sh verify`). Porty testowe 18712-18717. `AuthenticatorIntegrationTest.invalidatedCodesAreBurnedAndNotCounted` raz padł na granicy kroku TOTP (30 s), przy powtórzeniu zielony.
+Obraz: `mcp-credential-broker:m5-3f2bf19` (po przeglądach Opus; kod w tym commicie, STATUS dopisany po nim). Stos nie ruszany.
 
 Ustalenia: stan TOTP był już w całości w bazie (blokada wiersza), kod authenticatora bez zmian. Stary opis "blokada bez właściciela" (M2) był naprawiony w M2; brakowało atomowego zwolnienia.
 Ograniczenia: rotacja refresh tokenu + śmierć instancji przed zapisem = połączenie `revoked` (README, "Wiele instancji"). Rate limit OAuth: `INCR` + `EXPIRE` nie są atomowe (licznik bez TTL dostaje TTL przy przekroczeniu), bez zmian.
@@ -605,4 +605,4 @@ Schemat Cedar bajtowo jak w 2.0.x; zmieniła się wersja zależności w `pom.xml
   `400` (np. `subjectToken` dla systemu `user-secret`), `401`, `403` -> błąd gateway'a, nie użytkownika.
 - Do testów bez brokera w compose: `scripts/run-dev-host.sh` (testowy JWKS z `mcp-contracts`).
 
-M5: kod gotowy (2026-10-31) do dowodu z runnera CI - kontrakty 5.1.0, HA na wspólnej bazie (test dwóch procesów i SIGKILL), fail-closed bez Redisa/OpenBao/PostgreSQL, ci/run.sh, obraz m5-8b57154
+M5: kod gotowy (2026-10-31) do dowodu z runnera CI - kontrakty 5.1.0, HA na wspólnej bazie (test dwóch procesów i SIGKILL), fail-closed bez Redisa/OpenBao/PostgreSQL, ci/run.sh, obraz m5-3f2bf19
