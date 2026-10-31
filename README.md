@@ -291,6 +291,12 @@ każda inna (też `errors` z treścią, np. "no handler for route") to `503`; zi
   (`broker:oauth:purging:<sha256(sub)>`) albo poczekać.
 - Zrotowany refresh token zapisany tylko w pamięci instancji, która zginęła przed zapisem, jest nie do odzyskania (połączenie `revoked`).
 - Przy Redisie w dół `DELETE` połączenia OAuth, `PUT`, `oauth/*` i `purge` dają `503`; `resolve` i `verify` też (jti).
+- Wynik nieznany po odświeżeniu (wiersz nie dał się odczytać, `RefreshOutcomeUnknownException`): jeśli wiersz się nie przełączył, nowa wartość z żywymi tokenami zostaje
+  sierotą, a `deleteAllOf` w purge kasuje ją bez odwołania u dostawcy i bez audytu; grant zostaje u dostawcy.
+- Sweep osieroconych sekretów przy włączonym kasowaniu: poniżej 10 wartości w magazynie próg ułamka nie działa, `orphan-secrets-after` nie ma dolnej granicy,
+  a sieroty systemów z OAuth nie znikają i liczą się do ułamka (przy ich nadmiarze sweep odmawia).
+- `RefreshLock`: fencing (zapis warunkowy względem wersji) mają odświeżanie i `markUnusable`, ale nie `replace` (`PUT`, `oauth/complete`); `PUT` wznowiony po pauzie JVM
+  dłuższej niż dzierżawa (60 s) może przejść barierę purge.
 
 ## Przechowywanie
 
