@@ -137,12 +137,14 @@ class OpenBaoClientTest {
         server.createContext("/v1/secret/data/missing", exchange -> respond(exchange, 404, "{\"errors\":[]}"));
         server.createContext("/v1/secret/data/deleted", exchange -> respond(exchange, 404, "{\"data\":{\"data\":null}}"));
         server.createContext("/v1/secret/data/bare", exchange -> respond(exchange, 404, ""));
+        server.createContext("/v1/secret/data/route", exchange -> respond(exchange, 404, "{\"errors\":[\"no handler for route 'x'\"]}"));
         server.createContext("/v1/secret/data/proxy", exchange -> respond(exchange, 404, "<html>not found</html>"));
         OpenBaoClient client = client();
 
         assertThat(client.read("secret/data/missing")).isNull();
         assertThat(client.read("secret/data/deleted")).isNull();
         assertThatThrownBy(() -> client.read("secret/data/bare")).isInstanceOf(SecretStoreUnavailableException.class);
+        assertThatThrownBy(() -> client.read("secret/data/route")).isInstanceOf(SecretStoreUnavailableException.class);
         assertThatThrownBy(() -> client.read("secret/data/proxy")).isInstanceOf(SecretStoreUnavailableException.class);
         assertThatThrownBy(() -> client.delete("secret/data/bare")).isInstanceOf(SecretStoreUnavailableException.class);
     }

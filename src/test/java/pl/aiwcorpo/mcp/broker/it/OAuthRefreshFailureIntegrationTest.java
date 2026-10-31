@@ -57,6 +57,8 @@ class OAuthRefreshFailureIntegrationTest {
         env.registerProperties(registry);
         registry.add("broker.systems.gitlab.oauth.client-secret", () -> "");
         registry.add("broker.retention.orphan-secrets-after", () -> "PT1S");
+        registry.add("broker.retention.orphan-sweep-delete", () -> "true");
+        registry.add("broker.retention.orphan-max-fraction", () -> "1.0");
         registry.add("broker.openbao.oauth-clients-prefix", () -> "mcp/oauth-clients-it");
         var stored = env.bao("POST", "secret/data/mcp/oauth-clients-it/gitlab",
                 "{\"data\":{\"client_id\":\"" + TestEnvironment.GITLAB_CLIENT_ID + "\",\"client_secret\":\""
@@ -178,16 +180,39 @@ class OAuthRefreshFailureIntegrationTest {
         GitLabStub.Grant grant = gitlab.issueCode("alice", 7200);
         connect(sub, "alice", grant);
         String referenced = "secret/data/mcp/connections/" + new SecretKey(sub, "gitlab", version(sub)).relativePath();
-        SecretKey orphan = SecretKey.newVersion(sub, "gitlab");
-        secrets.put(orphan, StoredCredential.of(CredentialType.USER_OAUTH, SecretValue.of("orphan-value")));
+        SecretKey orphan = SecretKey.newVersion(sub, "jira");
+        secrets.put(orphan, StoredCredential.of(CredentialType.USER_SECRET, SecretValue.of("orphan-value")));
         String orphanPath = "secret/data/mcp/connections/" + orphan.relativePath();
-        assertThat(env.bao("GET", orphanPath, null).statusCode()).isEqualTo(200);
+        SecretKey oauthOrphan = SecretKey.newVersion(sub, "gitlab");
+        secrets.put(oauthOrphan, new StoredCredential(CredentialType.USER_OAUTH, SecretValue.of("oauth-orphan"), SecretValue.of("oauth-orphan-refresh")));
+        String oauthOrphanPath = "secret/data/mcp/connections/" + oauthOrphan.relativePath();
 
         Thread.sleep(1_500);
-        assertThat(offboardingService.sweepOrphanSecrets()).isPositive();
+        OffboardingService.OrphanSweep result = offboardingService.sweepOrphanSecrets();
 
+        assertThat(result.refusedBecause()).isNull();
+        assertThat(result.deleted()).isPositive();
         assertThat(env.bao("GET", orphanPath, null).statusCode()).isEqualTo(404);
+        assertThat(env.bao("GET", oauthOrphanPath, null).statusCode()).as("a grant that cannot be revoked is not deleted").isEqualTo(200);
         assertThat(env.bao("GET", referenced, null).statusCode()).isEqualTo(200);
+        env.bao("DELETE", oauthOrphanPath.replace("/data/", "/metadata/"), null);
+    }
+
+    @Test
+    void anUnreadableStoredEntryDoesNotBlockThePurgeAndIsAuditedAsNotRevoked(CapturedOutput output) {
+        String sub = newSub();
+        GitLabStub.Grant grant = gitlab.issueCode("alice", 7200);
+        connect(sub, "alice", grant);
+        String path = "secret/data/mcp/connections/" + new SecretKey(sub, "gitlab", version(sub)).relativePath();
+        assertThat(env.bao("POST", path, "{\"data\":{\"ciphertext\":\"vault:v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}}").statusCode()).isLessThan(300);
+        String rid = TestTokens.newRequestId();
+
+        assertThat(offboarding.send("POST", "/v1/admin/users/" + sub + "/purge", null, rid, null).status()).isEqualTo(204);
+
+        assertThat(jdbc.sql("select count(*) from connection where sub = ?").param(sub).query(Long.class).single()).isZero();
+        assertThat(output.getAll().lines().filter(line -> line.contains(rid) && line.contains("\"reason\":\"provider_revoke_failed\"")).count())
+                .isEqualTo(1);
+        assertThat(env.bao("GET", path, null).statusCode()).isEqualTo(404);
     }
 
     @Test

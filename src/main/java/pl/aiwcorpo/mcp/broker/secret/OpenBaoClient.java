@@ -130,21 +130,31 @@ public class OpenBaoClient {
     }
 
     /**
-     * A 404 means "nothing stored" only when OpenBao says it: its body is a JSON object with {@code errors} (empty for a
-     * missing secret) or {@code data} (a deleted KV version). A 404 from a proxy, a wrong address or a wrong mount has
+     * A 404 means "nothing stored" only when OpenBao says it: its body is a JSON object with an empty {@code errors}
+     * array (a missing secret) or with {@code data} as an object (a deleted KV version). A 404 from a proxy, a wrong address or a wrong mount has
      * neither, and treating it as "no secret" would, for a TOTP seed, drop a registration that is still there.
      */
     private static boolean absent(Response response) {
         if (response.status() != 404) {
             return false;
         }
-        if (!response.body().isObject() || !(response.body().has("errors") || response.body().has("data"))) {
-            throw new SecretStoreUnavailableException("secret store answered 404 in a form that is not OpenBao's");
+        JsonNode body = response.body();
+        if (body.isObject() && body.has("errors")) {
+            if (body.path("errors").isArray() && body.path("errors").isEmpty()) {
+                return true;
+            }
+        } else if (body.isObject() && body.path("data").isObject()) {
+            return true;
         }
-        return true;
+        // Includes a 404 that names an error, such as "no handler for route": a wrong address or mount, not a missing secret.
+        throw new SecretStoreUnavailableException("secret store answered 404 in a form that is not OpenBao's");
     }
 
     private static void requireOk(Response response, String operation) {
+        if (response.status() == 400 || response.status() == 422) {
+            // Transit refuses a ciphertext it cannot decrypt this way; asking again will not change the answer.
+            throw new SecretUnreadableException("secret store " + operation + " refused the request with HTTP " + response.status());
+        }
         if (response.status() < 200 || response.status() > 299) {
             throw new SecretStoreUnavailableException("secret store " + operation + " failed with HTTP " + response.status());
         }

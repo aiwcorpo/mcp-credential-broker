@@ -230,7 +230,7 @@ public class CredentialService {
             entry.backendUser(identity.username());
 
             Instant expires = expiresAt == null ? null : expiresAt.truncatedTo(ChronoUnit.SECONDS);
-            Replaced replaced = oauth.underRefreshLock(caller.sub(), system.id(), () -> {
+            Replaced replaced = oauth.underWriteLock(caller.sub(), system.id(), () -> {
                 Optional<Connection> previous = connections.find(caller.sub(), system.id());
                 StoredCredential oldGrant = previous.map(oauth::grantToRevoke).orElse(null);
                 Connection written = store.replace(

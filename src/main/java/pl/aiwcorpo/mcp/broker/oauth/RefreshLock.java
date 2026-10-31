@@ -79,6 +79,27 @@ public class RefreshLock {
         }
     }
 
+    /** Set when a purge of the user starts; a write of a connection that waited for the lock then refuses (see OAuthService.underWriteLock). */
+    public void markPurging(String sub, Duration ttl) {
+        try {
+            redis.opsForValue().set(purgingKey(sub), "1", ttl);
+        } catch (DataAccessException e) {
+            throw new SecretStoreUnavailableException("purge marker unavailable: " + e.getClass().getSimpleName());
+        }
+    }
+
+    public boolean purging(String sub) {
+        try {
+            return Boolean.TRUE.equals(redis.hasKey(purgingKey(sub)));
+        } catch (DataAccessException e) {
+            throw new SecretStoreUnavailableException("purge marker unavailable: " + e.getClass().getSimpleName());
+        }
+    }
+
+    private String purgingKey(String sub) {
+        return prefix + "purging:" + new SecretKey(sub, "-", null).subHash();
+    }
+
     private String key(String sub, String system) {
         return prefix + "refresh:" + new SecretKey(sub, system, null).subHash() + ":" + system;
     }

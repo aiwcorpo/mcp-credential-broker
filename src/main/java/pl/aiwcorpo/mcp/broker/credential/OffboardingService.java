@@ -71,6 +71,9 @@ public class OffboardingService {
         }
         AuditLog.Entry summary = audit.event("admin_change", requestId).user(sub, null, null);
         List<RuntimeException> failures = new ArrayList<>();
+        // The marker first: a PUT or an OAuth completion that waits for the lock of a connection finds it and refuses,
+        // so it cannot write the user back between the steps below.
+        attempt(failures, () -> oauth.markPurging(sub));
         // Flows first: a flow still open could create a connection after the others are gone.
         attempt(failures, () -> flows.discardAll(sub, SystemRegistry.KNOWN_SYSTEMS));
         attempt(failures, () -> removeConnections(requestId, sub));
@@ -96,6 +99,17 @@ public class OffboardingService {
         // a connection that stayed still has tokens to revoke at the provider on the repeat, and this would delete them.
         if (failures.isEmpty()) {
             attempt(failures, () -> secrets.deleteAllOf(sub));
+        }
+        // A write that was already past the marker check when the purge started may have landed meanwhile.
+        if (failures.isEmpty()) {
+            attempt(failures, () -> {
+                for (Connection late : connections.findAll(sub)) {
+                    attempt(failures, () -> remove(requestId, late, "user_purged", null));
+                }
+            });
+            if (failures.isEmpty()) {
+                attempt(failures, () -> secrets.deleteAllOf(sub));
+            }
         }
         if (!failures.isEmpty()) {
             RuntimeException first = failures.get(0);
@@ -143,27 +157,58 @@ public class OffboardingService {
         return removed;
     }
 
+    /** What one sweep of orphaned secrets found; {@code refusedBecause} is set when it deleted nothing on purpose. */
+    public record OrphanSweep(int scanned, int orphans, int deleted, String refusedBecause) {
+    }
+
     /**
-     * Removes stored values no row points at and older than {@code orphan-secrets-after}: a new version whose row switch
-     * failed, or a delete that failed after the switch. The store is listed first and the rows read after, so a row
-     * switched in between is seen; the grace period covers writes still in flight.
-     *
-     * @return how many values were removed
+     * Finds stored values no row points at and older than {@code orphan-secrets-after}: a new version whose row switch
+     * failed, or a delete that failed after the switch. Deleting is off unless {@code orphan-sweep-delete} is set, so by
+     * default this only reports. Even then it refuses when the set of references is empty although the store is not, or
+     * when more than {@code orphan-max-fraction} of the values would go (a broken or partial read of the rows would look
+     * like that), deletes at most {@code orphan-max-deletes-per-run}, and leaves values of OAuth systems alone: without
+     * the {@code sub} their grant cannot be revoked at the provider, and deleting the tokens would keep it alive there.
+     * The store is listed first and the rows read after, so a row switched in between is seen.
      */
-    public int sweepOrphanSecrets() {
+    public OrphanSweep sweepOrphanSecrets() {
         Instant cutoff = clock.instant().minus(retention.orphanSecretsAfter());
         List<SecretStore.Stored> listed = secrets.listStored();
+        if (listed.isEmpty()) {
+            return new OrphanSweep(0, 0, 0, null);
+        }
         java.util.Set<String> referenced = connections.referencedSecretPaths();
-        int removed = 0;
-        for (SecretStore.Stored stored : listed) {
-            String path = stored.subHash() + "/" + stored.system() + (stored.version() == null ? "" : "/" + stored.version());
-            if (stored.updatedAt().isAfter(cutoff) || referenced.contains(path)) {
+        if (referenced.isEmpty()) {
+            log.warn("Orphan sweep refused: the store holds {} values and no connection row points at any", listed.size());
+            return new OrphanSweep(listed.size(), 0, 0, "no_references");
+        }
+        List<SecretStore.Stored> orphans = listed.stream()
+                .filter(stored -> !stored.updatedAt().isAfter(cutoff))
+                .filter(stored -> !referenced.contains(stored.subHash() + "/" + stored.system()
+                        + (stored.version() == null ? "" : "/" + stored.version())))
+                .toList();
+        if (listed.size() >= 10 && orphans.size() > retention.orphanMaxFraction() * listed.size()) {
+            log.warn("Orphan sweep refused: {} of {} stored values look orphaned, more than {}", orphans.size(), listed.size(),
+                    retention.orphanMaxFraction());
+            return new OrphanSweep(listed.size(), orphans.size(), 0, "too_many");
+        }
+        if (!retention.orphanSweepDelete()) {
+            if (!orphans.isEmpty()) {
+                log.info("Orphan sweep (report only): {} of {} stored values are not referenced by any row", orphans.size(), listed.size());
+            }
+            return new OrphanSweep(listed.size(), orphans.size(), 0, orphans.isEmpty() ? null : "report_only");
+        }
+        int deleted = 0;
+        for (SecretStore.Stored orphan : orphans) {
+            if (deleted >= retention.orphanMaxDeletesPerRun()) {
+                break;
+            }
+            if (!oauth.isPlainSecretSystem(orphan.system())) {
                 continue;
             }
-            secrets.deleteStored(stored);
-            removed++;
+            secrets.deleteStored(orphan);
+            deleted++;
         }
-        return removed;
+        return new OrphanSweep(listed.size(), orphans.size(), deleted, null);
     }
 
     /** @param unusedSince when not null, the connection is removed only if its last use is before this instant */

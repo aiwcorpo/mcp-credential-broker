@@ -12,6 +12,8 @@ import org.springframework.validation.annotation.Validated;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
@@ -103,7 +105,10 @@ public record BrokerProperties(
             @DefaultValue("1h") @NotNull Duration cleanupInterval,
             @DefaultValue("100") @Min(1) int batchSize,
             @DefaultValue("1h") @NotNull Duration orphanSecretsAfter,
-            @DefaultValue("6h") @NotNull Duration orphanSweepInterval) {
+            @DefaultValue("6h") @NotNull Duration orphanSweepInterval,
+            @DefaultValue("false") boolean orphanSweepDelete,
+            @DefaultValue("50") @Min(1) int orphanMaxDeletesPerRun,
+            @DefaultValue("0.2") @DecimalMin("0.0") @DecimalMax("1.0") double orphanMaxFraction) {
     }
 
     /**

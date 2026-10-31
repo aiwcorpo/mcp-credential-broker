@@ -74,13 +74,13 @@ public class OpenBaoSecretStore implements SecretStore {
             if (stored.path("data").path("data").isNull()) {
                 return Optional.empty();
             }
-            throw new SecretStoreUnavailableException("stored entry has no ciphertext");
+            throw new SecretUnreadableException("stored entry has no ciphertext");
         }
         JsonNode decrypted = client.write(transitPath("decrypt"),
                 client.object().put("ciphertext", ciphertext.stringValue()));
         JsonNode encoded = decrypted.path("data").path("plaintext");
         if (!encoded.isString()) {
-            throw new SecretStoreUnavailableException("transit decrypt returned no plaintext");
+            throw new SecretUnreadableException("transit decrypt returned no plaintext");
         }
         return Optional.of(parse(key, Base64.getDecoder().decode(encoded.stringValue())));
     }
@@ -170,17 +170,17 @@ public class OpenBaoSecretStore implements SecretStore {
         try {
             node = json.readTree(new String(plaintext, StandardCharsets.UTF_8));
         } catch (JacksonException e) {
-            throw new SecretStoreUnavailableException("stored entry is not readable");
+            throw new SecretUnreadableException("stored entry is not readable");
         }
         if (node.path("v").asInt(-1) != FORMAT_VERSION
                 || !key.sub().equals(node.path("sub").asString(null))
                 || !key.system().equals(node.path("system").asString(null))) {
-            throw new SecretStoreUnavailableException("stored entry does not belong to this path");
+            throw new SecretUnreadableException("stored entry does not belong to this path");
         }
         CredentialType type = CredentialType.fromWire(node.path("type").asString(null)).orElse(null);
         String value = node.path("value").asString(null);
         if (type == null || value == null || value.isEmpty()) {
-            throw new SecretStoreUnavailableException("stored entry is incomplete");
+            throw new SecretUnreadableException("stored entry is incomplete");
         }
         String refresh = node.path("refreshToken").asString(null);
         return new StoredCredential(type, SecretValue.of(value),

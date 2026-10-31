@@ -241,6 +241,20 @@ class OffboardingIntegrationTest {
     }
 
     @Test
+    void aWriteAfterThePurgeStartedIsRefusedUntilTheMarkerExpires() {
+        String sub = newSub();
+        assertThat(putSecret(sub, "jira", "alice-pat").status()).isEqualTo(200);
+        assertThat(offboarding.send("POST", "/v1/admin/users/" + sub + "/purge", null, null, null).status()).isEqualTo(204);
+
+        assertThat(putSecret(sub, "jira", "alice-pat").status()).as("the user is not written back").isEqualTo(503);
+        assertThat(rows(sub)).isZero();
+
+        redis.delete("broker:oauth:purging:" + SecretKey.hashOf(sub));
+        assertThat(putSecret(sub, "jira", "alice-pat").status()).isEqualTo(200);
+        assertThat(offboarding.send("POST", "/v1/admin/users/" + sub + "/purge", null, null, null).status()).isEqualTo(204);
+    }
+
+    @Test
     void aSecretStoreOutageFailsThePurgeButDoesNotStopTheOtherStepsAndARepeatFinishesIt(CapturedOutput output) {
         String sub = newSub();
         assertThat(putSecret(sub, "jira", "alice-pat").status()).isEqualTo(200);

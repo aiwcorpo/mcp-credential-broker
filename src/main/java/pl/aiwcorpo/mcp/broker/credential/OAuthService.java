@@ -29,6 +29,7 @@ import pl.aiwcorpo.mcp.broker.oauth.RateLimiter;
 import pl.aiwcorpo.mcp.broker.oauth.RefreshLock;
 import pl.aiwcorpo.mcp.broker.secret.SecretStore;
 import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
+import pl.aiwcorpo.mcp.broker.secret.SecretUnreadableException;
 import pl.aiwcorpo.mcp.broker.secret.SecretValue;
 import pl.aiwcorpo.mcp.broker.secret.StoredCredential;
 import pl.aiwcorpo.mcp.broker.system.BackendIdentity;
@@ -166,7 +167,7 @@ public class OAuthService {
             };
             entry.backendUser(identity.username());
             TokenSet issued = tokens;
-            boolean replaced = underRefreshLock(caller.sub(), system.id(), () -> {
+            boolean replaced = underWriteLock(caller.sub(), system.id(), () -> {
                 Instant now = clock.instant();
                 Optional<Connection> previous = connections.find(caller.sub(), system.id());
                 StoredCredential oldGrant = previous.map(this::grantToRevoke).orElse(null);
@@ -212,6 +213,26 @@ public class OAuthService {
                 revokeQuietly(provider, tokens.refreshToken());
             }
         }
+    }
+
+    /** A purge of the user is under way: writes that would put the user back are refused until its marker expires. */
+    public void markPurging(String sub) {
+        lock.markPurging(sub, Duration.ofMinutes(2));
+    }
+
+    /** {@link #underRefreshLock} for the writes of a connection (PUT secret, OAuth complete): refused while the user is being purged. */
+    public <T> T underWriteLock(String sub, String systemId, Supplier<T> action) {
+        return underRefreshLock(sub, systemId, () -> {
+            if (lock.purging(sub)) {
+                throw new UpstreamUnavailableException("this user is being offboarded");
+            }
+            return action.get();
+        });
+    }
+
+    /** A configured system without OAuth: its stored values hold no grant at a provider that deleting them would leave alive. */
+    public boolean isPlainSecretSystem(String systemId) {
+        return systems.find(systemId).filter(s -> s.oauth().isEmpty()).isPresent();
     }
 
     /**
@@ -300,12 +321,19 @@ public class OAuthService {
     /**
      * The stored tokens of a connected user-oauth connection, or null when there is nothing to revoke. A store that does
      * not answer is an error, not "nothing": the removal then fails and is repeated, while the tokens still exist to revoke.
+     * An entry that answers but cannot be read is not repeatable and counts as "could not revoke".
      */
     StoredCredential grantToRevoke(Connection connection) {
         if (connection.type() != CredentialType.USER_OAUTH || connection.state() != Connection.StoredState.CONNECTED) {
             return null;
         }
-        return secrets.get(connection.secretKey()).orElse(null);
+        try {
+            return secrets.get(connection.secretKey()).orElse(null);
+        } catch (SecretUnreadableException e) {
+            // Repeating will not make it readable; the caller audits provider_revoke_failed and goes on, or the offboarding would never end.
+            log.warn("Stored tokens for {} are unreadable ({}); not revoked at the provider", connection.system(), e.getMessage());
+            return null;
+        }
     }
 
     /** Revokes the tokens of a grant that a new connection has just replaced; the first argument names its system. */

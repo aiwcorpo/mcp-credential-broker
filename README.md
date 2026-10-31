@@ -263,17 +263,21 @@ Redisa (`503` bez niego). Zabita instancja zwalnia blokadę przez koniec dzierż
 sekretu (fencing). Zapis zrotowanych poświadczeń (`SecretStore.putRotated`) omija bezpiecznik klienta OpenBao i jest ponawiany do 15 s
 łącznie (jeden termin na zapis sekretu i przełączenie wiersza). Gdy odpowiedź bazy na przełączenie zginie, o wyniku decyduje odczyt wiersza:
 wersja równa nowej to sukces, inna to usunięcie nowej wersji, a brak odczytu to `503` bez usuwania czegokolwiek i bez odwoływania tokenów.
-Przed pytaniem dostawcy broker czyta sekret z magazynu, żeby nie zużyć tokenu, którego nie da się zapisać. Wersje sekretów, na które nie wskazuje
-żaden wiersz, usuwa po godzinie zadanie co 6 h (`broker.retention.orphan-secrets-after`, `orphan-sweep-interval`). Ograniczenie: gdy dostawca rotuje
+Przed pytaniem dostawcy broker czyta sekret z magazynu, żeby nie zużyć tokenu, którego nie da się zapisać. Wersje sekretów, na które nie wskazuje żaden wiersz, zadanie co 6 h tylko raportuje (`broker.retention.orphan-sweep-delete=false` domyślnie).
+Po włączeniu usuwa najwyżej `orphan-max-deletes-per-run` (50) wartości starszych niż `orphan-secrets-after` (1 h), nie rusza wartości systemów z OAuth
+(bez `sub` nie da się odwołać grantu u dostawcy) i odmawia, gdy zbiór referencji jest pusty przy niepustym magazynie albo gdy sierot jest więcej niż
+`orphan-max-fraction` (0,2). Ograniczenie: gdy dostawca rotuje
 refresh token, a instancja zginie po jego wydaniu przed zapisem, stary token jest zużyty i połączenie wymaga ponownego połączenia przez
 użytkownika (`invalid_grant` -> `revoked`). `purge` kasuje wartości bez wiersza (`deleteAllOf`) dopiero, gdy usunięto wszystkie połączenia;
-inaczej kończy się błędem i powtórzenie odwoła grant u dostawcy. Nie ma blokady dla systemu, którego wiersza użytkownik jeszcze nie ma, więc `PUT`
-dokładnie w chwili `purge` takiego użytkownika może go zapisać po offboardingu (zamyka to ważność tokenu C1).
+inaczej kończy się błędem i powtórzenie odwoła grant u dostawcy. Purge ustawia na starcie znacznik w Redisie (2 min, `broker:oauth:purging:<hash>`),
+który sprawdzają pod blokadą `PUT secret` i `oauth/complete` (503, dopóki znacznik nie wygaśnie), a po `deleteAllOf` robi drugi przegląd wierszy. Zapis,
+który minął sprawdzenie tuż przed znacznikiem, wpada w ten drugi przegląd. Wpis, który magazyn zwraca, ale nie da się go odczytać (Transit odmawia
+szyfrogramu, wpis cudzej ścieżki), nie blokuje purge: połączenie jest usuwane z audytem `provider_revoke_failed`; niedostępny magazyn daje `503` i powtórzenie.
 
 Zależność niedostępna (Redis, OpenBao, PostgreSQL; sprawdzane przy wstrzymanym kontenerze): operacja, która jej potrzebuje, daje
 `503 upstream_unavailable` w ciągu kilku sekund, nigdy sukces z pominiętą kontrolą ani `500`. Klient OpenBao po 3 wywołaniach z rzędu bez odpowiedzi
-odpowiada błędem od razu przez 2 s, żeby awaria nie trzymała wątków żądań po 5 s na każdy krok. Odpowiedź `404` bez ciała OpenBao (`errors` albo `data`)
-nie znaczy "brak sekretu", tylko `503`; ziarno TOTP nie jest wtedy uznawane za utracone. `oauth/start` nie potrzebuje OpenBao ani PostgreSQL
+odpowiada błędem od razu przez 2 s, żeby awaria nie trzymała wątków żądań po 5 s na każdy krok. Odpowiedź `404` znaczy "brak sekretu" tylko z pustym `errors` albo `data` jako obiektem;
+każda inna (też `errors` z treścią, np. "no handler for route") to `503`; ziarno TOTP nie jest wtedy uznawane za utracone. `oauth/start` nie potrzebuje OpenBao ani PostgreSQL
 (stan w Redisie). Polecenie wysłane do wstrzymanego Redisa wykonuje się po jego wznowieniu, więc blokada może zostać wzięta "dla nikogo" do końca dzierżawy
 (przy błędzie broker próbuje ją zwolnić tym samym właścicielem).
 
