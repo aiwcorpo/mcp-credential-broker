@@ -3,6 +3,15 @@
 Kamień: **M5** (sekcja M5 niżej), poprzednio **M4** (strona brokera: CHANGELOG 4.0.0 kontraktów, CC-133 ... CC-162 dotyczące brokera). Kontrakty: `mcp-contracts` **5.1.0**
 (tag v5.1.0, w `~/.m2`). Poniżej sekcja M4, dalej M3, M2 i M1 bez zmian.
 
+## M6 etap 1 (2026-11-02): JWKS gateway'a i sygnał utraty sekretu
+
+- Pula wątków: wyszukiwanie czekające na trwające pobranie JWKS (nieznany `kid`, klucze starsze niż `maxStale`) zajmowało wątek żądania do timeout + 1 s; przy zawieszonym endpoincie losowe `kid` mogły zapełnić pulę. Teraz czeka najwyżej 8 wyszukiwań naraz (semafor), reszta dostaje od razu `KeySourceUnavailableException` (503). Fail-closed bez zmian: nieznany `kid` przy nieudanym albo niedokończonym odświeżeniu to 503, nie 401 (test `unknownKidOnFreshKeysIsUnavailableWhenTheWaitForTheRefreshRunsOut`).
+- Mutanty: `gaveUp` (limit oczekiwania, limit czekających, przerwanie) i `pending.cancel(true)` zabijają `KeySourceTest` (3 nowe) i `JwksFetchTest.connectionToAStalledServerIsClosedWhenTheFetchGivesUp`; każdy mutant sprawdzony ręcznie (test czerwony).
+- Konfiguracja: nowe `broker.gateway-jwt.jwks-fetch-timeout` (domyślnie 5 s, było na sztywno w `BrokerConfiguration`); `isJwksTimingConsistent` pilnuje też `1 s <= min-refresh-interval <= refresh` i `0 < fetch-timeout <= min-refresh-interval`. README: limit pobrania, limit czekających, sygnał utraty sekretu.
+- Log "no longer renewable" co minutę: zejście do `debug`; przypadek utraty sekretu (jedyny, który się powtarza, bo wiersz zostaje `connected`) idzie przez `LostSecretSignal`.
+- `LostSecretSignal`: licznik `broker.connection.secret_missing{system,place=resolve|refresh_sweep}` przy każdym zdarzeniu, ostrzeżenie w logu przy pierwszym i potem najwyżej raz na 15 min na (system, miejsce) z liczbą pominiętych; bez `sub` i ścieżki sekretu. Dotychczasowe ostrzeżenie w `resolve` (przy każdym wywołaniu) zastąpione tym samym kanałem. Aktuatory eksponują tylko `health`, więc licznik jest w rejestrze, ale nie jest wystawiony; do decyzji (patrz niżej). Nowe powody audytu nie dodane.
+- Testy: 447 zielone (`mvnw -o verify`, bez `clean`).
+
 ## M5 (2026-10-31)
 
 Kontrakty `mcp-contracts` 5.1.0. Zmiany: `AuditEvent` i `AuditLog` bez `virtualServer`, `InternalJwtClaims`/`InternalJwtVerifier` bez `vs` i `vsc` (token z nimi daje 401 `invalid_claims`), `/mcp` zarezerwowane w `returnPath`.

@@ -16,6 +16,7 @@ import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.ReentrantLock;
@@ -43,6 +44,9 @@ import com.nimbusds.jose.jwk.KeyUse;
  * last refresh failed is also {@link KeySourceUnavailableException}, not an answer that the kid does not
  * exist. While the keys are within {@code maxStale} and the kid is known, one thread refreshes and the others
  * keep using the current keys.</li>
+ * <li>Waiting parks a request thread, so at most {@code maxWaiters} lookups wait at once; the others fail at
+ * once with the same {@link KeySourceUnavailableException}. Tokens with random kids against an endpoint that
+ * hangs therefore cannot fill the request thread pool.</li>
  * <li>One fetch is bounded as a whole (connection, headers and body) and its body is capped, so the thread
  * holding the refresh lock cannot hang or grow memory without limit.</li>
  * </ul>
@@ -52,6 +56,7 @@ public class JwksGatewayKeys implements GatewayKeys {
     private static final Logger log = LoggerFactory.getLogger(JwksGatewayKeys.class);
 
     static final int MAX_BODY_BYTES = 256 * 1024;
+    static final int DEFAULT_MAX_WAITERS = 8;
     private static final Duration LOCK_WAIT_MARGIN = Duration.ofSeconds(1);
 
     private final Callable<String> source;
@@ -62,6 +67,7 @@ public class JwksGatewayKeys implements GatewayKeys {
     private final Duration maxStale;
     private final Duration lockWait;
     private final ReentrantLock refreshLock = new ReentrantLock();
+    private final Semaphore waitSlots;
 
     /** Keys and the time they were loaded travel together so a reader never sees one without the other. */
     private record Loaded(Map<String, ECKey> keys, Instant at) {
@@ -82,6 +88,12 @@ public class JwksGatewayKeys implements GatewayKeys {
 
     JwksGatewayKeys(Callable<String> source, String description, Clock clock, Duration refresh, Duration minRefreshInterval,
             Duration maxStale, Duration lockWait) {
+        this(source, description, clock, refresh, minRefreshInterval, maxStale, lockWait, DEFAULT_MAX_WAITERS);
+    }
+
+    JwksGatewayKeys(Callable<String> source, String description, Clock clock, Duration refresh, Duration minRefreshInterval,
+            Duration maxStale, Duration lockWait, int maxWaiters) {
+        this.waitSlots = new Semaphore(maxWaiters);
         this.lockWait = lockWait;
         this.source = source;
         this.description = description;
@@ -175,9 +187,18 @@ public class JwksGatewayKeys implements GatewayKeys {
     private Refreshed refreshKeys(Loaded seen, boolean wait) {
         try {
             if (wait) {
-                if (!refreshLock.tryLock(lockWait.toMillis(), TimeUnit.MILLISECONDS)) {
-                    log.warn("Gateway JWKS from {} still refreshing after {}", description, lockWait);
-                    return new Refreshed(loaded, true);
+                if (!refreshLock.tryLock()) {
+                    if (!waitSlots.tryAcquire()) {
+                        return new Refreshed(loaded, true);
+                    }
+                    try {
+                        if (!refreshLock.tryLock(lockWait.toMillis(), TimeUnit.MILLISECONDS)) {
+                            log.warn("Gateway JWKS from {} still refreshing after {}", description, lockWait);
+                            return new Refreshed(loaded, true);
+                        }
+                    } finally {
+                        waitSlots.release();
+                    }
                 }
             } else if (!refreshLock.tryLock()) {
                 return new Refreshed(loaded, false);

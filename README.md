@@ -318,6 +318,14 @@ każda inna (też `errors` z treścią, np. "no handler for route") to `503`; zi
 Niedostępny OpenBao, PostgreSQL, Redis albo JWKS -> `503 upstream_unavailable` (fail-closed). Klucze
 gateway'a pobrane z JWKS są ważne najwyżej 1 h po ostatnim udanym pobraniu; potem, jeśli endpoint nie
 odpowiada, `resolve` daje 503 (klucz wycofany przez gateway nie działa w nieskończoność).
+Jedno pobranie JWKS ma twardy limit całej wymiany (domyślnie 5 s, `broker.gateway-jwt.jwks-fetch-timeout`) i ciała (256 KiB).
+Wyszukiwanie z nieznanym `kid` albo na kluczach starszych niż limit czeka na trwające pobranie najwyżej
+timeout + 1 s, a jednocześnie czeka co najwyżej 8 wyszukiwań; kolejne dostają 503 od razu, więc zawieszony
+endpoint JWKS nie zajmie puli wątków. Nieznany `kid` przy nieudanym odświeżeniu to 503, nie 401.
+Brak sekretu przy istniejącym wierszu połączenia (utrata danych w OpenBao): `resolve` daje
+`credential_required`, a operator dostaje licznik `broker.connection.secret_missing{system,place}` i
+ostrzeżenie w logu (pierwsze od razu, powtórki co najwyżej raz na 15 min z liczbą zdarzeń; bez `sub`
+i ścieżki sekretu).
 Połączenia z OpenBao, JWKS i whoami wymagają `https`, chyba że ustawiono `MCP_ALLOW_PLAIN_HTTP=true`
 (tylko lokalny stos). Wartość sekretu jest w pamięci w
 `SecretValue`, którego `toString` zwraca maskę; nie trafia do logów, audytu ani komunikatów błędów (sprawdzają to

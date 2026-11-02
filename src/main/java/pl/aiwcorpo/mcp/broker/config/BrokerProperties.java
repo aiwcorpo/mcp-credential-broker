@@ -53,20 +53,27 @@ public record BrokerProperties(
             @DefaultValue("60s") @NotNull Duration maxLifetime,
             @DefaultValue("5m") @NotNull Duration jwksRefresh,
             @DefaultValue("10s") @NotNull Duration jwksMinRefreshInterval,
-            @DefaultValue("1h") @NotNull Duration jwksMaxStale) {
+            @DefaultValue("1h") @NotNull Duration jwksMaxStale,
+            @DefaultValue("5s") @NotNull Duration jwksFetchTimeout) {
 
         /**
-         * A refresh interval longer than maxStale would let healthy keys expire before the next scheduled
-         * refresh, and a sub-second minimum interval would not protect the JWKS endpoint.
+         * Relations between the intervals: a refresh interval longer than maxStale would let healthy keys expire
+         * before the next scheduled refresh; a sub-second minimum interval would not protect the JWKS endpoint, and
+         * one longer than the refresh interval would make the scheduled refresh a no-op. A fetch that can outlast
+         * the minimum interval would let attempts overlap, and one that can outlast maxStale would keep stale keys
+         * in use while it runs.
          */
         @AssertTrue(message = "broker.gateway-jwt: jwks-refresh must be positive and not longer than jwks-max-stale, "
-                + "jwks-min-refresh-interval must be at least 1s")
+                + "jwks-min-refresh-interval must be between 1s and jwks-refresh, "
+                + "jwks-fetch-timeout must be positive and not longer than jwks-min-refresh-interval")
         public boolean isJwksTimingConsistent() {
-            if (jwksRefresh == null || jwksMinRefreshInterval == null || jwksMaxStale == null) {
+            if (jwksRefresh == null || jwksMinRefreshInterval == null || jwksMaxStale == null || jwksFetchTimeout == null) {
                 return true;
             }
             return jwksRefresh.isPositive() && jwksRefresh.compareTo(jwksMaxStale) <= 0
-                    && jwksMinRefreshInterval.compareTo(Duration.ofSeconds(1)) >= 0;
+                    && jwksMinRefreshInterval.compareTo(Duration.ofSeconds(1)) >= 0
+                    && jwksMinRefreshInterval.compareTo(jwksRefresh) <= 0
+                    && jwksFetchTimeout.isPositive() && jwksFetchTimeout.compareTo(jwksMinRefreshInterval) <= 0;
         }
     }
 

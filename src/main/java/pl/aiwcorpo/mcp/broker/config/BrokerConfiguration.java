@@ -39,6 +39,7 @@ import pl.aiwcorpo.mcp.broker.authenticator.OpenBaoAuthenticatorSeedStore;
 import pl.aiwcorpo.mcp.broker.credential.ConnectionRepository;
 import pl.aiwcorpo.mcp.broker.credential.ConnectionStore;
 import pl.aiwcorpo.mcp.broker.credential.CredentialService;
+import pl.aiwcorpo.mcp.broker.credential.LostSecretSignal;
 import pl.aiwcorpo.mcp.broker.credential.OAuthRefreshJob;
 import pl.aiwcorpo.mcp.broker.credential.OffboardingService;
 import pl.aiwcorpo.mcp.broker.credential.UnusedConnectionCleanupJob;
@@ -93,7 +94,7 @@ public class BrokerConfiguration {
             throw new IllegalStateException("broker.gateway-jwt.jwks-uri host must equal broker.gateway-jwt.tls-name");
         }
         requireTls(config.jwksUri(), "broker.gateway-jwt.jwks-uri", properties.allowPlainHttp());
-        return JwksGatewayKeys.fromUri(config.jwksUri(), internalClient(sslBundles), Duration.ofSeconds(5), clock,
+        return JwksGatewayKeys.fromUri(config.jwksUri(), internalClient(sslBundles), config.jwksFetchTimeout(), clock,
                 config.jwksRefresh(), config.jwksMinRefreshInterval(), config.jwksMaxStale());
     }
 
@@ -212,12 +213,18 @@ public class BrokerConfiguration {
     @Bean
     OAuthService oauthService(SystemRegistry systems, ConnectionRepository connections, SecretStore secrets,
             InvalidationPublisher invalidations, OAuthFlowStore flows, RefreshLock lock, AuditLog audit, Clock clock,
-            BrokerProperties properties, RateLimiter rateLimiter) {
+            BrokerProperties properties, RateLimiter rateLimiter, LostSecretSignal lostSecrets) {
         if (properties.oauthFlow().refreshMargin().compareTo(Duration.ofSeconds(properties.cacheTtlSeconds())) <= 0) {
             throw new IllegalStateException("broker.oauth-flow.refresh-margin must exceed broker.cache-ttl-seconds");
         }
         return new OAuthService(systems, connections, secrets, new ConnectionStore(connections, secrets, invalidations, clock),
-                flows, lock, audit, clock, portalCallback(properties), properties.oauthFlow(), rateLimiter, properties.rateLimits());
+                flows, lock, audit, clock, portalCallback(properties), properties.oauthFlow(), rateLimiter, properties.rateLimits(),
+                lostSecrets);
+    }
+
+    @Bean
+    LostSecretSignal lostSecretSignal(Clock clock, MeterRegistry meters) {
+        return new LostSecretSignal(clock, meters);
     }
 
     @Bean
@@ -245,9 +252,9 @@ public class BrokerConfiguration {
     @Bean
     CredentialService credentialService(SystemRegistry systems, ConnectionRepository connections, SecretStore secrets,
             InvalidationPublisher invalidations, OAuthService oauth, SubjectTokenVerifier subjectTokens, AuditLog audit,
-            Clock clock, BrokerProperties properties) {
+            Clock clock, BrokerProperties properties, LostSecretSignal lostSecrets) {
         return new CredentialService(systems, connections, secrets, invalidations, oauth, subjectTokens, audit, clock,
-                properties.cacheTtlSeconds(), properties.expiringThreshold());
+                properties.cacheTtlSeconds(), properties.expiringThreshold(), lostSecrets);
     }
 
     @Bean

@@ -264,6 +264,87 @@ class KeySourceTest {
         }
     }
 
+    /** Fresh keys, a kid they do not hold and a refresh that is blocked in the source. */
+    private static void startBlockedRefreshOfUnknownKid(JwksGatewayKeys keys, MutableClock clock, ScriptedSource source,
+            ExecutorService pool) throws InterruptedException {
+        assertThat(keys.find(KID_A)).isPresent();
+        clock.advance(Duration.ofSeconds(11));
+        pool.submit(() -> keys.find("unknown-kid-1"));
+        assertThat(source.inFetch.await(5, TimeUnit.SECONDS)).isTrue();
+    }
+
+    @Test
+    void unknownKidOnFreshKeysIsUnavailableWhenTheWaitForTheRefreshRunsOut() throws Exception {
+        MutableClock clock = new MutableClock(T0);
+        ScriptedSource source = new ScriptedSource();
+        JwksGatewayKeys keys = keysOver(source, clock, Duration.ofMillis(200));
+        ExecutorService pool = Executors.newFixedThreadPool(1);
+        try {
+            startBlockedRefreshOfUnknownKid(keys, clock, source, pool);
+            assertThatThrownBy(() -> keys.find("unknown-kid-2")).as("not an answer that the kid does not exist")
+                    .isInstanceOf(KeySourceUnavailableException.class);
+        } finally {
+            source.release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void lookupsBeyondTheWaiterLimitFailAtOnceInsteadOfParkingThreads() throws Exception {
+        MutableClock clock = new MutableClock(T0);
+        ScriptedSource source = new ScriptedSource();
+        JwksGatewayKeys keys = new JwksGatewayKeys(source, "test", clock, Duration.ofMinutes(5), Duration.ofSeconds(10),
+                Duration.ofHours(1), Duration.ofSeconds(30), 1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            startBlockedRefreshOfUnknownKid(keys, clock, source, pool);
+            Future<?> parked = pool.submit(() -> keys.find("unknown-kid-2"));
+            awaitWaiter(keys);
+
+            long started = System.nanoTime();
+            assertThatThrownBy(() -> keys.find("unknown-kid-3")).isInstanceOf(KeySourceUnavailableException.class);
+            assertThat(Duration.ofNanos(System.nanoTime() - started)).as("did not wait for the lock")
+                    .isLessThan(Duration.ofSeconds(5));
+            assertThat(parked.isDone()).as("the first waiter is still parked").isFalse();
+
+            source.release.countDown();
+            assertThat(parked.get(5, TimeUnit.SECONDS)).as("a fetch that succeeded rules the kid out").isEqualTo(java.util.Optional.empty());
+        } finally {
+            source.release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void interruptedWaiterFailsClosedAndKeepsTheInterrupt() throws Exception {
+        MutableClock clock = new MutableClock(T0);
+        ScriptedSource source = new ScriptedSource();
+        JwksGatewayKeys keys = keysOver(source, clock, Duration.ofSeconds(30));
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            startBlockedRefreshOfUnknownKid(keys, clock, source, pool);
+            AtomicBoolean interruptKept = new AtomicBoolean();
+            java.util.concurrent.atomic.AtomicReference<Thread> waiterThread = new java.util.concurrent.atomic.AtomicReference<>();
+            Future<Boolean> waiter = pool.submit(() -> {
+                waiterThread.set(Thread.currentThread());
+                try {
+                    keys.find("unknown-kid-2");
+                    return false;
+                } catch (KeySourceUnavailableException e) {
+                    interruptKept.set(Thread.currentThread().isInterrupted());
+                    return true;
+                }
+            });
+            awaitWaiter(keys);
+            waiterThread.get().interrupt();
+            assertThat(waiter.get(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(interruptKept.get()).isTrue();
+        } finally {
+            source.release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
     /** Clock that can answer the first read of one thread with a different time than every later read. */
     private static final class ScriptedClock extends Clock {
         private volatile Instant now;

@@ -35,6 +35,7 @@ class JwksFetchTest {
 
     private ServerSocket server;
     private final AtomicInteger connections = new AtomicInteger();
+    private final AtomicInteger openHandlers = new AtomicInteger();
     private volatile Behavior behavior = Behavior.GOOD;
 
     private enum Behavior { GOOD, HEADERS_THEN_SILENCE, OVERSIZED }
@@ -65,6 +66,7 @@ class JwksFetchTest {
     }
 
     private void handle(Socket socket) {
+        openHandlers.incrementAndGet();
         try (socket) {
             InputStream in = socket.getInputStream();
             int matched = 0;
@@ -103,6 +105,8 @@ class JwksFetchTest {
             }
         } catch (IOException e) {
             // The client closing a connection it gave up on is the expected end.
+        } finally {
+            openHandlers.decrementAndGet();
         }
     }
 
@@ -128,6 +132,21 @@ class JwksFetchTest {
         clock.advance(Duration.ofSeconds(11));
         assertThat(keys.find(KID)).as("the lock was released, the next attempt works").isPresent();
         assertThat(connections.get()).isEqualTo(2);
+    }
+
+    @Test
+    @Timeout(20)
+    void connectionToAStalledServerIsClosedWhenTheFetchGivesUp() throws Exception {
+        MutableClock clock = new MutableClock(Instant.parse("2026-10-27T12:00:00Z"));
+        JwksGatewayKeys keys = keys(clock, Duration.ofSeconds(1));
+        behavior = Behavior.HEADERS_THEN_SILENCE;
+        assertThatThrownBy(() -> keys.find(KID)).isInstanceOf(KeySourceUnavailableException.class);
+
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (openHandlers.get() > 0 && System.nanoTime() < deadline) {
+            Thread.sleep(50);
+        }
+        assertThat(openHandlers.get()).as("the abandoned request was cancelled, its connection closed").isZero();
     }
 
     @Test

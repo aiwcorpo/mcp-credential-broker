@@ -44,6 +44,7 @@ import pl.aiwcorpo.mcp.broker.system.BackendIdentity;
 import pl.aiwcorpo.mcp.broker.system.SystemAdapter;
 import pl.aiwcorpo.mcp.broker.system.SystemRegistry;
 import pl.aiwcorpo.mcp.broker.system.WhoamiResult;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import tools.jackson.databind.json.JsonMapper;
 
 @ExtendWith(OutputCaptureExtension.class)
@@ -57,9 +58,11 @@ class CredentialServiceTest {
     private final SecretStore secrets = mock(SecretStore.class);
     private final InvalidationPublisher invalidations = mock(InvalidationPublisher.class);
     private final SubjectTokenVerifier subjectTokens = mock(SubjectTokenVerifier.class);
+    private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
+    private final LostSecretSignal lostSecrets = new LostSecretSignal(clock, meters);
     private final SystemRegistry systems = registry();
     private final CredentialService service = new CredentialService(systems, connections, secrets, invalidations,
-            passThroughOAuth(), subjectTokens, new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7));
+            passThroughOAuth(), subjectTokens, new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7), lostSecrets);
 
     @Test
     void secretStoreOutageFailsClosed() {
@@ -91,6 +94,7 @@ class CredentialServiceTest {
         when(connections.find("alice-sub", "jira")).thenReturn(Optional.of(connection(null)));
         when(secrets.get(any())).thenReturn(Optional.empty());
         assertThatThrownBy(() -> service.resolve(gateway("alice-sub"), "jira", null, null)).isInstanceOf(CredentialRequiredException.class);
+        assertThat(meters.counter(LostSecretSignal.METRIC, "system", "jira", "place", "resolve").count()).isEqualTo(1.0);
     }
 
     @Test
@@ -173,7 +177,7 @@ class CredentialServiceTest {
         when(registry.find("jira")).thenReturn(Optional.of(
                 new SystemRegistry.ConfiguredSystem("jira", config(), adapter)));
         return new CredentialService(registry, connections, secrets, invalidations,
-                passThroughOAuth(), subjectTokens, new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7));
+                passThroughOAuth(), subjectTokens, new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7), lostSecrets);
     }
 
     @Test

@@ -81,10 +81,13 @@ public class OAuthService {
     private final BrokerProperties.OAuthFlow settings;
     private final RateLimiter limiter;
     private final BrokerProperties.RateLimits limits;
+    private final LostSecretSignal lostSecrets;
 
     public OAuthService(SystemRegistry systems, ConnectionRepository connections, SecretStore secrets,
             ConnectionStore store, OAuthFlowStore flows, RefreshLock lock, AuditLog audit, Clock clock,
-            URI redirectUri, BrokerProperties.OAuthFlow settings, RateLimiter limiter, BrokerProperties.RateLimits limits) {
+            URI redirectUri, BrokerProperties.OAuthFlow settings, RateLimiter limiter, BrokerProperties.RateLimits limits,
+            LostSecretSignal lostSecrets) {
+        this.lostSecrets = lostSecrets;
         this.limiter = limiter;
         this.limits = limits;
         this.systems = systems;
@@ -314,7 +317,9 @@ public class OAuthService {
                 renew(RequestIds.next(clock), connection.sub(), connection.system(), null, null, settings.sweepWindow());
                 renewed++;
             } catch (CredentialRequiredException e) {
-                log.info("Connection to {} no longer renewable", connection.system());
+                // A secret missing from the store is reported by LostSecretSignal; the other causes (grant revoked,
+                // connection changed meanwhile) leave a row the next sweep no longer selects.
+                log.debug("Connection to {} no longer renewable", connection.system());
             } catch (SecretUnreadableException e) {
                 // One damaged value must not stop the renewal of everybody behind it; it is logged on every sweep until fixed.
                 log.warn("Tokens of a connection to {} are unreadable, skipped by the sweep: {}", connection.system(), e.getMessage());
@@ -430,7 +435,11 @@ public class OAuthService {
             entry.backendUser(current.backendUser());
             // Read again even when the caller holds the value: the read proves the store answers before the provider is
             // asked to spend a refresh token that could then not be replaced.
-            StoredCredential credential = secrets.get(current.secretKey()).orElseThrow(() -> new CredentialRequiredException(systemId));
+            StoredCredential credential = secrets.get(current.secretKey()).orElseThrow(() -> {
+                lostSecrets.seen(systemId, seen == null ? LostSecretSignal.Place.REFRESH_SWEEP
+                        : LostSecretSignal.Place.RESOLVE);
+                return new CredentialRequiredException(systemId);
+            });
             if (!due(current, clock.instant().plus(window))) {
                 return new Fresh(current, credential);
             }

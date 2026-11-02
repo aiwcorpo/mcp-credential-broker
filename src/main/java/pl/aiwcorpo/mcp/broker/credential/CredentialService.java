@@ -71,10 +71,12 @@ public class CredentialService {
     private final int cacheTtlSeconds;
     private final Duration expiringThreshold;
     private final SubjectTokenVerifier subjectTokens;
+    private final LostSecretSignal lostSecrets;
 
     public CredentialService(SystemRegistry systems, ConnectionRepository connections, SecretStore secrets,
             InvalidationPublisher invalidations, OAuthService oauth, SubjectTokenVerifier subjectTokens, AuditLog audit,
-            Clock clock, int cacheTtlSeconds, Duration expiringThreshold) {
+            Clock clock, int cacheTtlSeconds, Duration expiringThreshold, LostSecretSignal lostSecrets) {
+        this.lostSecrets = lostSecrets;
         this.subjectTokens = subjectTokens;
         this.systems = systems;
         this.connections = connections;
@@ -166,7 +168,7 @@ public class CredentialService {
         }
         entry.credentialType(found.type().wire());
         StoredCredential stored = read.orElseThrow(() -> {
-            log.warn("Connection metadata without a stored secret for system {}", system.id());
+            lostSecrets.seen(system.id(), LostSecretSignal.Place.RESOLVE);
             return new CredentialRequiredException(system.id());
         });
         if (stored.type() != found.type()) {
