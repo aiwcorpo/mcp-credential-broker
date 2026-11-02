@@ -320,7 +320,7 @@ gateway'a pobrane z JWKS są ważne najwyżej 1 h po ostatnim udanym pobraniu; p
 odpowiada, `resolve` daje 503 (klucz wycofany przez gateway nie działa w nieskończoność).
 Jedno pobranie JWKS ma twardy limit całej wymiany (domyślnie 5 s, `broker.gateway-jwt.jwks-fetch-timeout`) i ciała (256 KiB).
 Wyszukiwanie z nieznanym `kid` albo na kluczach starszych niż limit czeka na trwające pobranie najwyżej
-timeout + 1 s, a jednocześnie czeka co najwyżej 8 wyszukiwań; kolejne dostają 503 od razu, więc zawieszony
+timeout + 1 s, a jednocześnie czeka co najwyżej 32 wyszukiwania; kolejne dostają 503 od razu, więc zawieszony
 endpoint JWKS nie zajmie puli wątków. Nieznany `kid` przy nieudanym odświeżeniu to 503, nie 401.
 Brak sekretu przy istniejącym wierszu połączenia (utrata danych w OpenBao): `resolve` daje
 `credential_required`, a operator dostaje ostrzeżenie w logu WARN "Connection metadata without a stored
@@ -328,7 +328,11 @@ secret" (pierwsze od razu, powtórki co najwyżej raz na 15 min z liczbą zdarze
 Licznik `broker.connection.secret_missing{system,place}` jest tylko w rejestrze procesu: `/actuator` wystawia
 wyłącznie `health`, więc na dziś sygnałem dla operatora jest log (ekspozycja metryk to osobna decyzja).
 Pusta odpowiedź JWKS (bez użytecznego klucza) jest traktowana jak nieudane odświeżenie: poprzednie klucze
-zostają, a nieznany `kid` daje 503.
+zostają, a nieznany `kid` daje 503. Pusta odpowiedź nie cofa kluczy: żyją do `jwks-max-stale` (domyślnie 1 h)
+od ostatniego udanego pobrania, potem `resolve` daje 503. Wycofanie klucza przez gateway wymaga więc
+opublikowania zestawu, który go nie zawiera (a zawiera inny użyteczny klucz), albo odczekania `max-stale`.
+Tryb `MCP_GATEWAY_JWKS_FILE` (testy i lokalny stos) plik czyta przy starcie i przy nieznanym `kid`, a klucze
+z niego nie wygasają: cofnięcie klucza w tym trybie wymaga restartu brokera. Nie używać go we wdrożeniach.
 Połączenia z OpenBao, JWKS i whoami wymagają `https`, chyba że ustawiono `MCP_ALLOW_PLAIN_HTTP=true`
 (tylko lokalny stos). Wartość sekretu jest w pamięci w
 `SecretValue`, którego `toString` zwraca maskę; nie trafia do logów, audytu ani komunikatów błędów (sprawdzają to

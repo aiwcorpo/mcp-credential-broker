@@ -351,6 +351,39 @@ class KeySourceTest {
         assertThat(keys.find(KID_A)).as("the good keys are still there").isPresent();
     }
 
+    private void answerWithoutUsableKeysUntilKeysAgeOut(String unusableAnswer) {
+        MutableClock clock = new MutableClock(T0);
+        AtomicBoolean unusable = new AtomicBoolean();
+        AtomicInteger calls = new AtomicInteger();
+        String full = Contracts.text(TestTokens.GATEWAY_JWKS_PATH);
+        JwksGatewayKeys keys = keysOver(() -> {
+            calls.incrementAndGet();
+            return unusable.get() ? unusableAnswer : full;
+        }, clock, Duration.ofSeconds(10));
+        assertThat(keys.find(KID_A)).isPresent();
+        unusable.set(true);
+
+        for (int minutes = 6; minutes <= 60; minutes += 6) {
+            clock.advance(Duration.ofMinutes(6));
+            assertThat(keys.find(KID_A)).as("still served %d minutes after the last good load", minutes).isPresent();
+        }
+        assertThat(calls.get()).as("the source was asked again and again").isGreaterThan(5);
+
+        clock.advance(Duration.ofSeconds(1));
+        assertThatThrownBy(() -> keys.find(KID_A)).as("an answer without keys does not renew the keys")
+                .isInstanceOf(KeySourceUnavailableException.class);
+    }
+
+    @Test
+    void emptyJwksDoesNotKeepTheKeysPastMaxStale() {
+        answerWithoutUsableKeysUntilKeysAgeOut("{\"keys\":[]}");
+    }
+
+    @Test
+    void jwksOfUnusableKeysDoesNotKeepTheKeysPastMaxStale() {
+        answerWithoutUsableKeysUntilKeysAgeOut("{\"keys\":[{\"kty\":\"oct\",\"kid\":\"shared\",\"k\":\"AAAAAAAAAAAAAAAAAAAAAA\"}]}");
+    }
+
     @Test
     void interruptedWaiterFailsClosedAndKeepsTheInterrupt() throws Exception {
         MutableClock clock = new MutableClock(T0);

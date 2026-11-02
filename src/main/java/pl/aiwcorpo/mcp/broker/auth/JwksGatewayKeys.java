@@ -56,7 +56,7 @@ public class JwksGatewayKeys implements GatewayKeys {
     private static final Logger log = LoggerFactory.getLogger(JwksGatewayKeys.class);
 
     static final int MAX_BODY_BYTES = 256 * 1024;
-    static final int DEFAULT_MAX_WAITERS = 8;
+    static final int DEFAULT_MAX_WAITERS = 32;
     private static final Duration LOCK_WAIT_MARGIN = Duration.ofSeconds(1);
 
     private final Callable<String> source;
