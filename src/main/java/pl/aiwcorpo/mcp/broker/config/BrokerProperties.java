@@ -11,6 +11,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 import org.springframework.validation.annotation.Validated;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
@@ -53,6 +54,20 @@ public record BrokerProperties(
             @DefaultValue("5m") @NotNull Duration jwksRefresh,
             @DefaultValue("10s") @NotNull Duration jwksMinRefreshInterval,
             @DefaultValue("1h") @NotNull Duration jwksMaxStale) {
+
+        /**
+         * A refresh interval longer than maxStale would let healthy keys expire before the next scheduled
+         * refresh, and a sub-second minimum interval would not protect the JWKS endpoint.
+         */
+        @AssertTrue(message = "broker.gateway-jwt: jwks-refresh must be positive and not longer than jwks-max-stale, "
+                + "jwks-min-refresh-interval must be at least 1s")
+        public boolean isJwksTimingConsistent() {
+            if (jwksRefresh == null || jwksMinRefreshInterval == null || jwksMaxStale == null) {
+                return true;
+            }
+            return jwksRefresh.isPositive() && jwksRefresh.compareTo(jwksMaxStale) <= 0
+                    && jwksMinRefreshInterval.compareTo(Duration.ofSeconds(1)) >= 0;
+        }
     }
 
     /** User token of the portal BFF, exchanged in the IdP for aud=mcp-credential-broker (C4). */
