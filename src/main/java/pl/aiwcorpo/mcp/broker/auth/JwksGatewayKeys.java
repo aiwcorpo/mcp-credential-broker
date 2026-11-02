@@ -14,6 +14,7 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Callable;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
@@ -34,8 +35,9 @@ import com.nimbusds.jose.jwk.KeyUse;
  * <li>A failed refresh keeps the loaded keys only up to {@code maxStale}; after that lookups fail with
  * {@link KeySourceUnavailableException}, so a key the gateway has retired stops working even while the
  * endpoint is down.</li>
- * <li>Only the first load blocks; later refreshes are done by one thread while others keep using the
- * current keys.</li>
+ * <li>The first load and any lookup that finds the keys older than {@code maxStale} wait for the refresh in
+ * progress (at most the lock wait, then the lookup fails); while the keys are within {@code maxStale}, one
+ * thread refreshes and the others keep using the current keys.</li>
  * </ul>
  */
 public class JwksGatewayKeys implements GatewayKeys {
@@ -48,6 +50,7 @@ public class JwksGatewayKeys implements GatewayKeys {
     private final Duration refresh;
     private final Duration minRefreshInterval;
     private final Duration maxStale;
+    private final Duration lockWait;
     private final ReentrantLock refreshLock = new ReentrantLock();
 
     private volatile Map<String, ECKey> keys = Map.of();
@@ -56,6 +59,12 @@ public class JwksGatewayKeys implements GatewayKeys {
 
     JwksGatewayKeys(Callable<String> source, String description, Clock clock, Duration refresh, Duration minRefreshInterval,
             Duration maxStale) {
+        this(source, description, clock, refresh, minRefreshInterval, maxStale, Duration.ofSeconds(10));
+    }
+
+    JwksGatewayKeys(Callable<String> source, String description, Clock clock, Duration refresh, Duration minRefreshInterval,
+            Duration maxStale, Duration lockWait) {
+        this.lockWait = lockWait;
         this.source = source;
         this.description = description;
         this.clock = clock;
@@ -67,7 +76,7 @@ public class JwksGatewayKeys implements GatewayKeys {
     public static JwksGatewayKeys fromFile(Path file, Clock clock) {
         Duration forever = Duration.ofDays(3650);
         return new JwksGatewayKeys(() -> Files.readString(file, StandardCharsets.UTF_8), file.toString(), clock,
-                forever, Duration.ofSeconds(10), forever);
+                forever, Duration.ofSeconds(10), forever, Duration.ofSeconds(10));
     }
 
     public static JwksGatewayKeys fromUri(URI uri, HttpClient http, Duration timeout, Clock clock, Duration refresh,
@@ -80,7 +89,9 @@ public class JwksGatewayKeys implements GatewayKeys {
             }
             return response.body();
         };
-        return new JwksGatewayKeys(fetch, uri.toString(), clock, refresh, minRefreshInterval, maxStale);
+        // A waiter outlasts one fetch (bounded by the request timeout) but not a second one.
+        return new JwksGatewayKeys(fetch, uri.toString(), clock, refresh, minRefreshInterval, maxStale,
+                timeout.plusSeconds(1));
     }
 
     @Override
@@ -95,19 +106,35 @@ public class JwksGatewayKeys implements GatewayKeys {
             key = keys.get(kid);
         }
         Instant loaded = loadedAt;
-        if (loaded == null || now.isAfter(loaded.plus(maxStale))) {
+        if (loaded == null || clock.instant().isAfter(loaded.plus(maxStale))) {
             throw new KeySourceUnavailableException("gateway JWKS not loaded or older than " + maxStale);
         }
         return Optional.ofNullable(key);
     }
 
-    private void reload(Instant now) {
-        if (loadedAt == null) {
-            refreshLock.lock();
-        } else if (!refreshLock.tryLock()) {
+    private void reload(Instant requestedAt) {
+        Instant loaded = loadedAt;
+        boolean mustWait = loaded == null || requestedAt.isAfter(loaded.plus(maxStale));
+        Instant now = requestedAt;
+        try {
+            if (mustWait) {
+                if (!refreshLock.tryLock(lockWait.toMillis(), TimeUnit.MILLISECONDS)) {
+                    log.warn("Gateway JWKS from {} still refreshing after {}", description, lockWait);
+                    return;
+                }
+                // The refresh we waited for has already moved attemptedAt; judge the interval at the current time.
+                now = clock.instant();
+            } else if (!refreshLock.tryLock()) {
+                return;
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             return;
         }
         try {
+            if (mustWait && loadedAt != loaded) {
+                return;
+            }
             if (now.isBefore(attemptedAt.plus(minRefreshInterval))) {
                 return;
             }

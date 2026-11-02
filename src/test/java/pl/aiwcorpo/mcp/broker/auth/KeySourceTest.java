@@ -10,6 +10,12 @@ import java.net.http.HttpClient;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
@@ -46,6 +52,108 @@ class KeySourceTest {
         up.set(true);
         clock.advance(Duration.ofSeconds(11));
         assertThat(keys.find("test-gw-2026-10-a")).isPresent();
+    }
+
+    @Test
+    void lookupOnStaleKeysWaitsForTheRefreshInProgress() throws Exception {
+        MutableClock clock = new MutableClock(Instant.parse("2026-10-27T12:00:00Z"));
+        String jwks = Contracts.text(TestTokens.GATEWAY_JWKS_PATH);
+        AtomicInteger calls = new AtomicInteger();
+        CountDownLatch inFetch = new CountDownLatch(1);
+        CountDownLatch releaseFetch = new CountDownLatch(1);
+        JwksGatewayKeys keys = new JwksGatewayKeys(() -> {
+            if (calls.incrementAndGet() > 1) {
+                inFetch.countDown();
+                if (!releaseFetch.await(10, TimeUnit.SECONDS)) {
+                    throw new IOException("test timeout");
+                }
+            }
+            return jwks;
+        }, "test", clock, Duration.ofMinutes(5), Duration.ofSeconds(10), Duration.ofHours(1), Duration.ofSeconds(10));
+        assertThat(keys.find("test-gw-2026-10-a")).isPresent();
+
+        clock.advance(Duration.ofHours(2));
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> refreshing = pool.submit(() -> keys.find("test-gw-2026-10-a"));
+            assertThat(inFetch.await(5, TimeUnit.SECONDS)).isTrue();
+            Future<Boolean> concurrent = pool.submit(() -> keys.find("test-gw-2026-10-a").isPresent());
+            Thread.sleep(200);
+            assertThat(concurrent.isDone()).as("second lookup waits instead of failing").isFalse();
+            releaseFetch.countDown();
+            assertThat(concurrent.get(5, TimeUnit.SECONDS)).isTrue();
+            refreshing.get(5, TimeUnit.SECONDS);
+            assertThat(calls.get()).as("the waiter does not fetch again").isEqualTo(2);
+        } finally {
+            releaseFetch.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void lookupOnStaleKeysFailsClosedWhenTheRefreshFailsAndDoesNotRefetchWithinTheInterval() throws Exception {
+        MutableClock clock = new MutableClock(Instant.parse("2026-10-27T12:00:00Z"));
+        String jwks = Contracts.text(TestTokens.GATEWAY_JWKS_PATH);
+        AtomicBoolean up = new AtomicBoolean(true);
+        AtomicInteger calls = new AtomicInteger();
+        CountDownLatch inFetch = new CountDownLatch(1);
+        CountDownLatch releaseFetch = new CountDownLatch(1);
+        JwksGatewayKeys keys = new JwksGatewayKeys(() -> {
+            calls.incrementAndGet();
+            if (!up.get()) {
+                inFetch.countDown();
+                releaseFetch.await(10, TimeUnit.SECONDS);
+                throw new IOException("down");
+            }
+            return jwks;
+        }, "test", clock, Duration.ofMinutes(5), Duration.ofSeconds(10), Duration.ofHours(1), Duration.ofSeconds(10));
+        assertThat(keys.find("test-gw-2026-10-a")).isPresent();
+
+        up.set(false);
+        clock.advance(Duration.ofHours(2));
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> refreshing = pool.submit(() -> keys.find("test-gw-2026-10-a"));
+            assertThat(inFetch.await(5, TimeUnit.SECONDS)).isTrue();
+            Future<?> concurrent = pool.submit(() -> keys.find("test-gw-2026-10-a"));
+            releaseFetch.countDown();
+            assertThatThrownBy(() -> concurrent.get(5, TimeUnit.SECONDS)).hasCauseInstanceOf(KeySourceUnavailableException.class);
+            assertThatThrownBy(() -> refreshing.get(5, TimeUnit.SECONDS)).hasCauseInstanceOf(KeySourceUnavailableException.class);
+            assertThat(calls.get()).as("one failed fetch for both lookups").isEqualTo(2);
+        } finally {
+            releaseFetch.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void waiterGivesUpAfterTheLockWait() throws Exception {
+        MutableClock clock = new MutableClock(Instant.parse("2026-10-27T12:00:00Z"));
+        String jwks = Contracts.text(TestTokens.GATEWAY_JWKS_PATH);
+        AtomicInteger calls = new AtomicInteger();
+        CountDownLatch inFetch = new CountDownLatch(1);
+        CountDownLatch releaseFetch = new CountDownLatch(1);
+        JwksGatewayKeys keys = new JwksGatewayKeys(() -> {
+            if (calls.incrementAndGet() > 1) {
+                inFetch.countDown();
+                releaseFetch.await(10, TimeUnit.SECONDS);
+            }
+            return jwks;
+        }, "test", clock, Duration.ofMinutes(5), Duration.ofSeconds(10), Duration.ofHours(1), Duration.ofMillis(200));
+        assertThat(keys.find("test-gw-2026-10-a")).isPresent();
+
+        clock.advance(Duration.ofHours(2));
+        ExecutorService pool = Executors.newFixedThreadPool(1);
+        try {
+            Future<?> refreshing = pool.submit(() -> keys.find("test-gw-2026-10-a"));
+            assertThat(inFetch.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThatThrownBy(() -> keys.find("test-gw-2026-10-a")).isInstanceOf(KeySourceUnavailableException.class);
+            releaseFetch.countDown();
+            refreshing.get(5, TimeUnit.SECONDS);
+        } finally {
+            releaseFetch.countDown();
+            pool.shutdownNow();
+        }
     }
 
     @Test
