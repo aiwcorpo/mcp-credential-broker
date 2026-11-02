@@ -47,15 +47,15 @@ class GatewayJwtTimingTest {
 
     @Test
     void fetchTimeoutMustBePositiveAndFitInTheMinimumInterval() {
-        assertThat(valid(Duration.ofMinutes(5), Duration.ofSeconds(10), Duration.ofHours(1), Duration.ofSeconds(10))).isTrue();
-        assertThat(valid(Duration.ofMinutes(5), Duration.ofSeconds(10), Duration.ofHours(1), Duration.ofSeconds(11))).isFalse();
+        assertThat(valid(Duration.ofMinutes(5), Duration.ofSeconds(10), Duration.ofHours(1), Duration.ofSeconds(9))).isTrue();
+        assertThat(valid(Duration.ofMinutes(5), Duration.ofSeconds(10), Duration.ofHours(1), Duration.ofSeconds(10))).isFalse();
         assertThat(valid(Duration.ofMinutes(5), Duration.ofSeconds(10), Duration.ofHours(1), Duration.ZERO)).isFalse();
     }
 
     @Test
     void refreshEqualToMaxStaleIsAcceptedAndMinimumIntervalOfOneSecondIsTheFloor() {
         assertThat(valid(Duration.ofHours(1), Duration.ofSeconds(10), Duration.ofHours(1))).isTrue();
-        assertThat(valid(Duration.ofMinutes(5), Duration.ofSeconds(1), Duration.ofHours(1), Duration.ofSeconds(1))).isTrue();
+        assertThat(valid(Duration.ofMinutes(5), Duration.ofSeconds(1), Duration.ofHours(1), Duration.ofMillis(500))).isTrue();
         assertThat(valid(Duration.ofMinutes(5), Duration.ofMillis(999), Duration.ofHours(1), Duration.ofMillis(500))).isFalse();
     }
 }

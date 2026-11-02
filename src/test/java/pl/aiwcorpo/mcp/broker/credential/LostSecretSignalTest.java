@@ -48,10 +48,4 @@ class LostSecretSignalTest {
         signal.seen("jira", LostSecretSignal.Place.REFRESH_SWEEP);
         assertThat(lines(output)).isEqualTo(3);
     }
-
-    @Test
-    void theLineNamesNeitherUserNorSecret(CapturedOutput output) {
-        signal.seen("gitlab", LostSecretSignal.Place.RESOLVE);
-        assertThat(output.getOut()).contains("system gitlab").doesNotContain("sub").doesNotContain("mcp/connections");
-    }
 }

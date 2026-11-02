@@ -222,6 +222,9 @@ public class JwksGatewayKeys implements GatewayKeys {
                     .filter(JwksGatewayKeys::usableSigningKey)
                     .map(JWK::toECKey)
                     .collect(Collectors.toUnmodifiableMap(JWK::getKeyID, k -> k, (a, b) -> a));
+            if (parsed.isEmpty()) {
+                throw new IOException("no usable signing key in the response");
+            }
             loaded = new Loaded(parsed, now);
             lastRefreshFailed = false;
             log.info("Loaded {} gateway JWT keys from {}", parsed.size(), description);

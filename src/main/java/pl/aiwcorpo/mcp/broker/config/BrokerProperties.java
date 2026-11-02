@@ -58,14 +58,13 @@ public record BrokerProperties(
 
         /**
          * Relations between the intervals: a refresh interval longer than maxStale would let healthy keys expire
-         * before the next scheduled refresh; a sub-second minimum interval would not protect the JWKS endpoint, and
-         * one longer than the refresh interval would make the scheduled refresh a no-op. A fetch that can outlast
-         * the minimum interval would let attempts overlap, and one that can outlast maxStale would keep stale keys
-         * in use while it runs.
+         * before the next lookup refreshes them; a sub-second minimum interval would not protect the JWKS endpoint,
+         * and one longer than the refresh interval would make the refresh interval meaningless. A fetch timeout
+         * not shorter than the minimum interval would let a lookup that waited out one fetch start another at once.
          */
         @AssertTrue(message = "broker.gateway-jwt: jwks-refresh must be positive and not longer than jwks-max-stale, "
                 + "jwks-min-refresh-interval must be between 1s and jwks-refresh, "
-                + "jwks-fetch-timeout must be positive and not longer than jwks-min-refresh-interval")
+                + "jwks-fetch-timeout must be positive and shorter than jwks-min-refresh-interval")
         public boolean isJwksTimingConsistent() {
             if (jwksRefresh == null || jwksMinRefreshInterval == null || jwksMaxStale == null || jwksFetchTimeout == null) {
                 return true;
@@ -73,7 +72,7 @@ public record BrokerProperties(
             return jwksRefresh.isPositive() && jwksRefresh.compareTo(jwksMaxStale) <= 0
                     && jwksMinRefreshInterval.compareTo(Duration.ofSeconds(1)) >= 0
                     && jwksMinRefreshInterval.compareTo(jwksRefresh) <= 0
-                    && jwksFetchTimeout.isPositive() && jwksFetchTimeout.compareTo(jwksMinRefreshInterval) <= 0;
+                    && jwksFetchTimeout.isPositive() && jwksFetchTimeout.compareTo(jwksMinRefreshInterval) < 0;
         }
     }
 

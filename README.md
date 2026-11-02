@@ -323,9 +323,12 @@ Wyszukiwanie z nieznanym `kid` albo na kluczach starszych niż limit czeka na tr
 timeout + 1 s, a jednocześnie czeka co najwyżej 8 wyszukiwań; kolejne dostają 503 od razu, więc zawieszony
 endpoint JWKS nie zajmie puli wątków. Nieznany `kid` przy nieudanym odświeżeniu to 503, nie 401.
 Brak sekretu przy istniejącym wierszu połączenia (utrata danych w OpenBao): `resolve` daje
-`credential_required`, a operator dostaje licznik `broker.connection.secret_missing{system,place}` i
-ostrzeżenie w logu (pierwsze od razu, powtórki co najwyżej raz na 15 min z liczbą zdarzeń; bez `sub`
-i ścieżki sekretu).
+`credential_required`, a operator dostaje ostrzeżenie w logu WARN "Connection metadata without a stored
+secret" (pierwsze od razu, powtórki co najwyżej raz na 15 min z liczbą zdarzeń; bez `sub` i ścieżki sekretu).
+Licznik `broker.connection.secret_missing{system,place}` jest tylko w rejestrze procesu: `/actuator` wystawia
+wyłącznie `health`, więc na dziś sygnałem dla operatora jest log (ekspozycja metryk to osobna decyzja).
+Pusta odpowiedź JWKS (bez użytecznego klucza) jest traktowana jak nieudane odświeżenie: poprzednie klucze
+zostają, a nieznany `kid` daje 503.
 Połączenia z OpenBao, JWKS i whoami wymagają `https`, chyba że ustawiono `MCP_ALLOW_PLAIN_HTTP=true`
 (tylko lokalny stos). Wartość sekretu jest w pamięci w
 `SecretValue`, którego `toString` zwraca maskę; nie trafia do logów, audytu ani komunikatów błędów (sprawdzają to

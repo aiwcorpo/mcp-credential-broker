@@ -316,6 +316,42 @@ class KeySourceTest {
     }
 
     @Test
+    void aWaiterThatTimedOutReturnsItsSlotSoTheNextOneCanWaitToo() throws Exception {
+        MutableClock clock = new MutableClock(T0);
+        ScriptedSource source = new ScriptedSource();
+        JwksGatewayKeys keys = new JwksGatewayKeys(source, "test", clock, Duration.ofMinutes(5), Duration.ofSeconds(10),
+                Duration.ofHours(1), Duration.ofMillis(300), 1);
+        ExecutorService pool = Executors.newFixedThreadPool(1);
+        try {
+            startBlockedRefreshOfUnknownKid(keys, clock, source, pool);
+            for (int timedOut = 0; timedOut < 3; timedOut++) {
+                long started = System.nanoTime();
+                assertThatThrownBy(() -> keys.find("unknown-kid-2")).isInstanceOf(KeySourceUnavailableException.class);
+                assertThat(Duration.ofNanos(System.nanoTime() - started)).as("waited %d, not refused for lack of a slot", timedOut)
+                        .isGreaterThanOrEqualTo(Duration.ofMillis(250));
+            }
+        } finally {
+            source.release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void emptyJwksIsAFailedRefreshAndKeepsTheKnownKeys() throws Exception {
+        MutableClock clock = new MutableClock(T0);
+        AtomicBoolean empty = new AtomicBoolean();
+        String full = Contracts.text(TestTokens.GATEWAY_JWKS_PATH);
+        JwksGatewayKeys keys = keysOver(() -> empty.get() ? "{\"keys\":[]}" : full, clock, Duration.ofSeconds(10));
+        assertThat(keys.find(KID_A)).isPresent();
+
+        empty.set(true);
+        clock.advance(Duration.ofSeconds(11));
+        assertThatThrownBy(() -> keys.find("unknown-kid-1")).as("not a 401 for a kid that cannot be ruled out")
+                .isInstanceOf(KeySourceUnavailableException.class);
+        assertThat(keys.find(KID_A)).as("the good keys are still there").isPresent();
+    }
+
+    @Test
     void interruptedWaiterFailsClosedAndKeepsTheInterrupt() throws Exception {
         MutableClock clock = new MutableClock(T0);
         ScriptedSource source = new ScriptedSource();

@@ -320,6 +320,8 @@ class AuthenticatorIntegrationTest {
     @Test
     void invalidatedCodesAreBurnedAndNotCounted(CapturedOutput output) {
         Registered user = register("ivan");
+        // Taken before the burn so a TOTP step that rolls over meanwhile cannot move these codes past the burned range.
+        long stepBeforeBurn = Totp.stepOf(Instant.now());
         String requestId = TestTokens.newRequestId();
         BrokerClient.Response burn = gateway.send("POST", "/v1/authenticator/invalidate-codes",
                 tokens.gatewayUser(user.sub, "ivan", requestId, TOOL), requestId, null);
@@ -328,9 +330,10 @@ class AuthenticatorIntegrationTest {
                 .isEqualTo(204);
 
         for (int i = 0; i < 10; i++) {
-            assertThat(verify(user.sub, nextCode(user.seed)).json().path("result").stringValue()).isEqualTo("burned");
+            assertThat(verify(user.sub, Totp.code(user.seed, stepBeforeBurn + 1)).json().path("result").stringValue())
+                    .isEqualTo("burned");
         }
-        assertThat(verify(user.sub, currentCode(user.seed)).json().path("result").stringValue()).isEqualTo("burned");
+        assertThat(verify(user.sub, Totp.code(user.seed, stepBeforeBurn)).json().path("result").stringValue()).isEqualTo("burned");
         assertThat(jdbc.sql("select count(*) from authenticator_failure where sub = :sub").param("sub", user.sub)
                 .query(Integer.class).single()).isZero();
         assertThat(gatewayStatus(user.sub).json().has("lockedUntil")).isFalse();
