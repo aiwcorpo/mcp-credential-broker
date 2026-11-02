@@ -14,6 +14,8 @@ CI: MR dostaje `ci/run.sh unit` bez gniazda i poświadczeń, `<<>>` w kontroli s
 Testy: 425 zielone, `make ci` dwa razy pod rząd. (`ci/run.sh verify`). Porty testowe 18712-18717. `AuthenticatorIntegrationTest.invalidatedCodesAreBurnedAndNotCounted` raz padł na granicy kroku TOTP (30 s), przy powtórzeniu zielony.
 Obraz: `mcp-credential-broker:m5-3f2bf19` (po przeglądach Opus; kod w tym commicie, STATUS dopisany po nim). Stos nie ruszany.
 
+Poprawka `JwksGatewayKeys` (2026-11-02): wyszukiwanie przy kluczach starszych niż `maxStale` czeka na trwające przeładowanie (blokada z limitem czasu: timeout pobierania + 1 s) zamiast dostać `false` z `tryLock` i rzucić `KeySourceUnavailableException`; po oczekiwaniu nie pobiera ponownie, jeśli klucze już odświeżono, a `minRefreshInterval` i świeżość ocenia według aktualnego czasu. Nieudane odświeżenie po `maxStale` nadal kończy się `KeySourceUnavailableException`. Testy: 428 (3 nowe w `KeySourceTest`). Obraz: `mcp-credential-broker:m5-4c021a2`.
+
 Ustalenia: stan TOTP był już w całości w bazie (blokada wiersza), kod authenticatora bez zmian. Stary opis "blokada bez właściciela" (M2) był naprawiony w M2; brakowało atomowego zwolnienia.
 Ograniczenia: rotacja refresh tokenu + śmierć instancji przed zapisem = połączenie `revoked` (README, "Wiele instancji"). Rate limit OAuth: `INCR` + `EXPIRE` nie są atomowe (licznik bez TTL dostaje TTL przy przekroczeniu), bez zmian.
 Propozycje CC (status `open`, dla ws-00): (1) dopisać do znanych powodów audytu C8 (`reason` w `audit-event.schema.json`) wartości, które broker już emituje,
