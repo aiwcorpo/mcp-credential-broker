@@ -3,6 +3,8 @@ package pl.aiwcorpo.mcp.broker.credential;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.withSettings;
 import static org.mockito.Mockito.when;
 
@@ -79,5 +81,18 @@ class OAuthSweepLostSecretTest {
         assertThat(meters.counter(LostSecretSignal.METRIC, "system", "gitlab", "place", "resolve").count()).isZero();
         assertThat(output.getOut().split("without a stored secret", -1).length - 1).isEqualTo(1);
         assertThat(output.getOut()).doesNotContain("no longer renewable");
+    }
+
+    @Test
+    void sweepPutsTheRowInErrorSoItIsNotSelectedAgainAndAuditsItOnce(CapturedOutput output) {
+        OAuthService oauth = service();
+        when(connections.setStateIfVersion("alice-sub", "gitlab", "v1", Connection.StoredState.ERROR, NOW)).thenReturn(true, false);
+
+        oauth.refreshDue();
+        oauth.refreshDue();
+
+        verify(connections, times(2)).setStateIfVersion("alice-sub", "gitlab", "v1", Connection.StoredState.ERROR, NOW);
+        assertThat(output.getOut().lines().filter(line -> line.contains("\"reason\":\"secret_missing\"")).toList())
+                .singleElement().asString().contains("\"event\":\"connection_change\"", "\"outcome\":\"error\"", "\"server\":\"mcp-gitlab\"");
     }
 }

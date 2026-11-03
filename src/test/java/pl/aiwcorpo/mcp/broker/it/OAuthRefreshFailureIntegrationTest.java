@@ -34,6 +34,7 @@ import pl.aiwcorpo.mcp.broker.secret.SecretValue;
 import pl.aiwcorpo.mcp.broker.secret.StoredCredential;
 import pl.aiwcorpo.mcp.broker.secret.SecretStore;
 import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
+import pl.aiwcorpo.mcp.broker.support.AuditLines;
 import pl.aiwcorpo.mcp.broker.support.BrokerClient;
 import pl.aiwcorpo.mcp.broker.support.GitLabStub;
 import pl.aiwcorpo.mcp.broker.support.TestEnvironment;
@@ -287,6 +288,61 @@ class OAuthRefreshFailureIntegrationTest {
         int spent = gitlab.tokenRequests("refresh_token", "refresh_token", aliceFirst.refreshToken()).size()
                 + gitlab.tokenRequests("refresh_token", "refresh_token", bobFirst.refreshToken()).size();
         assertThat(spent).as("the second refresh token is still unspent").isEqualTo(1);
+    }
+
+    @Test
+    void aSecretGoneFromTheStoreTurnsTheConnectionIntoErrorOnceAndReconnectingRestoresIt(CapturedOutput output) {
+        String sub = newSub();
+        connect(sub, "alice", gitlab.issueCode("alice", 7200));
+        secrets.delete(new SecretKey(sub, "gitlab", version(sub)));
+
+        String rid = TestTokens.newRequestId();
+        BrokerClient.Response first = gateway.send("POST", "/v1/credentials/resolve", tokens.gatewayUser(sub, "alice", rid), rid,
+                "{\"system\":\"gitlab\"}");
+
+        assertThat(first.status()).isEqualTo(409);
+        assertThat(state(sub)).isEqualTo("error");
+        assertThat(AuditLines.of(output, rid)).filteredOn(e -> "connection_change".equals(e.path("event").stringValue()))
+                .singleElement().satisfies(e -> {
+                    assertThat(e.path("reason").stringValue()).isEqualTo("secret_missing");
+                    assertThat(e.path("outcome").stringValue()).isEqualTo("error");
+                    assertThat(e.has("errorCode")).isFalse();
+                });
+        BrokerClient.Response listed = bff.send("GET", "/v1/connections", tokens.bffUser(sub, "alice"), null, null);
+        assertThat(listed.json().get(0).path("status").stringValue()).isEqualTo("error");
+
+        String again = TestTokens.newRequestId();
+        assertThat(gateway.send("POST", "/v1/credentials/resolve", tokens.gatewayUser(sub, "alice", again), again,
+                "{\"system\":\"gitlab\"}").status()).isEqualTo(409);
+        assertThat(AuditLines.of(output, again)).extracting(e -> e.path("reason").stringValue()).doesNotContain("secret_missing");
+
+        connect(sub, "alice", gitlab.issueCode("alice", 7200));
+        assertThat(state(sub)).isEqualTo("connected");
+        assertThat(resolve(sub, "alice").status()).isEqualTo(200);
+    }
+
+    @Test
+    void rowsWithALostSecretLeaveTheSweepBatchAfterOneVisit() {
+        int batch = 100;
+        for (int row = 0; row < batch; row++) {
+            jdbc.sql("""
+                    insert into connection (sub, system, type, state, backend_user, connected_at, updated_at, secret_version, access_expires_at)
+                    values (:sub, 'gitlab', 'user-oauth', 'connected', 'ghost', now(), now(), :version, now() - interval '1 hour')
+                    """)
+                    .param("sub", newSub()).param("version", "lost-" + row).update();
+        }
+        GitLabStub.Grant healthy = gitlab.issueCode("bob", 200);
+        String healthySub = newSub();
+        connect(healthySub, "bob", healthy);
+        GitLabStub.Grant renewed = gitlab.rotateOnRefresh(healthy, 7200, 0);
+
+        assertThat(oauthService.refreshDue()).as("the whole batch is lost rows").isZero();
+        assertThat(jdbc.sql("select count(*) from connection where state = 'error' and backend_user = 'ghost'")
+                .query(Long.class).single()).isEqualTo((long) batch);
+        assertThat(gitlab.tokenRequests("refresh_token", "refresh_token", healthy.refreshToken())).isEmpty();
+
+        assertThat(oauthService.refreshDue()).as("the next sweep reaches the connection behind them").isEqualTo(1);
+        assertThat(resolve(healthySub, "bob").json().path("value").stringValue()).isEqualTo(renewed.accessToken());
     }
 
     @Test

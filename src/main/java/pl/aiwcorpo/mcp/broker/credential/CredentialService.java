@@ -167,10 +167,15 @@ public class CredentialService {
             }
         }
         entry.credentialType(found.type().wire());
-        StoredCredential stored = read.orElseThrow(() -> {
+        if (read.isEmpty()) {
             lostSecrets.seen(system.id(), LostSecretSignal.Place.RESOLVE);
-            return new CredentialRequiredException(system.id());
-        });
+            if (store.markSecretMissing(found)) {
+                audit.event("connection_change", caller.requestId()).user(found.sub(), null, null).system(found.system())
+                        .credentialType(found.type().wire()).backendUser(found.backendUser()).error("secret_missing", null);
+            }
+            throw new CredentialRequiredException(system.id());
+        }
+        StoredCredential stored = read.get();
         if (stored.type() != found.type()) {
             throw new SecretStoreUnavailableException("stored credential type differs from connection metadata");
         }
@@ -255,9 +260,11 @@ public class CredentialService {
         } catch (InvalidRequestException e) {
             entry.denied("invalid_request", "invalid_argument");
             throw e;
+        } catch (UserBeingOffboardedException e) {
+            entry.denied("user_offboarding", "upstream_unavailable");
+            throw e;
         } catch (SecretStoreUnavailableException | UpstreamUnavailableException e) {
-            entry.error(e instanceof UserBeingOffboardedException ? "user_offboarding"
-                    : e instanceof UpstreamUnavailableException ? "system_unavailable" : "secret_store_unavailable",
+            entry.error(e instanceof UpstreamUnavailableException ? "system_unavailable" : "secret_store_unavailable",
                     "upstream_unavailable");
             throw e;
         } catch (RuntimeException e) {

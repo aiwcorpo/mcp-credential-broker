@@ -132,7 +132,7 @@ public class OAuthService {
             entry.denied("invalid_request", "invalid_argument");
             throw e;
         } catch (UserBeingOffboardedException e) {
-            entry.error("user_offboarding", "upstream_unavailable");
+            entry.denied("user_offboarding", "upstream_unavailable");
             throw e;
         } catch (SecretStoreUnavailableException e) {
             entry.error("flow_store_unavailable", "upstream_unavailable");
@@ -209,9 +209,11 @@ public class OAuthService {
         } catch (InvalidRequestException e) {
             entry.denied("invalid_request", "invalid_argument");
             throw e;
+        } catch (UserBeingOffboardedException e) {
+            entry.denied("user_offboarding", "upstream_unavailable");
+            throw e;
         } catch (SecretStoreUnavailableException | UpstreamUnavailableException e) {
-            entry.error(e instanceof UserBeingOffboardedException ? "user_offboarding"
-                    : e instanceof UpstreamUnavailableException ? "provider_unavailable" : "secret_store_unavailable",
+            entry.error(e instanceof UpstreamUnavailableException ? "provider_unavailable" : "secret_store_unavailable",
                     "upstream_unavailable");
             throw e;
         } catch (RuntimeException e) {
@@ -317,8 +319,8 @@ public class OAuthService {
                 renew(RequestIds.next(clock), connection.sub(), connection.system(), null, null, settings.sweepWindow());
                 renewed++;
             } catch (CredentialRequiredException e) {
-                // A secret missing from the store is reported by LostSecretSignal; the other causes (grant revoked,
-                // connection changed meanwhile) leave a row the next sweep no longer selects.
+                // A secret missing from the store is reported by LostSecretSignal and puts the row in error; the other
+                // causes (grant revoked, connection changed meanwhile) also leave a row the next sweep no longer selects.
                 log.debug("Connection to {} no longer renewable", connection.system());
             } catch (SecretUnreadableException e) {
                 // One damaged value must not stop the renewal of everybody behind it; it is logged on every sweep until fixed.
@@ -435,11 +437,16 @@ public class OAuthService {
             entry.backendUser(current.backendUser());
             // Read again even when the caller holds the value: the read proves the store answers before the provider is
             // asked to spend a refresh token that could then not be replaced.
-            StoredCredential credential = secrets.get(current.secretKey()).orElseThrow(() -> {
+            Optional<StoredCredential> read = secrets.get(current.secretKey());
+            if (read.isEmpty()) {
                 lostSecrets.seen(systemId, seen == null ? LostSecretSignal.Place.REFRESH_SWEEP
                         : LostSecretSignal.Place.RESOLVE);
-                return new CredentialRequiredException(systemId);
-            });
+                if (store.markSecretMissing(current)) {
+                    entry.error("secret_missing", null);
+                }
+                throw new CredentialRequiredException(systemId);
+            }
+            StoredCredential credential = read.get();
             if (!due(current, clock.instant().plus(window))) {
                 return new Fresh(current, credential);
             }

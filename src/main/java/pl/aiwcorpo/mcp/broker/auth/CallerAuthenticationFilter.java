@@ -119,11 +119,10 @@ public class CallerAuthenticationFilter extends OncePerRequestFilter {
             return;
         } catch (ReplayGuardUnavailableException | KeySourceUnavailableException e) {
             log.warn("Token from {} not verifiable for {}: {}", cn.get(), operation.operationId(), e.getMessage());
-            if (operation.auditEvent() != null) {
-                audit.event(operation.auditEvent(), requestId).system(Operation.systemOf(path))
-                        .error(e instanceof ReplayGuardUnavailableException ? "jti_store_unavailable" : "key_source_unavailable",
-                                "upstream_unavailable");
-            }
+            // The names and the shape are the ones every receiver of the internal JWT uses (CC-197): event authentication, denied.
+            audit.event("authentication", requestId)
+                    .denied(e instanceof ReplayGuardUnavailableException ? "replay_store_unavailable" : "jwks_unavailable",
+                            "upstream_unavailable");
             write(response, 503, "upstream_unavailable");
             return;
         }

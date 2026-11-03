@@ -141,6 +141,20 @@ public class ConnectionStore {
         return markUnusable(connection, Connection.StoredState.ERROR);
     }
 
+    /**
+     * The row says connected but its secret is gone: the row leaves the states the resolve and the sweep select, so one
+     * lost secret is met once and not on every sweep (CC-205). A database failure is only logged, the next sighting retries.
+     */
+    boolean markSecretMissing(Connection connection) {
+        try {
+            return markError(connection);
+        } catch (RuntimeException e) {
+            log.warn("Connection to {} with a missing secret could not be marked as failed ({})", connection.system(),
+                    e.getClass().getSimpleName());
+            return false;
+        }
+    }
+
     private boolean markUnusable(Connection connection, Connection.StoredState state) {
         if (!connections.setStateIfVersion(connection.sub(), connection.system(), connection.secretVersion(), state, clock.instant())) {
             return false;

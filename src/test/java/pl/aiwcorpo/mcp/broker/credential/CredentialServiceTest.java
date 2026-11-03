@@ -36,6 +36,7 @@ import pl.aiwcorpo.mcp.broker.auth.SubjectTokenVerifier;
 import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
 import pl.aiwcorpo.mcp.broker.event.InvalidationPublisher;
 import pl.aiwcorpo.mcp.broker.secret.SecretKey;
+import pl.aiwcorpo.mcp.broker.support.AuditLines;
 import pl.aiwcorpo.mcp.broker.secret.SecretStore;
 import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
 import pl.aiwcorpo.mcp.broker.secret.SecretValue;
@@ -45,6 +46,7 @@ import pl.aiwcorpo.mcp.broker.system.SystemAdapter;
 import pl.aiwcorpo.mcp.broker.system.SystemRegistry;
 import pl.aiwcorpo.mcp.broker.system.WhoamiResult;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 @ExtendWith(OutputCaptureExtension.class)
@@ -95,6 +97,53 @@ class CredentialServiceTest {
         when(secrets.get(any())).thenReturn(Optional.empty());
         assertThatThrownBy(() -> service.resolve(gateway("alice-sub"), "jira", null, null)).isInstanceOf(CredentialRequiredException.class);
         assertThat(meters.counter(LostSecretSignal.METRIC, "system", "jira", "place", "resolve").count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void aMissingSecretPutsTheRowInErrorAndAuditsItOnce(CapturedOutput output) {
+        when(connections.find("alice-sub", "jira")).thenReturn(Optional.of(connection(null)));
+        when(secrets.get(any())).thenReturn(Optional.empty());
+        when(connections.setStateIfVersion("alice-sub", "jira", "v1", Connection.StoredState.ERROR, NOW)).thenReturn(true, false);
+
+        for (int attempt = 0; attempt < 2; attempt++) {
+            assertThatThrownBy(() -> service.resolve(gateway("alice-sub"), "jira", null, null)).isInstanceOf(CredentialRequiredException.class);
+        }
+
+        List<JsonNode> changes = AuditLines.all(output).stream().filter(e -> "connection_change".equals(e.path("event").stringValue())).toList();
+        assertThat(changes).as("the second sighting finds the row already changed").singleElement().satisfies(e -> {
+            assertThat(e.path("reason").stringValue()).isEqualTo("secret_missing");
+            assertThat(e.path("outcome").stringValue()).isEqualTo("error");
+            assertThat(e.path("server").stringValue()).isEqualTo("mcp-jira");
+            assertThat(e.path("credentialType").stringValue()).isEqualTo("user-secret");
+            assertThat(e.has("errorCode")).isFalse();
+        });
+        verify(invalidations).invalidated("alice-sub", "jira");
+    }
+
+    @Test
+    void aMissingSecretIsStillReportedWhenTheRowCannotBeUpdated() {
+        when(connections.find("alice-sub", "jira")).thenReturn(Optional.of(connection(null)));
+        when(secrets.get(any())).thenReturn(Optional.empty());
+        when(connections.setStateIfVersion(any(), any(), any(), any(), any())).thenThrow(new DataAccessResourceFailureException("db down"));
+
+        assertThatThrownBy(() -> service.resolve(gateway("alice-sub"), "jira", null, null)).isInstanceOf(CredentialRequiredException.class);
+
+        assertThat(meters.counter(LostSecretSignal.METRIC, "system", "jira", "place", "resolve").count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void anOffboardedUserRefusedAWriteIsAuditedAsDenied(CapturedOutput output) {
+        CredentialService withWhoami = serviceWithIdentity(new BackendIdentity("alice", "alice@corp.test"));
+        when(connections.find("alice-sub", "jira")).thenThrow(new UserBeingOffboardedException());
+
+        assertThatThrownBy(() -> withWhoami.putSecret(portal("alice-sub", "alice"), "jira", SecretValue.of("alice-pat"), null))
+                .isInstanceOf(UserBeingOffboardedException.class);
+
+        assertThat(AuditLines.all(output)).singleElement().satisfies(e -> {
+            assertThat(e.path("reason").stringValue()).isEqualTo("user_offboarding");
+            assertThat(e.path("outcome").stringValue()).isEqualTo("denied");
+            assertThat(e.path("errorCode").stringValue()).isEqualTo("upstream_unavailable");
+        });
     }
 
     @Test

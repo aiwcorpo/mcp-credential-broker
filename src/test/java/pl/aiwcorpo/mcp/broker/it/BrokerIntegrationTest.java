@@ -712,8 +712,12 @@ class BrokerIntegrationTest {
         }
         assertThat(resolved.status()).isEqualTo(503);
         assertThat(resolved.body()).isEqualTo("{\"error\":\"upstream_unavailable\"}");
-        assertThat(auditEvents(output, rid)).singleElement()
-                .satisfies(e -> assertThat(e.path("reason").stringValue()).isEqualTo("jti_store_unavailable"));
+        assertThat(auditEvents(output, rid)).singleElement().satisfies(e -> {
+            assertThat(e.path("event").stringValue()).isEqualTo("authentication");
+            assertThat(e.path("reason").stringValue()).isEqualTo("replay_store_unavailable");
+            assertThat(e.path("outcome").stringValue()).isEqualTo("denied");
+            assertThat(e.path("errorCode").stringValue()).isEqualTo("upstream_unavailable");
+        });
     }
 
     @Test
