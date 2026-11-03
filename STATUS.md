@@ -1,7 +1,33 @@
 # Status ws-06 (mcp-credential-broker)
 
-Kamień: **M5** (sekcja M5 niżej), poprzednio **M4** (strona brokera: CHANGELOG 4.0.0 kontraktów, CC-133 ... CC-162 dotyczące brokera). Kontrakty: `mcp-contracts` **5.1.0**
-(tag v5.1.0, w `~/.m2`). Poniżej sekcja M4, dalej M3, M2 i M1 bez zmian.
+Kamień: **M5** (sekcja M5 niżej), poprzednio **M4** (strona brokera: CHANGELOG 4.0.0 kontraktów, CC-133 ... CC-162 dotyczące brokera). Kontrakty: `mcp-contracts` **6.2.0**
+(w `~/.m2`). Poniżej sekcja M4, dalej M3, M2 i M1 bez zmian.
+
+## M6 etap 3 (2026-11-03): kontrakty 6.2.0 i porządki do wydania
+
+Zależność `mcp-contracts` 6.2.0 (migracja ws-06 z CHANGELOG 6.0.0; 6.1.0 i 6.2.0 nie dotykają brokera). Testy: 469 zielone (`ci/run.sh verify` i `image`, 20 nowych). Obraz: `mcp-credential-broker:m6-a0c70d1` (niewdrożony). Commity: `13941c5` (kontrakty, audyt, `secret_missing`), `a0c70d1` (porządki do wydania).
+
+- **CC-197:** awaria JWKS albo magazynu `jti` przy sprawdzaniu tokenu to zdarzenie `authentication`, wynik `denied`, `errorCode: upstream_unavailable`, powody `jwks_unavailable` i `replay_store_unavailable`, bez pola `server`; zdarzenie jest zapisywane także dla operacji bez własnego zdarzenia (`GET /v1/systems`). Odpowiedź bez zmian (`503 upstream_unavailable`). Test `CallerAuthenticationFilterOutageTest` porównuje zdarzenie z wektorami `broker-authentication-*`; `BrokerIntegrationTest.redisOutageFailsClosed` sprawdza je na działającym brokerze.
+- **CC-205:** wykrycie braku sekretu (w `resolve` dla `user-secret` i `user-oauth`, w `renew` także ze sweepu) ustawia stan wiersza `error` (`markError`, z `secret_version` jako warunkiem, więc równoległy `PUT` albo odświeżenie wygrywa), publikuje `credential.invalidated` i zapisuje jedno `connection_change`, `reason: secret_missing`, `outcome: error`, bez `errorCode` (wektor `broker-connection-secret-missing`). Drugie wykrycie tego samego wiersza nie zapisuje drugiego zdarzenia (aktualizacja warunkowa zwraca fałsz). Błąd bazy przy zmianie stanu jest tylko logowany: `resolve` nadal daje `credential_required`, licznik i log idą jak dotąd, następne wykrycie ponawia próbę. Ponowne połączenie (`PUT secret` albo `oauth/complete`) przywraca `connected` (test integracyjny).
+- **Punkt M5 z etapu 1 (100 wierszy z utraconym sekretem blokuje batch sweepu):** zamknięty stanem `error`. `OAuthRefreshFailureIntegrationTest.rowsWithALostSecretLeaveTheSweepBatchAfterOneVisit` wstawia 100 wierszy bez sekretu starszych niż zdrowe połączenie: pierwszy sweep nie odnawia nic i zostawia 100 wierszy w `error`, drugi odnawia zdrowe. Mutant (`markSecretMissing` zwraca fałsz) czerwony w czterech testach (dwa jednostkowe, dwa integracyjne).
+- **Powody audytu z opisu `reason` (9 + `secret_missing`), wyniki i `errorCode` wg kodu:**
+
+| Powód | Zdarzenie | Wynik | errorCode | Uwaga |
+| --- | --- | --- | --- | --- |
+| `database_unavailable` | `credential_resolve`, `connection_change`, `authenticator` | `error` | `upstream_unavailable` | wektor `broker-resolve-database-unavailable` |
+| `secret_store_unavailable` | j.w. | `error` | `upstream_unavailable` | zgodne z opisem |
+| `refresh_token_lost` | `connection_change` | `error` | `upstream_unavailable` | wektor jest bez `errorCode`; schemat dopuszcza oba; opis nie podaje kodu |
+| `user_offboarding` | `connection_change` (`oauth/start`, `oauth/complete`, `PUT secret`) | `denied` (było `error`, poprawione) | `upstream_unavailable` | opis: `denied`; kod zostawiony, bo odpowiedź to 503 |
+| `token_refreshed` | `connection_change` | `ok` | brak | zgodne |
+| `oauth_grant_revoked` | `connection_change` | `denied` | brak | opis nie podaje wyniku |
+| `connection_changed_during_refresh` | `connection_change` | `denied` | brak | opis nie podaje wyniku |
+| `provider_unavailable` | `credential_resolve`, `connection_change` | `error` | `upstream_unavailable` | zgodne |
+| `connection_busy` | `connection_change` (tylko `DELETE connection`) | `error` | `upstream_unavailable` | blokada odświeżenia trzymana przy `resolve` kończy się `provider_unavailable`, nie `connection_busy`; opis kontraktu to dopuszcza, ale warto go doprecyzować |
+| `secret_missing` | `connection_change` | `error` | brak | CC-205 |
+
+- **`Retry-After` przy 503:** kontrakt C4 nie wymaga go od brokera (odpowiedź `UpstreamUnavailable` nie ma nagłówka, `Retry-After` jest tylko przy 429); CC-199 dotyczy gatewaya. Broker nie zmieniony.
+- **Porządki wg `plan-wydanie.md`:** LICENSE (Apache-2.0), NOTICE, SECURITY.md, CONTRIBUTING.md, CHANGELOG.md, licencja w `pom.xml`, README z odbiorcą i bez ścieżek Homebrew (zostały tylko `/ścieżka/do/...` jako wzór), profil `release` z CycloneDX (patrz niżej), prefiks tagu obrazu z `MCP_IMAGE_STAGE` (domyślnie `m6`). Brak ścieżek katalogów domowych i tymczasowych sesji w plikach śledzonych (sprawdzone `git grep`). `CLAUDE.md` nie dodany.
+- **Niezrobione, do decyzji:** (1) profil `release` z `cyclonedx-maven-plugin` 2.9.1 nie był uruchomiony: wtyczka wymaga trybu online, a zasada zakazuje pobierania; do sprawdzenia w CI z dostępem do rejestru; (2) `distributionManagement` nie dodany, bo broker nie publikuje artefaktu Maven (produkt to obraz na ghcr.io, publikacja po zgodzie człowieka); (3) wersja zostaje `0.1.0-SNAPSHOT` do pierwszego wydania (punkt 7 listy); (4) `.github/workflows/ci.yml` nie sprawdzony pod kątem ghcr.io i SBOM.
 
 ## M6 etap 1 (2026-11-02): JWKS gateway'a i sygnał utraty sekretu
 
@@ -32,7 +58,7 @@ Ustalenia: stan TOTP był już w całości w bazie (blokada wiersza), kod authen
 Ograniczenia: rotacja refresh tokenu + śmierć instancji przed zapisem = połączenie `revoked` (README, "Wiele instancji"). Rate limit OAuth: `INCR` + `EXPIRE` nie są atomowe (licznik bez TTL dostaje TTL przy przekroczeniu), bez zmian.
 Propozycje CC (status `open`, dla ws-00): (1) dopisać do znanych powodów audytu C8 (`reason` w `audit-event.schema.json`) wartości, które broker już emituje,
 a opis ich nie zna: `database_unavailable` (baza nie odpowiedziała, `error`/`upstream_unavailable`), `refresh_token_lost` (dostawca zrotował refresh token, a broker go nie zapisał; połączenie przechodzi w `error`),
-`secret_store_unavailable`, `jti_store_unavailable`, `user_offboarding` (zapis odmówiony, bo trwa albo przed chwilą był purge użytkownika), `token_refreshed`, `oauth_grant_revoked`, `connection_changed_during_refresh`, `provider_unavailable`, `connection_busy`. Pole ma wzorzec, nie enum, więc to doprecyzowanie opisu (patch).
+`secret_store_unavailable`, `jti_store_unavailable` (w 6.0.0 zastąpione przez `replay_store_unavailable`, CC-197), `user_offboarding` (zapis odmówiony, bo trwa albo przed chwilą był purge użytkownika), `token_refreshed`, `oauth_grant_revoked`, `connection_changed_during_refresh`, `provider_unavailable`, `connection_busy`. Pole ma wzorzec, nie enum, więc to doprecyzowanie opisu (patch).
 
 ## M4 (2026-10-29)
 
