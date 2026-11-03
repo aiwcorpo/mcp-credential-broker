@@ -1,0 +1,47 @@
+# Release of the image to ghcr.io with its SBOM, on a version tag. Not run yet: the repository on GitHub does not exist
+# and publishing needs the decision of the owner (plan-wydanie.md). Only the two actions below are used, pinned to the
+# SHAs of ci.yml; docker and gh come with the runner.
+# Secrets MCP_MAVEN_REPOSITORY_URL, _USER and _PASSWORD point at the registry with the mcp-contracts artifacts (Environment release).
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions: {}
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: write
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/mcp-credential-broker
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Verify, build the jar and the SBOM
+        run: |
+          ci/run.sh verify
+          ./mvnw -B -Prelease package -DskipTests
+        env:
+          MCP_MAVEN_REPOSITORY_URL: ${{ secrets.MCP_MAVEN_REPOSITORY_URL }}
+          MCP_MAVEN_REPOSITORY_USER: ${{ secrets.MCP_MAVEN_REPOSITORY_USER }}
+          MCP_MAVEN_REPOSITORY_PASSWORD: ${{ secrets.MCP_MAVEN_REPOSITORY_PASSWORD }}
+      - name: Build and push the image
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          docker build -t "$IMAGE:$version" .
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$IMAGE:$version"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Attach the SBOM to the release
+        run: gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" target/*-sbom.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
