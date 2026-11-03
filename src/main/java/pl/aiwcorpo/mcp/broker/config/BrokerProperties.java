@@ -39,6 +39,7 @@ public record BrokerProperties(
         @DefaultValue @Valid @NotNull Authenticator authenticator,
         @DefaultValue @Valid @NotNull Retention retention,
         @DefaultValue @Valid @NotNull RateLimits rateLimits,
+        @DefaultValue @Valid @NotNull LostSecretBrake lostSecretBrake,
         @NotEmpty Map<String, @Valid SystemConfig> systems) {
 
     /** Internal JWT from the gateway (C2). Exactly one of jwksUri and jwksFile is set. */
@@ -143,6 +144,16 @@ public record BrokerProperties(
             @DefaultValue("20") @Min(1) int oauthCompletions,
             @DefaultValue("1m") @NotNull Duration window,
             @DefaultValue("broker:rate:") @NotBlank String redisPrefix) {
+    }
+
+    /**
+     * Stops marking connections whose secret is missing (CC-205) once more than {@code maxMarks} rows were marked within
+     * {@code window}. A burst that large means the secret store, not the individual secrets, is wrong (a changed path
+     * prefix, a store restored from an old state): the rows stay connected and recover when the store is fixed.
+     */
+    public record LostSecretBrake(
+            @DefaultValue("10") @Min(1) int maxMarks,
+            @DefaultValue("10m") @NotNull Duration window) {
     }
 
     /**

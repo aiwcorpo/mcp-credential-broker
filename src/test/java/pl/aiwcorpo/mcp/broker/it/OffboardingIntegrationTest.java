@@ -258,6 +258,30 @@ class OffboardingIntegrationTest {
     }
 
     @Test
+    void oauthStartAndCompleteRefusedWhilePurgingAreAuditedAsDenied(CapturedOutput output) {
+        String sub = newSub();
+        Started pending = start(sub);
+        assertThat(offboarding.send("POST", "/v1/admin/users/" + sub + "/purge", null, null, null).status()).isEqualTo(204);
+
+        String startRid = TestTokens.newRequestId();
+        assertThat(bff.send("POST", "/v1/connections/gitlab/oauth/start", tokens.bffUser(sub, "alice"), startRid,
+                "{\"returnPath\":\"/catalog\"}").status()).isEqualTo(503);
+        String completeRid = TestTokens.newRequestId();
+        assertThat(bff.send("POST", "/v1/connections/gitlab/oauth/complete", tokens.bffUser(sub, "alice"), completeRid,
+                "{\"flowId\":\"" + pending.flowId() + "\",\"code\":\"c\",\"state\":\"" + pending.state() + "\"}").status())
+                .isEqualTo(503);
+
+        for (String rid : List.of(startRid, completeRid)) {
+            assertThat(AuditLines.of(output, rid)).singleElement().satisfies(e -> {
+                assertThat(e.path("reason").stringValue()).isEqualTo("user_offboarding");
+                assertThat(e.path("outcome").stringValue()).isEqualTo("denied");
+                assertThat(e.path("errorCode").stringValue()).isEqualTo("upstream_unavailable");
+            });
+        }
+        redis.delete("broker:oauth:purging:" + SecretKey.hashOf(sub));
+    }
+
+    @Test
     void aSecretStoreOutageFailsThePurgeButDoesNotStopTheOtherStepsAndARepeatFinishesIt(CapturedOutput output) {
         String sub = newSub();
         assertThat(putSecret(sub, "jira", "alice-pat").status()).isEqualTo(200);

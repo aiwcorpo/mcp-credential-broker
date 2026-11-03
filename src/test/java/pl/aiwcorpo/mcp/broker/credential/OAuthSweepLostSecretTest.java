@@ -84,7 +84,7 @@ class OAuthSweepLostSecretTest {
     }
 
     @Test
-    void sweepPutsTheRowInErrorSoItIsNotSelectedAgainAndAuditsItOnce(CapturedOutput output) {
+    void sweepPutsTheRowInErrorAndAuditsItOnce(CapturedOutput output) {
         OAuthService oauth = service();
         when(connections.setStateIfVersion("alice-sub", "gitlab", "v1", Connection.StoredState.ERROR, NOW)).thenReturn(true, false);
 

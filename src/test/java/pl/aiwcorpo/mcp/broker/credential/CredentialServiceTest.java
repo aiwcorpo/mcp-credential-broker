@@ -37,6 +37,7 @@ import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
 import pl.aiwcorpo.mcp.broker.event.InvalidationPublisher;
 import pl.aiwcorpo.mcp.broker.secret.SecretKey;
 import pl.aiwcorpo.mcp.broker.support.AuditLines;
+import pl.aiwcorpo.mcp.broker.support.Contracts;
 import pl.aiwcorpo.mcp.broker.secret.SecretStore;
 import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
 import pl.aiwcorpo.mcp.broker.secret.SecretValue;
@@ -118,6 +119,53 @@ class CredentialServiceTest {
             assertThat(e.has("errorCode")).isFalse();
         });
         verify(invalidations).invalidated("alice-sub", "jira");
+    }
+
+    @Test
+    void theEventOfAMissingSecretMatchesTheContractVector(CapturedOutput output) {
+        when(connections.find("alice-sub", "jira")).thenReturn(Optional.of(connection(null)));
+        when(secrets.get(any())).thenReturn(Optional.empty());
+        when(connections.setStateIfVersion(any(), any(), any(), any(), any())).thenReturn(true);
+
+        assertThatThrownBy(() -> service.resolve(gateway("alice-sub"), "jira", null, null)).isInstanceOf(CredentialRequiredException.class);
+
+        JsonNode published = Contracts.json("test-vectors/audit-events/broker-connection-secret-missing.json").path("event");
+        assertThat(AuditLines.all(output).stream().filter(e -> "connection_change".equals(e.path("event").stringValue())).toList())
+                .singleElement().satisfies(event -> {
+            for (String field : List.of("component", "componentId", "event", "server", "credentialType", "reason", "outcome")) {
+                assertThat(event.path(field)).as(field).isEqualTo(published.path(field));
+            }
+            assertThat(event.has("errorCode")).isFalse();
+        });
+    }
+
+    @Test
+    void overTheBrakeTheRowIsLeftAloneAndTheCallerStillNeedsToReconnect(CapturedOutput output) {
+        for (int used = 0; used < 10; used++) {
+            assertThat(lostSecrets.mayMark()).isTrue();
+        }
+        when(connections.find("alice-sub", "jira")).thenReturn(Optional.of(connection(null)));
+        when(secrets.get(any())).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.resolve(gateway("alice-sub"), "jira", null, null)).isInstanceOf(CredentialRequiredException.class);
+
+        verify(connections, never()).setStateIfVersion(any(), any(), any(), any(), any());
+        verify(invalidations, never()).invalidated(any(), any());
+        assertThat(AuditLines.all(output)).extracting(e -> e.path("reason").stringValue()).doesNotContain("secret_missing");
+        assertThat(meters.counter(LostSecretSignal.METRIC, "system", "jira", "place", "resolve").count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void aLostAnswerAfterTheCommitStillAuditsTheChange(CapturedOutput output) {
+        Connection inError = new Connection("alice-sub", "jira", CredentialType.USER_SECRET, Connection.StoredState.ERROR, "alice",
+                null, NOW.minusSeconds(3600), null, "v1", null);
+        when(connections.find("alice-sub", "jira")).thenReturn(Optional.of(connection(null)), Optional.of(inError));
+        when(secrets.get(any())).thenReturn(Optional.empty());
+        when(connections.setStateIfVersion(any(), any(), any(), any(), any())).thenThrow(new DataAccessResourceFailureException("reply lost"));
+
+        assertThatThrownBy(() -> service.resolve(gateway("alice-sub"), "jira", null, null)).isInstanceOf(CredentialRequiredException.class);
+
+        assertThat(AuditLines.all(output)).extracting(e -> e.path("reason").stringValue()).contains("secret_missing");
     }
 
     @Test

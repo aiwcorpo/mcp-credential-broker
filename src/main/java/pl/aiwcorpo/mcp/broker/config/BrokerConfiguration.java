@@ -223,8 +223,8 @@ public class BrokerConfiguration {
     }
 
     @Bean
-    LostSecretSignal lostSecretSignal(Clock clock, MeterRegistry meters) {
-        return new LostSecretSignal(clock, meters);
+    LostSecretSignal lostSecretSignal(Clock clock, MeterRegistry meters, BrokerProperties properties) {
+        return new LostSecretSignal(clock, meters, properties.lostSecretBrake().maxMarks(), properties.lostSecretBrake().window());
     }
 
     @Bean

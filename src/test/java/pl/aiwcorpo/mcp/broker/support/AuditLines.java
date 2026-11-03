@@ -24,10 +24,14 @@ public final class AuditLines {
 
     /** Every broker audit line; the log pattern prefix of a unit test run is cut off. */
     public static List<JsonNode> all(CapturedOutput output) {
-        return output.getAll().lines()
+        List<JsonNode> events = output.getAll().lines()
                 .map(line -> line.indexOf("{\"ts\"") < 0 ? line : line.substring(line.indexOf("{\"ts\"")))
                 .filter(line -> line.startsWith("{") && line.contains("\"component\":\"broker\""))
                 .map(line -> Contracts.JSON.readTree(line))
                 .toList();
+        for (JsonNode event : events) {
+            assertThat(Contracts.schemaErrors("schemas/audit-event.schema.json", event)).as(event.toString()).isEmpty();
+        }
+        return events;
     }
 }

@@ -48,4 +48,20 @@ class LostSecretSignalTest {
         signal.seen("jira", LostSecretSignal.Place.REFRESH_SWEEP);
         assertThat(lines(output)).isEqualTo(3);
     }
+
+    @Test
+    void marksBeyondTheLimitAreRefusedWithOneAlarmPerWindowAndAllowedAgainAfterIt(CapturedOutput output) {
+        LostSecretSignal braked = new LostSecretSignal(clock, meters, 3, Duration.ofMinutes(10));
+        for (int mark = 0; mark < 3; mark++) {
+            assertThat(braked.mayMark()).isTrue();
+        }
+        for (int mark = 0; mark < 5; mark++) {
+            assertThat(braked.mayMark()).isFalse();
+        }
+        assertThat(meters.counter(LostSecretSignal.BRAKE_METRIC).count()).isEqualTo(5.0);
+        assertThat(output.getOut().split("marking them as failed is stopped", -1).length - 1).isEqualTo(1);
+
+        clock.advance(Duration.ofMinutes(10));
+        assertThat(braked.mayMark()).isTrue();
+    }
 }

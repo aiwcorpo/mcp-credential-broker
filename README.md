@@ -7,7 +7,7 @@ narzędzia (`resolve`), portal BFF zapisuje je w imieniu zalogowanego użytkowni
 
 Dla kogo: to produkt dla operatorów platformy (komponent wdrażany jako obraz kontenera `mcp-credential-broker`, nie biblioteka). Instalacja i codzienna obsługa całej platformy: repozytorium `mcp-docs` (w przygotowaniu); tutaj opis API, konfiguracji i zachowania brokera. Licencja: Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)); zgłaszanie podatności: [SECURITY.md](SECURITY.md); zmiany: [CHANGELOG.md](CHANGELOG.md).
 
-Stan: kamień M5, kod gotowy do dowodu z runnera CI (kontrakty 6.2.0, praca w kilku instancjach na jednej bazie, fail-closed bez Redisa, OpenBao i PostgreSQL, `ci/run.sh`; poza tym wszystkie cztery typy poświadczeń, offboarding, limity z M4, Authenticator TOTP z M3, PAT i "Połącz przez OAuth" z M1-M2). Co działa, czego jeszcze nie ma i odstępstwa od briefu: [STATUS.md](STATUS.md).
+Stan: kamień M6 (etap 3), po M5 z kodem gotowym do dowodu z runnera CI (kontrakty 6.2.0, praca w kilku instancjach na jednej bazie, fail-closed bez Redisa, OpenBao i PostgreSQL, `ci/run.sh`; poza tym wszystkie cztery typy poświadczeń, offboarding, limity z M4, Authenticator TOTP z M3, PAT i "Połącz przez OAuth" z M1-M2). Co działa, czego jeszcze nie ma i odstępstwa od briefu: [STATUS.md](STATUS.md).
 
 ## API w tej wersji
 
@@ -331,7 +331,15 @@ Brak sekretu przy istniejącym wierszu połączenia (utrata danych w OpenBao): `
 `credential_required`, wiersz przechodzi w stan `error` (status `error` w `GET /v1/connections`, CC-205) i broker zapisuje
 jedno `connection_change` z powodem `secret_missing` i wynikiem `error`, bez `errorCode`. Dotyczy `user-secret` i `user-oauth`,
 wykrycia w `resolve` i w sweepie odświeżania; wiersz w `error` nie wchodzi do zapytania sweepu, więc setka utraconych sekretów
-nie blokuje batcha i każdy jest widziany raz. Ponowne połączenie zapisuje nowy sekret i przywraca `connected`. Operator dostaje też
+nie blokuje batcha i każdy jest widziany raz. Ponowne połączenie zapisuje nowy sekret i przywraca `connected`.
+Oznaczanie niczego nie usuwa w OpenBao (brak odpowiedzi może znaczyć zły prefiks ścieżki, zły mount albo wersję usuniętą miękko, którą da się
+cofnąć). Hamulec: gdy w oknie `broker.lost-secret-brake.window` (domyślnie 10 min) broker oznaczył już `broker.lost-secret-brake.max-marks`
+(domyślnie 10) połączeń, przestaje oznaczać kolejne: wiersze zostają `connected`, `resolve` dalej daje `credential_required` (fail-closed), log
+ERROR "marking them as failed is stopped" (jeden na okno, bez `sub`) i licznik `broker.connection.secret_missing_brake` mówią o tym operatorowi.
+Odzyskanie: napraw magazyn (prefiks, mount, przywrócenie stanu albo `undelete` wersji w OpenBao); wiersze nieoznaczone ożywają same.
+Wiersze już oznaczone `error` użytkownik łączy ponownie; gdy sekrety wróciły, operator może przywrócić stan zapytaniem
+`update connection set state = 'connected' where state = 'error' and updated_at >= <początek incydentu>` (wiersze `error` z innej przyczyny,
+np. `refresh_token_lost`, mają sekret skasowany i trzeba je odtworzyć łączeniem, więc zawęź zapytanie do `sub` z audytu `secret_missing`). Operator dostaje też
 ostrzeżenie w logu WARN "Connection metadata without a stored
 secret" (pierwsze od razu, powtórki co najwyżej raz na 15 min z liczbą zdarzeń; bez `sub` i ścieżki sekretu).
 Licznik `broker.connection.secret_missing{system,place}` jest tylko w rejestrze procesu: `/actuator` wystawia

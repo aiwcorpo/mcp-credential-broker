@@ -441,7 +441,7 @@ public class OAuthService {
             if (read.isEmpty()) {
                 lostSecrets.seen(systemId, seen == null ? LostSecretSignal.Place.REFRESH_SWEEP
                         : LostSecretSignal.Place.RESOLVE);
-                if (store.markSecretMissing(current)) {
+                if (lostSecrets.mayMark() && store.markSecretMissing(current)) {
                     entry.error("secret_missing", null);
                 }
                 throw new CredentialRequiredException(systemId);

@@ -2,6 +2,7 @@ package pl.aiwcorpo.mcp.broker.credential;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
 
@@ -133,34 +134,46 @@ public class ConnectionStore {
      * Returns false when the row is no longer the one the caller read (nothing is changed then).
      */
     boolean markRevoked(Connection connection) {
-        return markUnusable(connection, Connection.StoredState.REVOKED);
+        return markUnusable(connection, Connection.StoredState.REVOKED, true);
     }
 
     /** The grant is intact at the provider but the broker lost the rotated refresh token: only reconnecting helps. */
     boolean markError(Connection connection) {
-        return markUnusable(connection, Connection.StoredState.ERROR);
+        return markUnusable(connection, Connection.StoredState.ERROR, true);
     }
 
     /**
      * The row says connected but its secret is gone: the row leaves the states the resolve and the sweep select, so one
-     * lost secret is met once and not on every sweep (CC-205). A database failure is only logged, the next sighting retries.
+     * lost secret is met once and not on every sweep (CC-205). Nothing is deleted from the secret store: a "missing"
+     * answer can also mean a wrong path or a soft-deleted version, which an operator can still undo.
+     * A database failure is only logged and the next sighting retries; when the failure may have come after the commit,
+     * the row is read again so that the caller still audits the change.
      */
     boolean markSecretMissing(Connection connection) {
         try {
-            return markError(connection);
+            return markUnusable(connection, Connection.StoredState.ERROR, false);
         } catch (RuntimeException e) {
             log.warn("Connection to {} with a missing secret could not be marked as failed ({})", connection.system(),
                     e.getClass().getSimpleName());
-            return false;
+            try {
+                return connections.find(connection.sub(), connection.system())
+                        .map(row -> row.state() == Connection.StoredState.ERROR
+                                && Objects.equals(row.secretVersion(), connection.secretVersion()))
+                        .orElse(false);
+            } catch (RuntimeException again) {
+                return false;
+            }
         }
     }
 
-    private boolean markUnusable(Connection connection, Connection.StoredState state) {
+    private boolean markUnusable(Connection connection, Connection.StoredState state, boolean deleteSecret) {
         if (!connections.setStateIfVersion(connection.sub(), connection.system(), connection.secretVersion(), state, clock.instant())) {
             return false;
         }
         invalidations.invalidated(connection.sub(), connection.system());
-        deleteQuietly(connection.secretKey());
+        if (deleteSecret) {
+            deleteQuietly(connection.secretKey());
+        }
         return true;
     }
 

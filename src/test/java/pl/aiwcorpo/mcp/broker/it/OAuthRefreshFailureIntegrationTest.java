@@ -58,6 +58,7 @@ class OAuthRefreshFailureIntegrationTest {
     static void properties(DynamicPropertyRegistry registry) {
         env.registerProperties(registry);
         registry.add("broker.systems.gitlab.oauth.client-secret", () -> "");
+        registry.add("broker.lost-secret-brake.max-marks", () -> "1000");
         registry.add("broker.retention.orphan-secrets-after", () -> "PT1S");
         registry.add("broker.retention.orphan-sweep-delete", () -> "true");
         registry.add("broker.retention.orphan-max-fraction", () -> "1.0");
@@ -76,6 +77,9 @@ class OAuthRefreshFailureIntegrationTest {
 
     @Autowired
     OAuthService oauthService;
+
+    @Autowired
+    pl.aiwcorpo.mcp.broker.credential.ConnectionRepository connectionRows;
 
     @MockitoSpyBean
     SecretStore secrets;
@@ -343,6 +347,34 @@ class OAuthRefreshFailureIntegrationTest {
 
         assertThat(oauthService.refreshDue()).as("the next sweep reaches the connection behind them").isEqualTo(1);
         assertThat(resolve(healthySub, "bob").json().path("value").stringValue()).isEqualTo(renewed.accessToken());
+    }
+
+    @Test
+    void aStateChangeForASecretVersionTheRowNoLongerPointsAtLeavesTheRowAlone() {
+        String sub = newSub();
+        connect(sub, "alice", gitlab.issueCode("alice", 7200));
+        String current = version(sub);
+        java.time.Instant now = java.time.Instant.now();
+
+        assertThat(connectionRows.setStateIfVersion(sub, "gitlab", "replaced-meanwhile", pl.aiwcorpo.mcp.broker.credential.Connection.StoredState.ERROR, now))
+                .as("a PUT switched the row to another version after the reader looked").isFalse();
+        assertThat(state(sub)).isEqualTo("connected");
+        assertThat(connectionRows.setStateIfVersion(sub, "gitlab", current, pl.aiwcorpo.mcp.broker.credential.Connection.StoredState.ERROR, now)).isTrue();
+        assertThat(state(sub)).isEqualTo("error");
+    }
+
+    @Test
+    void aMissingSecretIsMarkedWithoutTouchingTheStore() {
+        String sub = newSub();
+        connect(sub, "alice", gitlab.issueCode("alice", 7200));
+        SecretKey key = new SecretKey(sub, "gitlab", version(sub));
+        secrets.delete(key);
+        Mockito.clearInvocations(secrets);
+
+        assertThat(resolve(sub, "alice").status()).isEqualTo(409);
+
+        assertThat(state(sub)).isEqualTo("error");
+        Mockito.verify(secrets, Mockito.never()).delete(any());
     }
 
     @Test

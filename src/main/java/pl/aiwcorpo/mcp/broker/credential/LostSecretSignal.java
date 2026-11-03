@@ -17,7 +17,9 @@ import io.micrometer.core.instrument.MeterRegistry;
  * <p>
  * The counter is bumped on every sighting. The log line is written for the first sighting per system and
  * place, then at most once per interval with the number of sightings it stands for, so a sweep that meets the
- * same row every minute does not write a line every minute. Neither carries the user or the secret path.
+ * same row more than once does not write a line each time. Neither carries the user or the secret path.
+ * <p>
+ * It also holds the brake of CC-205: {@link #mayMark} allows at most {@code maxMarks} state changes per {@code window}.
  */
 public class LostSecretSignal {
 
@@ -34,11 +36,48 @@ public class LostSecretSignal {
 
     private final Clock clock;
     private final MeterRegistry meters;
+    static final String BRAKE_METRIC = "broker.connection.secret_missing_brake";
+
     private final Map<String, Report> reports = new ConcurrentHashMap<>();
+    private final int maxMarks;
+    private final Duration window;
+    private Instant windowStart;
+    private int marks;
+    private boolean alarmed;
 
     public LostSecretSignal(Clock clock, MeterRegistry meters) {
+        this(clock, meters, 10, Duration.ofMinutes(10));
+    }
+
+    public LostSecretSignal(Clock clock, MeterRegistry meters, int maxMarks, Duration window) {
         this.clock = clock;
         this.meters = meters;
+        this.maxMarks = maxMarks;
+        this.window = window;
+    }
+
+    /**
+     * Whether one more connection may be put in state error. Over the limit nothing changes for the caller, who still
+     * answers credential_required, but the row is left alone and the operator gets one alarm per window.
+     */
+    public synchronized boolean mayMark() {
+        Instant now = clock.instant();
+        if (windowStart == null || !now.isBefore(windowStart.plus(window))) {
+            windowStart = now;
+            marks = 0;
+            alarmed = false;
+        }
+        if (marks < maxMarks) {
+            marks++;
+            return true;
+        }
+        meters.counter(BRAKE_METRIC).increment();
+        if (!alarmed) {
+            alarmed = true;
+            log.error("More than {} connections without a stored secret within {}: marking them as failed is stopped until the"
+                    + " window ends. Check the secret store (path prefix, mount, restored state) before users reconnect", maxMarks, window);
+        }
+        return false;
     }
 
     public void seen(String system, Place place) {

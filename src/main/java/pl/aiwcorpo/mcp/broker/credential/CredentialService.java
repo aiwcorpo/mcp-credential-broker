@@ -169,7 +169,7 @@ public class CredentialService {
         entry.credentialType(found.type().wire());
         if (read.isEmpty()) {
             lostSecrets.seen(system.id(), LostSecretSignal.Place.RESOLVE);
-            if (store.markSecretMissing(found)) {
+            if (lostSecrets.mayMark() && store.markSecretMissing(found)) {
                 audit.event("connection_change", caller.requestId()).user(found.sub(), null, null).system(found.system())
                         .credentialType(found.type().wire()).backendUser(found.backendUser()).error("secret_missing", null);
             }
