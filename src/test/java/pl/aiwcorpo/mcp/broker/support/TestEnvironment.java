@@ -149,13 +149,19 @@ public final class TestEnvironment {
                 confluenceWhoamiCalls.incrementAndGet();
                 String auth = exchange.getRequestHeaders().getFirst("Authorization");
                 String pat = auth != null && auth.startsWith("Bearer ") ? auth.substring(7) : null;
+                if (auth != null && auth.startsWith("Basic ")) {
+                    // A Basic pair is "<login>:<token>"; the login is what whoami reports back, a token starting with invalid is refused.
+                    String pair = new String(java.util.Base64.getDecoder().decode(auth.substring(6)), StandardCharsets.UTF_8);
+                    int colon = pair.indexOf(':');
+                    pat = pair.substring(colon + 1).startsWith("invalid") ? "invalid" : "basic-" + pair.substring(0, colon);
+                }
                 int status;
                 String body;
                 if (pat == null || pat.startsWith("invalid")) {
                     status = 401;
                     body = "{\"statusCode\":401,\"message\":\"\"}";
                 } else {
-                    String user = JIRA_PATS.getOrDefault(pat, "someone-else");
+                    String user = pat.startsWith("basic-") ? pat.substring(6) : JIRA_PATS.getOrDefault(pat, "someone-else");
                     status = 200;
                     body = "{\"type\":\"known\",\"username\":\"" + user + "\",\"userKey\":\"2c9" + user
                             + "\",\"displayName\":\"" + user + "\"}";

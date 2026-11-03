@@ -223,11 +223,39 @@ public record BrokerProperties(
             @DefaultValue("") List<String> oauthScopes,
             @DefaultValue("5s") @NotNull Duration timeout,
             @Valid OAuth oauth,
-            @Valid TokenExchange tokenExchange) {
+            @Valid TokenExchange tokenExchange,
+            CredentialScheme userSecretScheme,
+            Deployment deployment) {
 
         /** An unset list binds as one empty string; C4 wants an empty list. */
         public SystemConfig {
             oauthScopes = oauthScopes == null ? List.of() : oauthScopes.stream().filter(scope -> !scope.isBlank()).toList();
+            if (userSecretScheme != null && userSecretScheme != CredentialScheme.BEARER && userSecretScheme != CredentialScheme.BASIC) {
+                throw new IllegalArgumentException("user-secret-scheme is Bearer or Basic");
+            }
+            if (userSecretScheme == CredentialScheme.BASIC && (supportedTypes == null || !supportedTypes.contains(CredentialType.USER_SECRET))) {
+                throw new IllegalArgumentException("user-secret-scheme Basic needs the user-secret type");
+            }
+        }
+
+        /** True when a user gives a login and a password or token for this system (CC-222); false means a single token. */
+        public boolean userSecretIsBasic() {
+            return userSecretScheme == CredentialScheme.BASIC;
+        }
+    }
+
+    /** Kind of installation of a target system, told to the portal by {@code GET /v1/systems} (CC-222). */
+    public enum Deployment {
+        DC("dc"), CLOUD("cloud");
+
+        private final String wire;
+
+        Deployment(String wire) {
+            this.wire = wire;
+        }
+
+        public String wire() {
+            return wire;
         }
     }
 }

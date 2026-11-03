@@ -48,8 +48,8 @@ public class CredentialController {
         if (!(caller instanceof Caller.PortalUser user)) {
             throw new IllegalStateException("PUT secret reached without a portal user token");
         }
-        CredentialService.Stored stored = credentials.putSecret(user, system, SecretValue.of(request.secret()),
-                request.expiresAt());
+        CredentialService.Stored stored = credentials.putSecret(user, system, request.username(),
+                SecretValue.of(request.secret()), request.expiresAt());
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
                 .body(new PutSecretResponse(stored.status().wire(), stored.backendUser(), stored.expiresAt()));

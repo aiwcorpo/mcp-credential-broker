@@ -307,7 +307,7 @@ class CredentialServiceTest {
     private static BrokerProperties.SystemConfig config() {
         return new BrokerProperties.SystemConfig(URI.create("http://jira.test"), "atlassian-dc",
                 List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET, CredentialScheme.BEARER,
-                List.of(), Duration.ofSeconds(1), null, null);
+                List.of(), Duration.ofSeconds(1), null, null, null, null);
     }
 
     private static Connection connectionAt(String version) {

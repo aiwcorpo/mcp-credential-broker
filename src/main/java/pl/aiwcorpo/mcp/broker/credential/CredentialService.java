@@ -1,5 +1,7 @@
 package pl.aiwcorpo.mcp.broker.credential;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.time.Clock;
 import java.time.DateTimeException;
 import java.time.Duration;
@@ -188,7 +190,8 @@ public class CredentialService {
             connections.touch(user.sub(), system.id(), now);
         }
         Instant expiry = found.type() == CredentialType.USER_OAUTH ? found.accessExpiresAt() : found.expiresAt();
-        return new Resolved(system.config().secretScheme(), stored.value(), found.type(), expiry, ttl(clock.instant(), expiry));
+        CredentialScheme scheme = found.type() == CredentialType.USER_SECRET ? userSecretScheme(system) : system.config().secretScheme();
+        return new Resolved(scheme, stored.value(), found.type(), expiry, ttl(clock.instant(), expiry));
     }
 
     /** Nothing is stored: the token lives in the response and in the gateway's cache for at most cacheTtlSeconds. */
@@ -220,6 +223,11 @@ public class CredentialService {
     }
 
     public Stored putSecret(Caller.PortalUser caller, String systemId, SecretValue secret, String expiresAtText) {
+        return putSecret(caller, systemId, null, secret, expiresAtText);
+    }
+
+    /** @param username login for a system whose user secret is a Basic pair (CC-222), null for a single token */
+    public Stored putSecret(Caller.PortalUser caller, String systemId, String username, SecretValue secret, String expiresAtText) {
         AuditLog.Entry entry = audit.event("connection_change", caller.requestId())
                 .user(caller.sub(), caller.username(), caller.azp())
                 .system(systemId)
@@ -230,7 +238,9 @@ public class CredentialService {
                     .orElseThrow(() -> new InvalidRequestException("system does not accept user secrets"));
             Instant now = clock.instant();
             Instant expiresAt = parseTimestamp(expiresAtText);
-            BackendIdentity identity = switch (system.adapter().whoami(system.config().secretScheme(), secret)) {
+            SecretValue kept = userSecretValue(system, username, secret);
+            CredentialScheme scheme = userSecretScheme(system);
+            BackendIdentity identity = switch (system.adapter().whoami(scheme, kept)) {
                 case WhoamiResult.Rejected rejected -> throw new SecretRejectedException("secret_invalid");
                 case WhoamiResult.Identified identified -> identified.identity();
             };
@@ -243,7 +253,7 @@ public class CredentialService {
                 Connection written = store.replace(
                         new Connection(caller.sub(), system.id(), CredentialType.USER_SECRET, Connection.StoredState.CONNECTED,
                                 identity.username(), expires, now.truncatedTo(ChronoUnit.SECONDS), null, null, null),
-                        StoredCredential.of(CredentialType.USER_SECRET, secret), previous, true);
+                        StoredCredential.of(CredentialType.USER_SECRET, kept), previous, true);
                 boolean revoked = oauth.revokeReplacedGrant(system.id(), oldGrant);
                 if (previous.isPresent() && oauth.holdsGrant(previous.get()) && (oldGrant == null || !revoked)) {
                     oauth.auditReplacedGrantNotRevoked(caller.requestId(), caller.sub(), system.id());
@@ -271,6 +281,28 @@ public class CredentialService {
             entry.error(unavailableDatabase(e) ? "database_unavailable" : "internal_error", "upstream_unavailable");
             throw e;
         }
+    }
+
+    private static CredentialScheme userSecretScheme(ConfiguredSystem system) {
+        return system.config().userSecretIsBasic() ? CredentialScheme.BASIC : system.config().secretScheme();
+    }
+
+    /**
+     * What the secret store keeps for a user secret: the token as given, or for a Basic system the base64 of
+     * {@code username:secret}, which is also the value resolve returns. The username and the password are not kept apart.
+     */
+    private static SecretValue userSecretValue(ConfiguredSystem system, String username, SecretValue secret) {
+        if (!system.config().userSecretIsBasic()) {
+            if (username != null) {
+                throw new InvalidRequestException("username is only for systems with a Basic user secret");
+            }
+            return secret;
+        }
+        if (username == null || username.isEmpty() || username.contains(":")) {
+            throw new InvalidRequestException("a Basic user secret needs a username without a colon");
+        }
+        String login = username + ":" + secret.reveal();
+        return SecretValue.of(Base64.getEncoder().encodeToString(login.getBytes(StandardCharsets.UTF_8)));
     }
 
     private record Replaced(Connection connection, Optional<Connection> previous) {

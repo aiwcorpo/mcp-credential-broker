@@ -23,7 +23,9 @@ public class SystemsController {
                 .map(s -> new SystemInfoResponse(s.id(),
                         s.config().supportedTypes().stream().map(CredentialType::wire).distinct().toList(),
                         s.config().defaultType().wire(),
-                        s.config().oauthScopes().stream().distinct().toList()))
+                        s.config().oauthScopes().stream().distinct().toList(),
+                        s.config().deployment() == null ? null : s.config().deployment().wire(),
+                        s.supports(CredentialType.USER_SECRET) ? (s.config().userSecretIsBasic() ? "Basic" : "Bearer") : null))
                 .toList();
     }
 }

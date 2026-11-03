@@ -114,7 +114,8 @@ public class CallerAuthenticationFilter extends OncePerRequestFilter {
             };
         } catch (TokenRejectedException e) {
             log.warn("Rejected token from {} for {}: {}", cn.get(), operation.operationId(), e.reason());
-            deny(operation, requestId, path, e.reason(), "unauthenticated");
+            // Same event as every receiver of the internal JWT writes (CC-211): no server, sub or tool, no event of the operation.
+            audit.event("authentication", requestId).denied(e.reason(), null);
             write(response, 401, "unauthenticated");
             return;
         } catch (ReplayGuardUnavailableException | KeySourceUnavailableException e) {

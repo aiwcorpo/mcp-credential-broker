@@ -32,9 +32,19 @@ class SystemRegistryTest {
 
     private static void assertRefused(String adapter, List<CredentialType> types, CredentialType defaultType) {
         BrokerProperties.SystemConfig config = new BrokerProperties.SystemConfig(URI.create("http://servicedesk.test"), adapter, types,
-                defaultType, CredentialScheme.BEARER, List.of(), Duration.ofSeconds(1), null, null);
+                defaultType, CredentialScheme.BEARER, List.of(), Duration.ofSeconds(1), null, null, null, null);
         assertThatThrownBy(() -> new SystemRegistry(Map.of("servicedesk", config), HttpClient.newHttpClient(),
                 JsonMapper.builder().build(), mock(OAuthClientSecrets.class), mock(ServiceAccountKeys.class), Clock.systemUTC(),
                 new SimpleMeterRegistry())).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void aBasicUserSecretNeedsTheUserSecretType() {
+        assertThatThrownBy(() -> new BrokerProperties.SystemConfig(URI.create("http://gitlab.test"), "gitlab",
+                List.of(CredentialType.USER_OAUTH), CredentialType.USER_OAUTH, CredentialScheme.BEARER, List.of(),
+                Duration.ofSeconds(1), null, null, CredentialScheme.BASIC, null)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new BrokerProperties.SystemConfig(URI.create("http://jira.test"), "atlassian-dc",
+                List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET, CredentialScheme.BEARER, List.of(),
+                Duration.ofSeconds(1), null, null, CredentialScheme.TOKEN, null)).isInstanceOf(IllegalArgumentException.class);
     }
 }

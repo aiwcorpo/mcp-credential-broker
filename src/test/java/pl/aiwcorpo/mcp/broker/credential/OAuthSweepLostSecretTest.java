@@ -49,7 +49,7 @@ class OAuthSweepLostSecretTest {
         SystemAdapter adapter = mock(SystemAdapter.class, withSettings().extraInterfaces(OAuthProvider.class));
         BrokerProperties.SystemConfig config = new BrokerProperties.SystemConfig(URI.create("http://gitlab.test"), "gitlab",
                 List.of(CredentialType.USER_OAUTH), CredentialType.USER_OAUTH, CredentialScheme.BEARER, List.of(),
-                Duration.ofSeconds(1), null, null);
+                Duration.ofSeconds(1), null, null, null, null);
         SystemRegistry.ConfiguredSystem gitlab = new SystemRegistry.ConfiguredSystem("gitlab", config, adapter);
         SystemRegistry systems = mock(SystemRegistry.class);
         when(systems.all()).thenReturn(List.of(gitlab));

@@ -37,7 +37,12 @@ class CallerAuthenticationFilterOutageTest {
 
     private final InternalJwtVerifier gatewayTokens = mock(InternalJwtVerifier.class);
 
-    private JsonNode outageEvent(RuntimeException failure, String vector, CapturedOutput output) throws Exception {
+    private JsonNode outageEvent(RuntimeException failure, String vector, CapturedOutput output)
+            throws Exception {
+        return authenticationEvent(failure, vector, output, 503);
+    }
+
+    private JsonNode authenticationEvent(RuntimeException failure, String vector, CapturedOutput output, int status) throws Exception {
         when(gatewayTokens.verify(anyString(), any(), anyBoolean(), any())).thenThrow(failure);
         CallerAuthenticationFilter filter = new CallerAuthenticationFilter(gatewayTokens, mock(BffTokenVerifier.class),
                 new AuditLog("mcp-credential-broker", CLOCK), JsonMapper.builder().build(), CLOCK, 65536);
@@ -50,14 +55,16 @@ class CallerAuthenticationFilterOutageTest {
 
         filter.doFilter(request, response, new MockFilterChain());
 
-        assertThat(response.getStatus()).isEqualTo(503);
+        assertThat(response.getStatus()).isEqualTo(status);
         List<JsonNode> events = AuditLines.of(output, response.getHeader("X-Request-Id"));
         assertThat(events).singleElement().satisfies(event -> {
             JsonNode published = Contracts.json("test-vectors/audit-events/" + vector).path("event");
             for (String field : List.of("component", "componentId", "event", "reason", "outcome", "errorCode")) {
                 assertThat(event.path(field)).as(field).isEqualTo(published.path(field));
             }
-            assertThat(event.has("server")).as("no system: the failure is not about one").isFalse();
+            for (String field : List.of("server", "sub", "tool", "username", "credentialType")) {
+                assertThat(event.has(field)).as("no " + field + ": the token is not trusted yet").isFalse();
+            }
         });
         return events.getFirst();
     }
@@ -70,5 +77,20 @@ class CallerAuthenticationFilterOutageTest {
     @Test
     void unavailableReplayStoreIsAuthenticationReplayStoreUnavailableDenied(CapturedOutput output) throws Exception {
         outageEvent(new ReplayGuardUnavailableException("no redis"), "broker-authentication-denied-replay-store-unavailable.json", output);
+    }
+
+    @Test
+    void aRejectedBadSignatureIsAuthenticationDeniedWithoutAnEventOfTheOperation(CapturedOutput output) throws Exception {
+        authenticationEvent(new TokenRejectedException("bad_signature"), "broker-authentication-denied-bad-signature.json", output, 401);
+    }
+
+    @Test
+    void anExpiredTokenIsAuthenticationDenied(CapturedOutput output) throws Exception {
+        authenticationEvent(new TokenRejectedException("expired"), "broker-authentication-denied-expired.json", output, 401);
+    }
+
+    @Test
+    void aReplayedTokenIsAuthenticationDenied(CapturedOutput output) throws Exception {
+        authenticationEvent(new TokenRejectedException("replayed_jti"), "broker-authentication-denied-replayed-jti.json", output, 401);
     }
 }

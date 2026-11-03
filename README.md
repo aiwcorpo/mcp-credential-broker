@@ -3,11 +3,11 @@
 Credential broker platformy MCP (strumień ws-06): jedyne miejsce, w którym leżą poświadczenia użytkowników
 do systemów docelowych, per (`sub`, system). Gateway pobiera z niego poświadczenie przy wywołaniu
 narzędzia (`resolve`), portal BFF zapisuje je w imieniu zalogowanego użytkownika. Kontrakt: C4 z
-`mcp-contracts` 6.2.0 (`openapi/credential-broker.v1.yaml`), audyt C8, zdarzenie C4.3.
+`mcp-contracts` 6.3.2 (`openapi/credential-broker.v1.yaml`), audyt C8, zdarzenie C4.3.
 
 Dla kogo: to produkt dla operatorów platformy (komponent wdrażany jako obraz kontenera `mcp-credential-broker`, nie biblioteka). Instalacja i codzienna obsługa całej platformy: repozytorium `mcp-docs` (w przygotowaniu); tutaj opis API, konfiguracji i zachowania brokera. Licencja: Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)); zgłaszanie podatności: [SECURITY.md](SECURITY.md); zmiany: [CHANGELOG.md](CHANGELOG.md).
 
-Stan: kamień M6 (etap 3), po M5 z kodem gotowym do dowodu z runnera CI (kontrakty 6.2.0, praca w kilku instancjach na jednej bazie, fail-closed bez Redisa, OpenBao i PostgreSQL, `ci/run.sh`; poza tym wszystkie cztery typy poświadczeń, offboarding, limity z M4, Authenticator TOTP z M3, PAT i "Połącz przez OAuth" z M1-M2). Co działa, czego jeszcze nie ma i odstępstwa od briefu: [STATUS.md](STATUS.md).
+Stan: kamień M6 (etap 3), po M5 z kodem gotowym do dowodu z runnera CI (kontrakty 6.3.2, praca w kilku instancjach na jednej bazie, fail-closed bez Redisa, OpenBao i PostgreSQL, `ci/run.sh`; poza tym wszystkie cztery typy poświadczeń, offboarding, limity z M4, Authenticator TOTP z M3, PAT i "Połącz przez OAuth" z M1-M2). Co działa, czego jeszcze nie ma i odstępstwa od briefu: [STATUS.md](STATUS.md).
 
 ## API w tej wersji
 
@@ -41,7 +41,7 @@ zgodnie z `x-allowed-client-cn` (inaczej 403), token pasujący do CN (inaczej 40
 tokenu; ścieżka, query i ciało nie mogą go wskazać (nieznane pola w JSON -> 400). Ciało jest ograniczone do
 16 KB liczonych przy czytaniu, więc limit działa także dla `Transfer-Encoding: chunked` bez `Content-Length`.
 
-Wewnętrzny JWT C2 sprawdzany jest dokładnie według wektorów `test-vectors/jwt` z 6.2.0 (wszystkie
+Wewnętrzny JWT C2 sprawdzany jest dokładnie według wektorów `test-vectors/jwt` z 6.3.2 (wszystkie
 przechodzą, także co do powodu odrzucenia): tylko ES256, `kid` z JWKS gateway'a, podpis, kształt claimów
 wariantu, `iss`, `aud` jako napis, `exp` z tolerancją 30 s, `iat` nie z przyszłości, czas życia do 60 s,
 `rid == X-Request-Id`, wariant serwisowy tylko dla `GET /v1/systems`, `tool` wymagany przy `resolve` i
@@ -51,6 +51,16 @@ zabroniony przy `GET /v1/systems` (CC-038), `vs` i `vsc` nie istnieją (token z 
 z powodem `test_key_not_allowed`, chyba że `MCP_ALLOW_TEST_KEYS=true` (CC-044). Klucze z `kid` zaczynającym się od `dev-`
 (stos dev generuje własne) wymagają trybu dev (CC-137): `MCP_ALLOW_TEST_KEYS=true` **i** aktywnego profilu Springa `devstack`
 (`SPRING_PROFILES_ACTIVE=devstack`); samo `MCP_ALLOW_TEST_KEYS` ich nie dopuszcza.
+
+Login i hasło (Basic, CC-222): dla systemu z `user-secret-scheme: Basic` (i opcjonalnym `deployment: dc|cloud`, które broker tylko podaje w `GET /v1/systems`) `PUT secret`
+wymaga `username` obok `secret` (hasło albo token API tego loginu). Pole `username` ma wzorzec z kontraktu (zbiór znaków `backendUser`, bez `:`), jest tylko do
+zapisu i nigdy nie trafia do logów ani odpowiedzi. Para jest zapisywana jak dotąd sekret, jako jedna wartość `base64(username:secret)`; ta sama wartość
+i schemat `Basic` wracają z `resolve`, a whoami dostaje nagłówek `Authorization: Basic ...`. `username` dla systemu bez Basic i brak `username` dla Basic to `400`.
+`GET /v1/systems` podaje `userSecretScheme` (`Basic` albo `Bearer`, tylko dla systemów z `user-secret`) i `deployment` (tylko gdy skonfigurowane). Zmiana
+schematu istniejącego systemu nie przekształca zapisanych połączeń: użytkownicy łączą się ponownie.
+Token z `mcp_risk` albo `mcp_action` (claimy tylko dla sidecara adaptera, CC-226) broker odrzuca jako `401 invalid_claims`.
+Odrzucenie tokenu wywołującego (zły podpis, wygaśnięcie, powtórzony `jti` i pozostałe powody) to zdarzenie audytu `authentication` z wynikiem `denied`, bez
+`server`, `sub` i `tool` i bez zdarzenia operacji (CC-211); broker nie zapisuje `decision` (CC-212).
 
 `PUT secret` woła whoami systemu z nowym sekretem (Jira DC: `GET /rest/api/2/myself`, login w `name`; Confluence DC: `GET /rest/api/user/current`,
 login w `username`, CC-073; GitLab: `GET /api/v4/user`, login w `username`; bez podążania za przekierowaniami, TLS z zaufaniem do wewnętrznego CA) tylko po to, żeby sprawdzić ważność sekretu i odczytać konto (`backendUser`). Odrzucony
@@ -414,7 +424,7 @@ docker build -t mcp-credential-broker:dev .
 | Test | Co sprawdza |
 | --- | --- |
 | `CallerAuthenticationFilterOutageTest` | niedostępne klucze i magazyn `jti`: `503` i zdarzenie `authentication` zgodne z wektorami `broker-authentication-*` |
-| `InternalJwtVectorTest` | wszystkie wektory C2 z `mcp-contracts` 6.2.0 (także `dev-` z `devstackProfile` i wywołania `authenticator` z `tool`) (wynik i powód, `allowTestKeys` z wektora), klucz testowy pod produkcyjnym `kid` (SPKI), replay |
+| `InternalJwtVectorTest` | wszystkie wektory C2 z `mcp-contracts` 6.3.2 (także `dev-` z `devstackProfile` i wywołania `authenticator` z `tool`) (wynik i powód, `allowTestKeys` z wektora), klucz testowy pod produkcyjnym `kid` (SPKI), replay |
 | `MultiInstanceIntegrationTest` | dwie JVM brokera (porty 18712-18717) na wspólnej bazie: zapis i potwierdzenie rejestracji na różnych instancjach, równoległe potwierdzenia, 5 błędów dokładnie raz, jeden kod raz, spalenie kodów, zabicie instancji (SIGKILL) w trakcie prób, jedno odświeżenie na dwóch instancjach, martwy właściciel blokady, równoczesne migracje pustej bazy |
 | `FailClosedIntegrationTest` | nadużycie 15: 12 operacji przy wstrzymanym Redisie, OpenBao i PostgreSQL, kody i czasy, brak `internal_error`, powrót po wznowieniu |
 | `ReturnPathTest` | walidator `returnPath` (CC-032) na wektorach `return-paths/`, używany przez `oauth/start` |
@@ -431,7 +441,7 @@ docker build -t mcp-credential-broker:dev .
 | `OpenBaoClientTest` | `renew-self`, ponowne logowanie przy `token_max_ttl`, praca na ważnym tokenie po nieudanym logowaniu |
 | `KeySourceTest` | JWKS gateway'a przeterminowany -> 503, niedostępny JWKS IdP -> 503 zamiast 401 |
 | `CredentialServiceTest`, `ConnectionTest`, `AuditLogTest`, `TransportSecurityTest` | fail-closed, wersje sekretów, `email_verified`, porównanie ASCII, `subjectToken`, TTL, `lastUsedAt`, escapowanie audytu, `backendUser` w audycie (poprawny, odrzucany, surogaty, błąd zapisu po whoami), wymóg https |
-| `AuditEventVectorTest` | wszystkie wektory `audit-events/` z `mcp-contracts` 6.2.0 względem schematu C8 i zgodność `AuditLog.validBackendUser` z wektorami `backendUser` |
+| `AuditEventVectorTest` | wszystkie wektory `audit-events/` z `mcp-contracts` 6.3.2 względem schematu C8 i zgodność `AuditLog.validBackendUser` z wektorami `backendUser` |
 
 ## Uruchomienie lokalne w `mcp-platform-dev` (ws-01)
 

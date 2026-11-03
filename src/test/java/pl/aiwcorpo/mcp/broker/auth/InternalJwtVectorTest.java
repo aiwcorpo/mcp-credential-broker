@@ -89,6 +89,13 @@ class InternalJwtVectorTest {
             reason = e.reason();
         }
         String expectedReason = expected.path("valid").asBoolean() ? null : expected.path("reason").stringValue();
+        if ("adapter".equals(verifier.path("receiverMode").asString(null))) {
+            // The sidecar of an adapter is the only receiver of mcp_risk and mcp_action; the broker refuses them (CC-226).
+            if (!expected.path("valid").asBoolean()) {
+                return;
+            }
+            expectedReason = "invalid_claims";
+        }
         assertThat(reason).as(name).isEqualTo(expectedReason);
     }
 
