@@ -52,6 +52,12 @@ jobs:
         with:
           name: image
           path: out
+      - name: Check the artifact file list
+        run: |
+          cd out
+          unexpected="$(find . -mindepth 1 | sed 's|^\./||' | grep -Evx 'image\.tar|[A-Za-z0-9._-]+-sbom\.json' || true)"
+          if [ -n "$unexpected" ]; then echo "unexpected files in the artifact:" >&2; echo "$unexpected" >&2; exit 1; fi
+          test -f image.tar
           if-no-files-found: error
   publish:
     needs: build
@@ -65,6 +71,12 @@ jobs:
         with:
           name: image
           path: out
+      - name: Check the artifact file list
+        run: |
+          cd out
+          unexpected="$(find . -mindepth 1 | sed 's|^\./||' | grep -Evx 'image\.tar|[A-Za-z0-9._-]+-sbom\.json' || true)"
+          if [ -n "$unexpected" ]; then echo "unexpected files in the artifact:" >&2; echo "$unexpected" >&2; exit 1; fi
+          test -f image.tar
       - name: Push the image
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -86,6 +98,12 @@ jobs:
         with:
           name: image
           path: out
+      - name: Check the artifact file list
+        run: |
+          cd out
+          unexpected="$(find . -mindepth 1 | sed 's|^\./||' | grep -Evx 'image\.tar|[A-Za-z0-9._-]+-sbom\.json' || true)"
+          if [ -n "$unexpected" ]; then echo "unexpected files in the artifact:" >&2; echo "$unexpected" >&2; exit 1; fi
+          test -f image.tar
       - name: Attach the SBOM to the release
         run: gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" out/*-sbom.json
         env:
