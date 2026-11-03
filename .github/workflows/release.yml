@@ -1,22 +1,34 @@
 # Release of the image to ghcr.io with its SBOM, on a version tag. Not run yet: the repository on GitHub does not exist
-# and publishing needs the decision of the owner (plan-wydanie.md). Only the two actions below are used, pinned to the
-# SHAs of ci.yml; docker and gh come with the runner.
-# Secrets MCP_MAVEN_REPOSITORY_URL, _USER and _PASSWORD point at the registry with the mcp-contracts artifacts (Environment release).
+# and publishing needs the decision of the owner (plan-wydanie.md).
+#
+# Three jobs, so that no job with a write permission runs a build tool on the code or its dependencies:
+#   build    contents: read, packages: read. ci/run.sh verify, the jar, the SBOM and docker build; the image leaves as a
+#            docker save tarball in an artifact. Reads the mcp-contracts artifacts from GitHub Packages with GITHUB_TOKEN
+#            (the package must grant access to this repository).
+#   publish  packages: write. No checkout, no cache; docker load and docker push only. The token is in the environment
+#            of the push step.
+#   release  contents: write. No checkout; creates the draft release with the SBOM through gh (GH_REPO instead of a clone).
 name: release
 on:
   push:
     tags: ['v*']
 permissions: {}
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/mcp-credential-broker
 jobs:
-  image:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    environment: release
     permissions:
-      contents: write
-      packages: write
+      contents: read
+      packages: read
     env:
-      IMAGE: ghcr.io/${{ github.repository_owner }}/mcp-credential-broker
+      MCP_MAVEN_REPOSITORY_URL: https://maven.pkg.github.com/aiwcorpo/mcp-contracts
+      MCP_MAVEN_REPOSITORY_USER: ${{ github.actor }}
+      MCP_MAVEN_REPOSITORY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -29,19 +41,53 @@ jobs:
         run: |
           ci/run.sh verify
           ./mvnw -B -Prelease package -DskipTests
-        env:
-          MCP_MAVEN_REPOSITORY_URL: ${{ secrets.MCP_MAVEN_REPOSITORY_URL }}
-          MCP_MAVEN_REPOSITORY_USER: ${{ secrets.MCP_MAVEN_REPOSITORY_USER }}
-          MCP_MAVEN_REPOSITORY_PASSWORD: ${{ secrets.MCP_MAVEN_REPOSITORY_PASSWORD }}
-      - name: Build and push the image
+      - name: Build the image and save it
         run: |
           version="${GITHUB_REF_NAME#v}"
           docker build -t "$IMAGE:$version" .
-          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          mkdir -p out
+          docker save "$IMAGE:$version" -o out/image.tar
+          cp target/*-sbom.json out/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image
+          path: out
+          if-no-files-found: error
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: image
+          path: out
+      - name: Push the image
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          docker load -i out/image.tar
+          echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
           docker push "$IMAGE:$version"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: image
+          path: out
       - name: Attach the SBOM to the release
-        run: gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" target/*-sbom.json
+        run: gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" out/*-sbom.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}

@@ -515,7 +515,7 @@ Zaufanie do kodu: pełny `verify` (kontenery testowe, gniazdo Dockera, dane dost
 głównej, na dedykowanym agencie (`docker-dedicated`). Zmiana z MR dostaje `ci/run.sh unit` (testy bez kontenerów), bez gniazda i bez
 poświadczeń, offline z cache (`MCP_MAVEN_OFFLINE=true`). W GitLabie zmienne `MCP_MAVEN_REPOSITORY_*` muszą być "masked" i "protected";
 skrypt używa `.ci/settings.xml` tylko wtedy, gdy hasło jest ustawione, więc MR bez zmiennych nie wysyła poświadczeń nigdzie. Runner z tagiem `docker-dedicated` musi być oznaczony jako protected (konfiguracja runnera, M6), a zadanie `main` zapisuje też cache `maven-mr`, z którego czyta zadanie MR. W GitHub Actions
-workflow startuje tylko z `push` na `main` (bez `pull_request`, bo sekrety i Docker są dostępne tylko dla zaufanego kodu). Sekrety GitHub są w Environment `ci-main`. Cache GitLaba dla MR ma osobny klucz i `policy: pull`, a zadanie MR ma tag
+workflow startuje tylko z `push` na `main` (bez `pull_request`, bo sekrety i Docker są dostępne tylko dla zaufanego kodu). Rejestr z artefaktami `mcp-contracts` czyta `GITHUB_TOKEN` przebiegu (`packages: read`), bez PAT i bez sekretów w Environment; wydanie (`release.yml`) ma trzy joby: build (tylko odczyt), publish (`packages: write`, tylko `docker load` i `docker push`) i release (`contents: write`, tylko `gh release create`). Cache GitLaba dla MR ma osobny klucz i `policy: pull`, a zadanie MR ma tag
 `isolated-no-docker`. Jenkins: gałąź w `Jenkinsfile` nie egzekwuje granicy sama (kto zmienia plik, zmienia warunki), więc
 poświadczenia i agent z gniazdem Dockera muszą być ograniczone w konfiguracji Jenkinsa do zadania z `main`; reszta izolacji runnerów to M6. Kontrole
 stylu czytają nazwy plików przez `<<>>`, więc nazwa pliku nie wykonuje polecenia.
