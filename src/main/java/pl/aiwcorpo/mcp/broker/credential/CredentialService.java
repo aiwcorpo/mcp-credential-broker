@@ -178,6 +178,10 @@ public class CredentialService {
             throw new CredentialRequiredException(system.id());
         }
         StoredCredential stored = read.get();
+        if (found.type() == CredentialType.USER_SECRET && stored.isBasic() != system.config().userSecretIsBasic()) {
+            // The system was reconfigured after the user connected: the kept value would go out in the wrong header.
+            throw new CredentialRequiredException(system.id());
+        }
         if (stored.type() != found.type()) {
             throw new SecretStoreUnavailableException("stored credential type differs from connection metadata");
         }
@@ -253,7 +257,7 @@ public class CredentialService {
                 Connection written = store.replace(
                         new Connection(caller.sub(), system.id(), CredentialType.USER_SECRET, Connection.StoredState.CONNECTED,
                                 identity.username(), expires, now.truncatedTo(ChronoUnit.SECONDS), null, null, null),
-                        StoredCredential.of(CredentialType.USER_SECRET, kept), previous, true);
+                        StoredCredential.userSecret(kept, system.config().userSecretIsBasic() ? CredentialScheme.BASIC : null), previous, true);
                 boolean revoked = oauth.revokeReplacedGrant(system.id(), oldGrant);
                 if (previous.isPresent() && oauth.holdsGrant(previous.get()) && (oldGrant == null || !revoked)) {
                     oauth.auditReplacedGrantNotRevoked(caller.requestId(), caller.sub(), system.id());
@@ -284,7 +288,7 @@ public class CredentialService {
     }
 
     private static CredentialScheme userSecretScheme(ConfiguredSystem system) {
-        return system.config().userSecretIsBasic() ? CredentialScheme.BASIC : system.config().secretScheme();
+        return system.config().effectiveUserSecretScheme();
     }
 
     /**

@@ -56,8 +56,10 @@ Login i hasło (Basic, CC-222): dla systemu z `user-secret-scheme: Basic` (i opc
 wymaga `username` obok `secret` (hasło albo token API tego loginu). Pole `username` ma wzorzec z kontraktu (zbiór znaków `backendUser`, bez `:`), jest tylko do
 zapisu i nigdy nie trafia do logów ani odpowiedzi. Para jest zapisywana jak dotąd sekret, jako jedna wartość `base64(username:secret)`; ta sama wartość
 i schemat `Basic` wracają z `resolve`, a whoami dostaje nagłówek `Authorization: Basic ...`. `username` dla systemu bez Basic i brak `username` dla Basic to `400`.
-`GET /v1/systems` podaje `userSecretScheme` (`Basic` albo `Bearer`, tylko dla systemów z `user-secret`) i `deployment` (tylko gdy skonfigurowane). Zmiana
-schematu istniejącego systemu nie przekształca zapisanych połączeń: użytkownicy łączą się ponownie.
+`GET /v1/systems` i schemat w `resolve` biorą `userSecretScheme` z jednego miejsca: `user-secret-scheme`, a gdy go brak, `secret-scheme` systemu (start odmawia,
+gdy to nie `Bearer` ani `Basic`). `deployment` jest podawany tylko gdy skonfigurowany. Sekret zapisany jako para pamięta swój schemat (pole w zaszyfrowanym
+rekordzie OpenBao); gdy konfiguracja systemu zmieni się później (Basic na Bearer albo odwrotnie), `resolve` daje `409 credential_required` zamiast złego
+nagłówka i użytkownik łączy się ponownie. Limit 255 znaków `username` liczy punkty kodowe.
 Token z `mcp_risk` albo `mcp_action` (claimy tylko dla sidecara adaptera, CC-226) broker odrzuca jako `401 invalid_claims`.
 Odrzucenie tokenu wywołującego (zły podpis, wygaśnięcie, powtórzony `jti` i pozostałe powody) to zdarzenie audytu `authentication` z wynikiem `denied`, bez
 `server`, `sub` i `tool` i bez zdarzenia operacji (CC-211); broker nie zapisuje `decision` (CC-212).

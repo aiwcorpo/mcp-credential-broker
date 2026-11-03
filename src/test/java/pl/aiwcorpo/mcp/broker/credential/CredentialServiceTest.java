@@ -194,6 +194,48 @@ class CredentialServiceTest {
         });
     }
 
+    private CredentialService serviceWithUserSecretScheme(CredentialScheme scheme) {
+        BrokerProperties.SystemConfig config = new BrokerProperties.SystemConfig(URI.create("http://jira.test"), "atlassian-dc",
+                List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET, CredentialScheme.BEARER,
+                List.of(), Duration.ofSeconds(1), null, null, scheme, null);
+        SystemRegistry registry = new SystemRegistry(Map.of("jira", config), HttpClient.newHttpClient(), JsonMapper.builder().build(),
+                mock(pl.aiwcorpo.mcp.broker.secret.OAuthClientSecrets.class),
+                mock(pl.aiwcorpo.mcp.broker.secret.ServiceAccountKeys.class), Clock.systemUTC(),
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
+        return new CredentialService(registry, connections, secrets, invalidations, passThroughOAuth(), subjectTokens,
+                new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7), lostSecrets);
+    }
+
+    @Test
+    void aBasicPairResolvesAsBasicWhenTheSystemStillTakesBasic() {
+        when(connections.find("alice-sub", "jira")).thenReturn(Optional.of(connection(null)));
+        when(secrets.get(any())).thenReturn(Optional.of(StoredCredential.userSecret(SecretValue.of("bG9naW46dG9rZW4="), CredentialScheme.BASIC)));
+
+        CredentialService.Resolved resolved = serviceWithUserSecretScheme(CredentialScheme.BASIC)
+                .resolve(gateway("alice-sub"), "jira", null, null);
+
+        assertThat(resolved.scheme()).isEqualTo(CredentialScheme.BASIC);
+        assertThat(resolved.value().reveal()).isEqualTo("bG9naW46dG9rZW4=");
+    }
+
+    @Test
+    void aPairKeptBeforeTheSystemWentBackToBearerNeedsReconnectInsteadOfAWrongHeader() {
+        when(connections.find("alice-sub", "jira")).thenReturn(Optional.of(connection(null)));
+        when(secrets.get(any())).thenReturn(Optional.of(StoredCredential.userSecret(SecretValue.of("bG9naW46dG9rZW4="), CredentialScheme.BASIC)));
+
+        assertThatThrownBy(() -> serviceWithUserSecretScheme(CredentialScheme.BEARER).resolve(gateway("alice-sub"), "jira", null, null))
+                .isInstanceOf(CredentialRequiredException.class);
+    }
+
+    @Test
+    void aSingleTokenKeptBeforeTheSystemWentToBasicNeedsReconnect() {
+        when(connections.find("alice-sub", "jira")).thenReturn(Optional.of(connection(null)));
+        when(secrets.get(any())).thenReturn(Optional.of(StoredCredential.of(CredentialType.USER_SECRET, SecretValue.of("alice-pat"))));
+
+        assertThatThrownBy(() -> serviceWithUserSecretScheme(CredentialScheme.BASIC).resolve(gateway("alice-sub"), "jira", null, null))
+                .isInstanceOf(CredentialRequiredException.class);
+    }
+
     @Test
     void expiredConnectionNeedsReconnect() {
         when(connections.find("alice-sub", "jira")).thenReturn(Optional.of(connection(NOW.minusSeconds(1))));

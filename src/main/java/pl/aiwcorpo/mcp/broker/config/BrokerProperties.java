@@ -230,17 +230,30 @@ public record BrokerProperties(
         /** An unset list binds as one empty string; C4 wants an empty list. */
         public SystemConfig {
             oauthScopes = oauthScopes == null ? List.of() : oauthScopes.stream().filter(scope -> !scope.isBlank()).toList();
+            boolean userSecret = supportedTypes != null && supportedTypes.contains(CredentialType.USER_SECRET);
             if (userSecretScheme != null && userSecretScheme != CredentialScheme.BEARER && userSecretScheme != CredentialScheme.BASIC) {
                 throw new IllegalArgumentException("user-secret-scheme is Bearer or Basic");
             }
-            if (userSecretScheme == CredentialScheme.BASIC && (supportedTypes == null || !supportedTypes.contains(CredentialType.USER_SECRET))) {
+            if (userSecretScheme == CredentialScheme.BASIC && !userSecret) {
                 throw new IllegalArgumentException("user-secret-scheme Basic needs the user-secret type");
+            }
+            if (userSecret && userSecretScheme == null && secretScheme != null
+                    && secretScheme != CredentialScheme.BEARER && secretScheme != CredentialScheme.BASIC) {
+                throw new IllegalArgumentException("a user-secret system needs user-secret-scheme Bearer or Basic (or a secret-scheme of one of them)");
             }
         }
 
-        /** True when a user gives a login and a password or token for this system (CC-222); false means a single token. */
+        /**
+         * The scheme of the user secret of this system, the one source of GET /v1/systems and of resolve (CC-222):
+         * {@code user-secret-scheme} when set, else {@code secret-scheme}.
+         */
+        public CredentialScheme effectiveUserSecretScheme() {
+            return userSecretScheme != null ? userSecretScheme : secretScheme;
+        }
+
+        /** True when a user gives a login and a password or token for this system; false means a single token. */
         public boolean userSecretIsBasic() {
-            return userSecretScheme == CredentialScheme.BASIC;
+            return effectiveUserSecretScheme() == CredentialScheme.BASIC;
         }
     }
 

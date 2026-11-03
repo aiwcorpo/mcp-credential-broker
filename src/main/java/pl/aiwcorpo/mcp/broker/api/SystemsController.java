@@ -25,7 +25,7 @@ public class SystemsController {
                         s.config().defaultType().wire(),
                         s.config().oauthScopes().stream().distinct().toList(),
                         s.config().deployment() == null ? null : s.config().deployment().wire(),
-                        s.supports(CredentialType.USER_SECRET) ? (s.config().userSecretIsBasic() ? "Basic" : "Bearer") : null))
+                        s.supports(CredentialType.USER_SECRET) ? s.config().effectiveUserSecretScheme().wire() : null))
                 .toList();
     }
 }

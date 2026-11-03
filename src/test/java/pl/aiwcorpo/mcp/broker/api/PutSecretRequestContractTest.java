@@ -28,4 +28,16 @@ class PutSecretRequestContractTest {
             assertThat(pattern.matcher(bad).matches()).as("U+%04X", hidden).isFalse();
         }
     }
+
+    @Test
+    void theLengthLimitCountsCodePointsLikeTheContract() {
+        try (var factory = jakarta.validation.Validation.buildDefaultValidatorFactory()) {
+            var validator = factory.getValidator();
+            String limit = "\uD83D\uDE00".repeat(255);
+            assertThat(validator.validate(new PutSecretRequest("s", limit, null))).as("255 code points, 510 UTF-16 units").isEmpty();
+            assertThat(validator.validate(new PutSecretRequest("s", limit + "\uD83D\uDE00", null))).as("256 code points").isNotEmpty();
+            assertThat(validator.validate(new PutSecretRequest("s", "a".repeat(255), null))).isEmpty();
+            assertThat(validator.validate(new PutSecretRequest("s", "a".repeat(256), null))).isNotEmpty();
+        }
+    }
 }

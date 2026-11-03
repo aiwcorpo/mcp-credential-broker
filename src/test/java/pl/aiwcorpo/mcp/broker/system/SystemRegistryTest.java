@@ -46,5 +46,8 @@ class SystemRegistryTest {
         assertThatThrownBy(() -> new BrokerProperties.SystemConfig(URI.create("http://jira.test"), "atlassian-dc",
                 List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET, CredentialScheme.BEARER, List.of(),
                 Duration.ofSeconds(1), null, null, CredentialScheme.TOKEN, null)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new BrokerProperties.SystemConfig(URI.create("http://jira.test"), "atlassian-dc",
+                List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET, CredentialScheme.TOKEN, List.of(),
+                Duration.ofSeconds(1), null, null, null, null)).as("no guessing Bearer for a Token system").isInstanceOf(IllegalArgumentException.class);
     }
 }

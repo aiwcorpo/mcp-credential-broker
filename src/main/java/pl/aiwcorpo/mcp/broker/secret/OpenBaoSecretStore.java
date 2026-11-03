@@ -5,6 +5,7 @@ import java.util.Base64;
 import java.util.Optional;
 
 import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
+import pl.aiwcorpo.mcp.broker.credential.CredentialScheme;
 import pl.aiwcorpo.mcp.broker.credential.CredentialType;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
@@ -41,6 +42,9 @@ public class OpenBaoSecretStore implements SecretStore {
                 .put("value", credential.value().reveal());
         if (credential.refreshToken() != null) {
             plaintext.put("refreshToken", credential.refreshToken().reveal());
+        }
+        if (credential.isBasic()) {
+            plaintext.put("scheme", credential.scheme().wire());
         }
         String encoded = Base64.getEncoder().encodeToString(json.writeValueAsBytes(plaintext));
         JsonNode encrypted = client.write(transitPath("encrypt"), client.object().put("plaintext", encoded));
@@ -199,8 +203,9 @@ public class OpenBaoSecretStore implements SecretStore {
             throw new SecretUnreadableException("stored entry is incomplete");
         }
         String refresh = node.path("refreshToken").asString(null);
+        CredentialScheme scheme = "Basic".equals(node.path("scheme").asString(null)) ? CredentialScheme.BASIC : null;
         return new StoredCredential(type, SecretValue.of(value),
-                refresh == null || refresh.isEmpty() ? null : SecretValue.of(refresh));
+                refresh == null || refresh.isEmpty() ? null : SecretValue.of(refresh), scheme);
     }
 
     private String dataPath(SecretKey key) {
