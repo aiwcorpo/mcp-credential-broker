@@ -1,0 +1,7 @@
+Copyright 2026 aiwcorpo
+
+This product includes software developed at aiwcorpo (https://github.com/aiwcorpo).
+
+The development stack (users alice, bob, carol, mallory, the mock systems, the test keys of mcp-contracts) is a
+worked example for local runs and tests. The test keys are refused by default (MCP_ALLOW_TEST_KEYS) and must not be
+trusted outside a development stack.

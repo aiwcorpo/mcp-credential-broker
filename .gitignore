@@ -12,3 +12,4 @@ target/
 *.crt
 *.env
 *.log
+.DS_Store

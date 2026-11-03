@@ -8,7 +8,8 @@
 #   ci/run.sh verify          hygiene checks, then unit and integration tests (mvnw clean verify)
 #   ci/run.sh unit            hygiene, then only the tests that need no container runtime (for change requests, see README "CI")
 #   ci/run.sh hygiene         only the text checks of the sources (non-ASCII quotes and spaces, tool traces)
-#   ci/run.sh image           verify, then build the container image mcp-credential-broker:m5-<short sha> from the jar
+#   ci/run.sh image           verify, then build the container image mcp-credential-broker:<MCP_IMAGE_STAGE>-<short sha> from the jar
+#                             (MCP_IMAGE_STAGE, default m6)
 #                             (needs a clean checkout, so that the tag names the code it holds)
 #
 # The integration tests start PostgreSQL, Redis and OpenBao with Testcontainers and, in MultiInstanceIntegrationTest,
@@ -90,7 +91,7 @@ image() {
   fi
   verify
   local tag
-  tag="mcp-credential-broker:m5-$(git rev-parse --short HEAD)"
+  tag="mcp-credential-broker:${MCP_IMAGE_STAGE:-m6}-$(git rev-parse --short HEAD)"
   docker build -t "$tag" .
   echo "ci/run.sh: built $tag"
 }
