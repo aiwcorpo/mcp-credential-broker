@@ -2,9 +2,8 @@
 # and publishing needs the decision of the owner (plan-wydanie.md).
 #
 # Three jobs, so that no job with a write permission runs a build tool on the code or its dependencies:
-#   build    contents: read, packages: read. ci/run.sh verify, the jar, the SBOM and docker build; the image leaves as a
-#            docker save tarball in an artifact. Reads the mcp-contracts artifacts from GitHub Packages with GITHUB_TOKEN
-#            (the package must grant access to this repository).
+#   build    contents: read. ci/run.sh verify, the jar, the SBOM and docker build; the image leaves as a
+#            docker save tarball in an artifact. The mcp-contracts artifacts come from Maven Central.
 #   publish  packages: write. No checkout, no cache; docker load and docker push only. The token is in the environment
 #            of the push step.
 #   release  contents: write. No checkout; creates the draft release with the SBOM through gh (GH_REPO instead of a clone).
@@ -24,11 +23,6 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-      packages: read
-    env:
-      MCP_MAVEN_REPOSITORY_URL: https://maven.pkg.github.com/aiwcorpo/mcp-contracts
-      MCP_MAVEN_REPOSITORY_USER: ${{ github.actor }}
-      MCP_MAVEN_REPOSITORY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:

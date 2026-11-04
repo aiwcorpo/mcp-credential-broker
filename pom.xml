@@ -13,7 +13,7 @@
 
     <groupId>pl.aiwcorpo.mcp</groupId>
     <artifactId>mcp-credential-broker</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>1.0.0</version>
     <name>MCP Credential Broker</name>
     <description>Per-user credential store of the MCP platform: OAuth, PAT, token exchange and service accounts behind one mTLS API.</description>
     <licenses>

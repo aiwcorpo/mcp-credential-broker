@@ -32,11 +32,6 @@ pipeline {
                     args '-v /var/run/docker.sock:/var/run/docker.sock'
                 }
             }
-            environment {
-                MCP_MAVEN_REPOSITORY_URL = credentials('mcp-maven-repository-url')
-                MCP_MAVEN_REPOSITORY_USER = credentials('mcp-maven-repository-user')
-                MCP_MAVEN_REPOSITORY_PASSWORD = credentials('mcp-maven-repository-password')
-            }
             steps {
                 sh 'ci/run.sh verify'
             }

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Single CI entry point (M5-5): every CI system, the container image of ci/Dockerfile and a developer's shell call this
 # script and nothing else. .gitlab-ci.yml, Jenkinsfile and .github/workflows/ci.yml are thin wrappers around it. Needs
-# bash, git, JDK 25 and either a filled ~/.m2 with the mcp-contracts artifacts or MCP_MAVEN_REPOSITORY_URL (+ _USER,
-# _PASSWORD) pointing at the registry that holds them.
+# bash, git, JDK 25 and Maven Central (the mcp-contracts artifacts are published there) or a ~/.m2 that already holds them.
 #
 #   ci/run.sh                 verify (default)
 #   ci/run.sh verify          hygiene checks, then unit and integration tests (mvnw clean verify)
@@ -24,7 +23,7 @@ if [[ -z "${JAVA_HOME:-}" ]] && ! command -v java >/dev/null; then
   exit 1
 fi
 
-# MCP_MAVEN_OFFLINE=true resolves from the local repository only: the mode for code that is not trusted with credentials.
+# MCP_MAVEN_OFFLINE=true resolves from the local repository only (a warm cache, no network).
 mvnw() {
   local extra=()
   if [[ "${MCP_MAVEN_OFFLINE:-}" == "true" ]]; then
@@ -34,9 +33,6 @@ mvnw() {
       mvn -B ${extra[@]+"${extra[@]}"} "$@"
       return
     fi
-  fi
-  if [[ -n "${MCP_MAVEN_REPOSITORY_URL:-}" && -n "${MCP_MAVEN_REPOSITORY_PASSWORD:-}" ]]; then
-    extra+=(-s .ci/settings.xml)
   fi
   # ${extra[@]+...}: an empty array is "unbound" under set -u in bash 3.2 (macOS).
   ./mvnw -B ${extra[@]+"${extra[@]}"} "$@"
