@@ -24,7 +24,7 @@ import com.sun.net.httpserver.HttpServer;
 
 /**
  * Dependencies of the broker for integration tests, started once per JVM: PostgreSQL, Redis with the same
- * ACL as mcp-platform-dev (explicit command list, prefixes, PUBLISH only), OpenBao in dev mode set up like
+ * ACL as the dev stack (explicit command list, prefixes, PUBLISH only), OpenBao in dev mode set up like
  * openbao/init.sh (KV v2, Transit key, AppRole with a narrow policy), a fake Jira whoami and IdP JWKS, and
  * a throwaway PKI.
  */
@@ -40,7 +40,7 @@ public final class TestEnvironment {
     public static final String BAO_ROLE_ID = "test-only-role-id";
     public static final String BAO_SECRET_ID = "test-only-secret-id";
 
-    /** PATs the fake Jira knows, as in the mcp-platform-dev mock: &lt;login&gt;-pat belongs to &lt;login&gt;. */
+    /** PATs the fake Jira knows, as in the dev stack mock: &lt;login&gt;-pat belongs to &lt;login&gt;. */
     public static final Map<String, String> JIRA_PATS = Map.of(
             "alice-pat", "alice", "bob-pat", "bob", "carol-pat", "carol", "mallory-pat", "mallory");
 

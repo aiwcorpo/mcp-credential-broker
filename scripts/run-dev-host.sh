@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Runs the broker on the host against the infrastructure of an mcp-platform-dev stack that is already up
+# Runs the broker on the host against the infrastructure of the dev stack (not public yet) that is already up
 # (Keycloak, Redis, OpenBao, mocks). The broker gets its own PostgreSQL: a container started here and removed
 # on exit, because the broker's migrations must not run against the database of the stack's own broker.
 # Set MCP_DB_URL, MCP_DB_USER and MCP_DB_PASSWORD to use a database of your own instead.
 #
-# Needs: JAVA_HOME on JDK 25, docker (for the default database), MCP_PLATFORM_DEV pointing at the
-# mcp-platform-dev checkout (default: ../mcp-platform-dev next to this repository).
+# Needs: JAVA_HOME on JDK 25, docker (for the default database), MCP_PLATFORM_DEV pointing at the dev
+# stack checkout (default: ../mcp-platform-dev next to this repository).
 # Ports (ws-06 range 18710-18719): broker MCP_BROKER_PORT (18710), database MCP_BROKER_DB_PORT (18711).
 #
 # Without a running gateway the internal JWT keys come from the published TEST JWKS of mcp-contracts and
@@ -20,7 +20,7 @@ contracts="${MCP_CONTRACTS:-$here/../mcp-contracts}"
 jar="$here/target/mcp-credential-broker.jar"
 java_bin="${JAVA_HOME:+$JAVA_HOME/bin/}java"
 
-[[ -d "$dev" ]] || die "mcp-platform-dev not found at $dev: set MCP_PLATFORM_DEV to its checkout"
+[[ -d "$dev" ]] || die "dev stack not found at $dev: set MCP_PLATFORM_DEV to its checkout"
 [[ -f "$dev/.secrets/dev.env" ]] || die "no $dev/.secrets/dev.env: start the stack first (make up in $dev)"
 [[ -f "$jar" ]] || die "no $jar: run ./mvnw -B package -DskipTests first"
 java_major="$("$java_bin" -version 2>&1 | sed -n '1s/.*version "\([0-9]*\).*/\1/p')"

@@ -22,7 +22,7 @@ This repository has no bug bounty.
 
 The published test keys of `mcp-contracts` are refused unless `MCP_ALLOW_TEST_KEYS=true`, and keys with a `dev-` `kid`
 also need the `devstack` Spring profile; findings that need them enabled in production are configuration errors. The development stack credentials
-(`mcp-platform-dev`) are not production credentials.
+(the local dev stack, not public yet) are not production credentials.
 
 ## Supported versions
 

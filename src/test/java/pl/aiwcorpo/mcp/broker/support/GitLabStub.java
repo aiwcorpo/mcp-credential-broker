@@ -22,7 +22,7 @@ import com.github.tomakehurst.wiremock.stubbing.StubMapping;
 import com.github.tomakehurst.wiremock.verification.LoggedRequest;
 
 /**
- * Stand-in for GitLab as an OAuth provider (WireMock) until the mock of mcp-platform-dev has one:
+ * Stand-in for GitLab as an OAuth provider (WireMock) until the mock of the dev stack has one:
  * /oauth/token for authorization codes and refresh tokens, /oauth/revoke, and /api/v4/user (whoami) that
  * names the owner of an access token or PAT. Every grant gets unique token values, so tests can look for
  * them in logs and stored data.

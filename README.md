@@ -18,8 +18,8 @@ Changes: [CHANGELOG.md](CHANGELOG.md). Contributing: [CONTRIBUTING.md](CONTRIBUT
 PostgreSQL (connection metadata and authenticator counters; Flyway creates the schema at start), Redis with a `broker` account
 (one-time OAuth flows, refresh locks, rate limits, `jti` of internal tokens, `credential.invalidated` events), OpenBao (AppRole
 login, KV v2 for values, Transit for the authenticator seeds), the identity provider's JWKS for BFF tokens, and the gateway's
-JWKS for the internal JWT. Everything is reached over TLS; callers need a client certificate from the internal CA. `mcp-platform-dev`
-gives a single-machine stack for trying it out, not for production.
+JWKS for the internal JWT. Everything is reached over TLS; callers need a client certificate from the internal CA. The Compose install in `mcp-docs`
+(`examples/compose`) gives a single-machine stack for trying it out; its settings are not for production.
 
 The broker listens on one HTTPS port (`8443` in the container). The API, the allowed certificate CN per operation and the error
 bodies are defined by the contract; the table in `docs/reference/api-operations.md` of mcp-docs lists them.

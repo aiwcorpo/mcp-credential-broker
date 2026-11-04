@@ -1,4 +1,4 @@
-# Environment variables follow mcp-platform-dev (docs/integracja.md, profile "full").
+# Environment variables follow the dev stack (profile "full").
 server:
   port: ${MCP_BROKER_PORT:8443}
   ssl:

@@ -36,7 +36,7 @@ import org.bouncycastle.operator.OperatorCreationException;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 
 /**
- * Throwaway internal CA for the integration tests, shaped like mcp-platform-dev: EC P-256, CN=&lt;name&gt;,
+ * Throwaway internal CA for the integration tests, shaped like the dev stack: EC P-256, CN=&lt;name&gt;,
  * EKU per role (the broker certificate is serverAuth only, client identities are clientAuth only).
  */
 public final class TestPki {
