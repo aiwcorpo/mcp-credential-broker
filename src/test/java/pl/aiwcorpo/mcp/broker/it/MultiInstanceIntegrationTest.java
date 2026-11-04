@@ -346,9 +346,28 @@ class MultiInstanceIntegrationTest {
         return new BrokerClient(env.pki.clientContext(env.gatewayClient), instance.port());
     }
 
+    /**
+     * Under load a request that queues behind 30 others for the row lock of one user can run into lock_timeout (2 s) or
+     * the 2 s connection timeout of the pool and is answered 503 upstream_unavailable. That answer is fail-closed and
+     * counts nothing: the attempt was not evaluated, so the client repeats it. Anything else than 200 after the
+     * repeats fails the test with the body, instead of a missing "result" field.
+     */
     private static String verify(BrokerProcess instance, String sub, String code) {
-        return gatewayCall(instance, "POST", "/v1/authenticator/verify", sub, "{\"code\":\"" + code + "\"}")
-                .json().path("result").stringValue();
+        BrokerClient.Response response = null;
+        for (int attempt = 0; attempt < 10; attempt++) {
+            response = gatewayCall(instance, "POST", "/v1/authenticator/verify", sub, "{\"code\":\"" + code + "\"}");
+            if (response.status() != 503) {
+                break;
+            }
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
+            }
+        }
+        assertThat(response.status()).as("verify on port %d answered: %s", instance.port(), response.body()).isEqualTo(200);
+        return response.json().path("result").stringValue();
     }
 
     private static String status(BrokerProcess instance, String sub) {
