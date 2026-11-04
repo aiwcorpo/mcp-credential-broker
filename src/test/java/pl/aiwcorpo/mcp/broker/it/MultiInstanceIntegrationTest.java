@@ -130,6 +130,68 @@ class MultiInstanceIntegrationTest {
     }
 
     @Test
+    void aBurstOfOneUserNeverTakesTheConnectionsOfAnotherUserOnTheSameInstance() throws Exception {
+        Registered attacker = register("ivan");
+        Registered bystander = register("bob");
+        String wrong = wrongCode(attacker.seed);
+        AtomicInteger bystanderRefused = new AtomicInteger();
+        AtomicInteger bystanderCalls = new AtomicInteger();
+        java.util.concurrent.atomic.AtomicBoolean burstRunning = new java.util.concurrent.atomic.AtomicBoolean(true);
+        Thread watcher = new Thread(() -> {
+            while (burstRunning.get()) {
+                BrokerClient.Response response = gatewayCall(a, "GET", "/v1/authenticator", bystander.sub, null);
+                bystanderCalls.incrementAndGet();
+                if (response.status() != 200) {
+                    bystanderRefused.incrementAndGet();
+                }
+            }
+        });
+        watcher.start();
+        List<BrokerClient.Response> burst = new ArrayList<>();
+        try {
+            ExecutorService pool = Executors.newFixedThreadPool(60);
+            try {
+                CountDownLatch go = new CountDownLatch(1);
+                List<Future<BrokerClient.Response>> futures = new ArrayList<>();
+                for (int i = 0; i < 60; i++) {
+                    futures.add(pool.submit(() -> {
+                        go.await();
+                        return verifyResponse(a, attacker.sub, wrong);
+                    }));
+                }
+                go.countDown();
+                for (Future<BrokerClient.Response> future : futures) {
+                    burst.add(future.get());
+                }
+            } finally {
+                pool.shutdownNow();
+            }
+        } finally {
+            burstRunning.set(false);
+            watcher.join();
+        }
+
+        assertThat(bystanderCalls.get()).as("the bystander was served during the burst").isPositive();
+        assertThat(bystanderRefused.get()).as("no 503 for another user").isZero();
+        assertThat(burst).allSatisfy(response -> assertThat(response.status()).isIn(200, 503));
+        List<BrokerClient.Response> refused = burst.stream().filter(response -> response.status() == 503).toList();
+        assertThat(refused).as("parallel codes of one user on one instance are refused, not queued").isNotEmpty();
+        assertThat(refused).allSatisfy(response -> {
+            assertThat(response.header("Retry-After")).isEqualTo("1");
+            assertThat(response.body()).contains("upstream_unavailable");
+        });
+        assertThat(failures(attacker.sub)).as("a refused attempt counts nothing")
+                .isEqualTo((int) burst.stream().filter(response -> response.status() == 200
+                        && "invalid".equals(response.json().path("result").stringValue())).count());
+
+        for (int i = 0; i < 8; i++) {
+            verify(i % 2 == 0 ? a : b, attacker.sub, wrong);
+        }
+        assertThat(failures(attacker.sub)).isEqualTo(5);
+        assertThat(verify(b, attacker.sub, nextCode(attacker.seed))).isEqualTo("locked");
+    }
+
+    @Test
     void theSameValidCodeInParallelOnBothInstancesIsAcceptedOnce() throws Exception {
         Registered user = register("carol");
         String code = nextCode(user.seed);
@@ -347,27 +409,32 @@ class MultiInstanceIntegrationTest {
     }
 
     /**
-     * Under load a request that queues behind 30 others for the row lock of one user can run into lock_timeout (2 s) or
-     * the 2 s connection timeout of the pool and is answered 503 upstream_unavailable. That answer is fail-closed and
-     * counts nothing: the attempt was not evaluated, so the client repeats it. Anything else than 200 after the
-     * repeats fails the test with the body, instead of a missing "result" field.
+     * A second verify of one user on the same instance is answered 503 upstream_unavailable with Retry-After before it
+     * takes a connection, and a request that waited too long for the row lock is answered 503 as well. Both are
+     * fail-closed and count nothing, so a client that wants a verdict repeats them. Any other status than 200 after
+     * the deadline fails the test with the body, instead of a missing "result" field.
      */
     private static String verify(BrokerProcess instance, String sub, String code) {
-        BrokerClient.Response response = null;
-        for (int attempt = 0; attempt < 10; attempt++) {
-            response = gatewayCall(instance, "POST", "/v1/authenticator/verify", sub, "{\"code\":\"" + code + "\"}");
+        long deadline = System.nanoTime() + 30_000_000_000L;
+        BrokerClient.Response response;
+        do {
+            response = verifyResponse(instance, sub, code);
             if (response.status() != 503) {
                 break;
             }
             try {
-                Thread.sleep(100);
+                Thread.sleep(20);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new IllegalStateException(e);
             }
-        }
+        } while (System.nanoTime() < deadline);
         assertThat(response.status()).as("verify on port %d answered: %s", instance.port(), response.body()).isEqualTo(200);
         return response.json().path("result").stringValue();
+    }
+
+    private static BrokerClient.Response verifyResponse(BrokerProcess instance, String sub, String code) {
+        return gatewayCall(instance, "POST", "/v1/authenticator/verify", sub, "{\"code\":\"" + code + "\"}");
     }
 
     private static String status(BrokerProcess instance, String sub) {

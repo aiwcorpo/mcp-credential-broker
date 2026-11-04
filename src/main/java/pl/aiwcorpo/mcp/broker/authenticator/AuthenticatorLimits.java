@@ -3,7 +3,7 @@ package pl.aiwcorpo.mcp.broker.authenticator;
 import java.time.Duration;
 
 /**
- * Values the contract fixes (C4, README of mcp-contracts "Potwierdzenia kodem TOTP", CC-091, CC-092, CC-126). They are
+ * Values the contract fixes (C4, README of mcp-contracts "TOTP code confirmations", CC-091, CC-092, CC-126). They are
  * constants on purpose: a configuration value that widens the window or lengthens the enrollment would silently
  * leave the contract.
  */

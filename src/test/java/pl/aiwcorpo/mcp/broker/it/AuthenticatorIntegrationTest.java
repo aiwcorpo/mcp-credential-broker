@@ -253,11 +253,30 @@ class AuthenticatorIntegrationTest {
                 .query(Integer.class).single()).isZero();
     }
 
+    /**
+     * The result of a verify that was evaluated. A parallel verify of the same user on one instance is refused at once
+     * with 503 and Retry-After (nothing is evaluated or counted), so a client that needs a verdict asks again.
+     */
+    private String answered(String sub, String code) throws InterruptedException {
+        long deadline = System.nanoTime() + 30_000_000_000L;
+        BrokerClient.Response response;
+        do {
+            response = verify(sub, code);
+            if (response.status() != 503) {
+                break;
+            }
+            assertThat(response.header("Retry-After")).isEqualTo("1");
+            Thread.sleep(10);
+        } while (System.nanoTime() < deadline);
+        assertThat(response.status()).as(response.body()).isEqualTo(200);
+        return response.json().path("result").stringValue();
+    }
+
     @Test
     void fiftyParallelWrongCodesGiveExactlyFiveChecks() throws Exception {
         Registered user = register("frank");
         String wrong = wrongCode(user.seed);
-        List<String> results = parallel(50, () -> verify(user.sub, wrong).json().path("result").stringValue());
+        List<String> results = parallel(50, () -> answered(user.sub, wrong));
 
         assertThat(count(results, "invalid")).isEqualTo(5);
         assertThat(count(results, "locked")).isEqualTo(45);
@@ -282,7 +301,7 @@ class AuthenticatorIntegrationTest {
                     .param("sub", user.sub).param("at", Timestamp.from(earlier.plusSeconds(i))).update();
         }
         String wrong = wrongCode(user.seed);
-        List<String> results = parallel(50, () -> verify(user.sub, wrong).json().path("result").stringValue());
+        List<String> results = parallel(50, () -> answered(user.sub, wrong));
 
         assertThat(count(results, "invalid")).isEqualTo(5);
         assertThat(count(results, "locked") + count(results, "disabled")).isEqualTo(45);
@@ -311,7 +330,7 @@ class AuthenticatorIntegrationTest {
     void theSameValidCodeInParallelIsAcceptedOnce() throws Exception {
         Registered user = register("heidi");
         String code = nextCode(user.seed);
-        List<String> results = parallel(20, () -> verify(user.sub, code).json().path("result").stringValue());
+        List<String> results = parallel(20, () -> answered(user.sub, code));
         assertThat(count(results, "ok")).isEqualTo(1);
         assertThat(count(results, "replayed")).isGreaterThanOrEqualTo(1);
         assertThat(results).containsOnly("ok", "replayed", "locked");

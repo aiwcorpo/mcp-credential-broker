@@ -11,6 +11,8 @@ import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.OptionalLong;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -92,6 +94,13 @@ public class AuthenticatorService {
     private final TransactionTemplate tx;
     private final BrokerProperties.Authenticator config;
     private final SecureRandom random = new SecureRandom();
+    /**
+     * Subs with a verify running on this instance. Parallel codes of one user would each hold a pooled connection while
+     * they queue for the row lock of that user, so a burst from one account starves the pool for everybody else (503).
+     * The second concurrent verify of a sub is refused before it takes a connection. Across instances the row lock still
+     * serializes, but each instance holds at most one connection per sub.
+     */
+    private final Set<String> verifying = ConcurrentHashMap.newKeySet();
 
     public static AuthenticatorService create(JdbcClient jdbc, AuthenticatorSeedStore seeds, AuditLog audit, Clock clock,
             TransactionTemplate tx, BrokerProperties.Authenticator config) {
@@ -422,10 +431,16 @@ public class AuthenticatorService {
         InternalJwtClaims claims = caller.claims();
         AuditLog.Entry entry = gatewayEntry(caller);
         Verified verified;
+        if (!verifying.add(claims.sub())) {
+            entry.error("rate_limited", "upstream_unavailable");
+            throw new AuthenticatorBusyException();
+        }
         try {
             verified = verifyAtomically(claims.sub(), code);
         } catch (RuntimeException e) {
             throw failed(entry, e);
+        } finally {
+            verifying.remove(claims.sub());
         }
         switch (verified.result()) {
             case OK -> entry.decision("allow").ok("totp_verified");

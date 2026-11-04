@@ -25,6 +25,7 @@ import pl.aiwcorpo.mcp.broker.audit.AuditLog;
 import pl.aiwcorpo.mcp.broker.auth.Caller;
 import pl.aiwcorpo.mcp.broker.auth.CallerAuthenticationFilter;
 import pl.aiwcorpo.mcp.broker.auth.Operation;
+import pl.aiwcorpo.mcp.broker.authenticator.AuthenticatorBusyException;
 import pl.aiwcorpo.mcp.broker.authenticator.AuthenticatorRefusedException;
 import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
 import pl.aiwcorpo.mcp.broker.credential.CredentialRequiredException;
@@ -85,6 +86,13 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
                 .header("Retry-After", String.valueOf(e.retryAfterSeconds()))
                 .body(Map.of("error", "rate_limited"));
+    }
+
+    /** Audited by the authenticator service; the attempt was neither evaluated nor counted. */
+    @ExceptionHandler(AuthenticatorBusyException.class)
+    ResponseEntity<ApiError> authenticatorBusy(AuthenticatorBusyException e) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).header("Retry-After", "1")
+                .body(ApiError.of("upstream_unavailable"));
     }
 
     /** Raised and audited by the authenticator service: 409, 422 and 429 bodies of C4. */
