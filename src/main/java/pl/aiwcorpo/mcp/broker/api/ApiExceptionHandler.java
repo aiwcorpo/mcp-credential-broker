@@ -91,7 +91,7 @@ public class ApiExceptionHandler {
     /** Audited by the authenticator service; the attempt was neither evaluated nor counted. */
     @ExceptionHandler(AuthenticatorBusyException.class)
     ResponseEntity<ApiError> authenticatorBusy(AuthenticatorBusyException e) {
-        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).header("Retry-After", "1")
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(ApiError.of("upstream_unavailable"));
     }
 

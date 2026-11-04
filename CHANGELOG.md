@@ -19,7 +19,7 @@ First public release. Built on `mcp-contracts` 6.3.2.
   the user for 15 minutes, 20 in 24 hours disable the authenticator. All counters change under the row lock of the user, so the
   limits hold across instances. Codes can be burned by the gateway when a pending operation is cancelled.
 - One verification of a user at a time per instance. A parallel request of the same user on the same instance is answered
-  `503 upstream_unavailable` with `Retry-After: 1` before it takes a database connection, and does not count as an attempt, so a
+  `503 upstream_unavailable` before it takes a database connection, and does not count as an attempt, so a
   burst of guesses cannot starve other users of connections.
 - Offboarding purge and cleanup of unused connections, both audited per item.
 - Several instances on one PostgreSQL, Redis and OpenBao: migrations run once, enrollment confirmations are exclusive per user,

@@ -76,7 +76,7 @@ Invariants of this component. The platform-wide list is in `docs/security/invari
   disable the authenticator until it is registered again. Counters, lock and registration change in one transaction under the row
   lock of the user, so the limits hold across instances. The limits are constants of the contract, not configuration.
 - One verification of a user at a time per instance. A parallel request of the same user on the same instance is refused at once with
-  `503 upstream_unavailable` and `Retry-After: 1`, does not count as an attempt and says nothing about the code; this keeps a burst of
+  `503 upstream_unavailable`, does not count as an attempt and says nothing about the code; this keeps a burst of
   guesses from holding the database connections other users need.
 - A code burned by the gateway (`invalidate-codes`) is not a wrong guess and does not count towards the lock.
 - Rate limits are per user and kept in Redis; exceeding one is `429` with `Retry-After`.

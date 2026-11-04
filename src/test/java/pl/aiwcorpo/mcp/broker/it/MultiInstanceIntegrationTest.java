@@ -177,7 +177,7 @@ class MultiInstanceIntegrationTest {
         List<BrokerClient.Response> refused = burst.stream().filter(response -> response.status() == 503).toList();
         assertThat(refused).as("parallel codes of one user on one instance are refused, not queued").isNotEmpty();
         assertThat(refused).allSatisfy(response -> {
-            assertThat(response.header("Retry-After")).isEqualTo("1");
+            assertThat(response.header("Retry-After")).isNull();
             assertThat(response.body()).contains("upstream_unavailable");
         });
         assertThat(failures(attacker.sub)).as("a refused attempt counts nothing")
@@ -409,7 +409,7 @@ class MultiInstanceIntegrationTest {
     }
 
     /**
-     * A second verify of one user on the same instance is answered 503 upstream_unavailable with Retry-After before it
+     * A second verify of one user on the same instance is answered 503 upstream_unavailable before it
      * takes a connection, and a request that waited too long for the row lock is answered 503 as well. Both are
      * fail-closed and count nothing, so a client that wants a verdict repeats them. Any other status than 200 after
      * the deadline fails the test with the body, instead of a missing "result" field.

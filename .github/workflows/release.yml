@@ -10,7 +10,7 @@
 name: release
 on:
   push:
-    tags: ['v*']
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
 permissions: {}
 concurrency:
   group: release-${{ github.ref }}
@@ -19,7 +19,7 @@ env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/mcp-credential-broker
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
@@ -27,10 +27,14 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
           java-version: '25'
+      - name: Tag matches the pom version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          test "$(./mvnw -q -B -N org.apache.maven.plugins:maven-help-plugin:3.5.1:evaluate -Dexpression=project.version -DforceStdout)" = "$version"
       - name: Verify, build the jar and the SBOM
         run: |
           ci/run.sh verify
@@ -42,20 +46,20 @@ jobs:
           mkdir -p out
           docker save "$IMAGE:$version" -o out/image.tar
           cp target/*-sbom.json out/
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: image
-          path: out
       - name: Check the artifact file list
         run: |
           cd out
           unexpected="$(find . -mindepth 1 | sed 's|^\./||' | grep -Evx 'image\.tar|[A-Za-z0-9._-]+-sbom\.json' || true)"
           if [ -n "$unexpected" ]; then echo "unexpected files in the artifact:" >&2; echo "$unexpected" >&2; exit 1; fi
           test -f image.tar
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image
+          path: out
           if-no-files-found: error
   publish:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: release
     permissions:
@@ -82,7 +86,7 @@ jobs:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   release:
     needs: publish
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release
     permissions:

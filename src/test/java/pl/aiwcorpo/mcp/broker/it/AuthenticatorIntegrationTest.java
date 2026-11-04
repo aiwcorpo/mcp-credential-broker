@@ -255,7 +255,7 @@ class AuthenticatorIntegrationTest {
 
     /**
      * The result of a verify that was evaluated. A parallel verify of the same user on one instance is refused at once
-     * with 503 and Retry-After (nothing is evaluated or counted), so a client that needs a verdict asks again.
+     * with 503 (nothing is evaluated or counted), so a client that needs a verdict asks again.
      */
     private String answered(String sub, String code) throws InterruptedException {
         long deadline = System.nanoTime() + 30_000_000_000L;
@@ -265,7 +265,6 @@ class AuthenticatorIntegrationTest {
             if (response.status() != 503) {
                 break;
             }
-            assertThat(response.header("Retry-After")).isEqualTo("1");
             Thread.sleep(10);
         } while (System.nanoTime() < deadline);
         assertThat(response.status()).as(response.body()).isEqualTo(200);
