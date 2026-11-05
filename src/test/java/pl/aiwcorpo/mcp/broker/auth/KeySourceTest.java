@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -173,8 +174,14 @@ class KeySourceTest {
             // The waiter began before this, so only a clock read after the wait lets it retry.
             clock.advance(Duration.ofSeconds(11));
             source.release.countDown();
-            assertThatThrownBy(() -> failing.get(5, TimeUnit.SECONDS)).hasCauseInstanceOf(KeySourceUnavailableException.class);
             assertThat(waiter.get(5, TimeUnit.SECONDS)).as("the endpoint is back, the interval is judged after the wait").isTrue();
+            // The failing lookup reads the loaded keys after releasing the lock, so it sees the waiter's fresh load
+            // when the waiter wins the lock first. Both outcomes are correct (never stale keys, never a third fetch).
+            try {
+                assertThat(failing.get(5, TimeUnit.SECONDS)).isNotNull();
+            } catch (ExecutionException e) {
+                assertThat(e).hasCauseInstanceOf(KeySourceUnavailableException.class);
+            }
             assertThat(source.calls.get()).isEqualTo(3);
         } finally {
             source.release.countDown();
