@@ -167,7 +167,7 @@ class KeySourceTest {
         clock.advance(Duration.ofHours(2));
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
-            Future<?> failing = pool.submit(() -> keys.find(KID_A));
+            Future<Boolean> failing = pool.submit(() -> keys.find(KID_A).isPresent());
             assertThat(source.inFetch.await(5, TimeUnit.SECONDS)).isTrue();
             Future<Boolean> waiter = pool.submit(() -> keys.find(KID_A).isPresent());
             awaitWaiter(keys);
@@ -178,7 +178,7 @@ class KeySourceTest {
             // The failing lookup reads the loaded keys after releasing the lock, so it sees the waiter's fresh load
             // when the waiter wins the lock first. Both outcomes are correct (never stale keys, never a third fetch).
             try {
-                assertThat(failing.get(5, TimeUnit.SECONDS)).isNotNull();
+                assertThat(failing.get(5, TimeUnit.SECONDS)).as("the waiter's fresh keys").isTrue();
             } catch (ExecutionException e) {
                 assertThat(e).hasCauseInstanceOf(KeySourceUnavailableException.class);
             }
