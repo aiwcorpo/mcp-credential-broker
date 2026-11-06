@@ -348,6 +348,31 @@ class GenericRestUserSecretIntegrationTest {
     }
 
     @Test
+    void aSecretThatCannotBeAHeaderValueIsRefusedEvenWhenNothingVerifiesIt(CapturedOutput output) {
+        String id = newId();
+        assertThat(create(id, body(null, null)).status()).isEqualTo(200);
+        String sub = UUID.randomUUID().toString();
+
+        for (String bad : List.of("token\\r\\nX-Injected: 1", "line\\nfeed", "carriage\\rreturn", " ", "two words", "tab\\there",
+                "token\\u00e9", "\\u0142\\u00f3d\\u017a", "nul\\u0000byte", "del\\u007f")) {
+            String rid = TestTokens.newRequestId();
+            BrokerClient.Response refused = bff.send("PUT", "/v1/connections/" + id + "/secret", tokens.bffUser(sub, "alice"), rid,
+                    "{\"secret\":\"" + bad + "\"}");
+            assertThat(refused.status()).as(bad).isEqualTo(422);
+            assertThat(refused.body()).isEqualTo("{\"error\":\"secret_invalid\"}");
+            assertThat(AuditLines.of(output, rid)).as(bad).singleElement()
+                    .satisfies(event -> assertThat(event.path("outcome").stringValue()).isEqualTo("denied"));
+        }
+
+        assertThat(connectionOf(sub, id)).as("nothing was stored").isNull();
+        assertThat(jdbc.sql("select count(*) from connection where sub = :sub").param("sub", sub).query(Long.class).single()).isZero();
+        assertThat(env.bao("LIST", "secret/metadata/mcp/connections/" + pl.aiwcorpo.mcp.broker.secret.SecretKey.hashOf(sub) + "/", null)
+                .statusCode()).isEqualTo(404);
+        assertThat(requests).isEmpty();
+        assertThat(connect(id, sub, "an-ordinary-token").status()).as("a header safe value is still stored").isEqualTo(200);
+    }
+
+    @Test
     void theOtherSystemsKeepTheirVerification() {
         assertThat(info("jira").path("userSecretVerified").booleanValue()).isTrue();
         assertThat(info("gitlab").path("userSecretVerified").booleanValue()).isTrue();

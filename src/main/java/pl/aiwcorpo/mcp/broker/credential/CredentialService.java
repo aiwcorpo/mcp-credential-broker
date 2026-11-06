@@ -248,6 +248,11 @@ public class CredentialService {
             Instant now = clock.instant();
             Instant expiresAt = parseTimestamp(expiresAtText);
             SecretValue kept = userSecretValue(system, username, secret);
+            if (!kept.isHeaderToken()) {
+                // Whatever the adapter does with it, this value ends up in an Authorization header built by the gateway and by
+                // servers; a system without whoami would otherwise store it unchecked.
+                throw new SecretRejectedException("secret_invalid");
+            }
             CredentialScheme scheme = userSecretScheme(system);
             BackendIdentity identity = switch (system.adapter().whoami(scheme, kept)) {
                 case WhoamiResult.Rejected rejected -> throw new SecretRejectedException("secret_invalid");

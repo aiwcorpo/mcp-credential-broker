@@ -4,7 +4,7 @@ Kamień: **2.0.0** (sekcja niżej), wcześniej **M6 etap 3**, **M5** i **M4**. K
 
 ## 2.0.0 (2026-11-06): systemy w bazie, API administratora
 
-Specyfikacja: "dynamic servers", sekcja "Broker systems"; kontrakt: CC-229, CC-235, CC-237 (A1, A11, A12), CC-238 (po dwóch przeglądach bezpieczeństwa). Testy: 587 zielone (`mvnw -o verify`, z testami integracyjnymi).
+Specyfikacja: "dynamic servers", sekcja "Broker systems"; kontrakt: CC-229, CC-235, CC-237 (A1, A11, A12), CC-238 (po dwóch przeglądach bezpieczeństwa). Testy: 588 zielone (`mvnw -o verify`, z testami integracyjnymi).
 
 - **Gdzie są systemy:** tabela `target_system` (migracje `V7`, `V8`), `SystemRepository`, rejestr `SystemRegistry` (migawka z adapterami, wymieniana przez `reload()`). Usunięte: `SystemRegistry.KNOWN_SYSTEMS`, blok `broker.systems` z `application.yml`; `MCP_JIRA_URL` i spółka nie są wymagane. `GET /v1/systems` czyta zapisane systemy. Bez systemów broker startuje.
 - **API i autoryzacja:** `GET /v1/admin/systems`, `GET`, `PUT`, `DELETE /v1/admin/systems/{system}`. Certyfikat `mcp-portal-bff` (tabela `Operation`, `OperationsContractTest`) i token z `mcp-platform-admin` w claimie `groups`; brak grupy to 403 (`not_admin`). Zapis (`PUT`, `DELETE`) wymaga `auth_time` do 300 s, inaczej 401 `step_up_required` (broker sprawdza sam, C2). `ETag` to losowy token; `If-None-Match: *` tworzy, `If-Match` zastępuje i usuwa (412, 428), zapis warunkowy w SQL (`where etag = :expected`).
