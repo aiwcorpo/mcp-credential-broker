@@ -75,8 +75,10 @@ to every instance within `broker.system-sync.interval` (5 s by default), without
 | `GET /v1/systems` | what readers (gateway, portal) see: types, default type, OAuth scopes |
 
 Callers: the portal BFF (client certificate `mcp-portal-bff`) with the token of a user whose `groups` claim has
-`mcp-platform-admin`. Anything else is `403`. A `PUT` or `DELETE` also needs `auth_time` in that token no older than 300 seconds,
-otherwise `401 step_up_required`: the broker checks the MFA itself, the BFF asking for it is not relied on.
+`mcp-platform-admin`. Anything else is `403`. A `PUT` or `DELETE` also needs proof of a fresh MFA in that token: `auth_time` no older than 300 seconds and
+either `acr` in `broker.bff-token.mfa-acr-values` (empty by default) or `amr` containing one of
+`broker.bff-token.mfa-amr-values` (`mfa`, `otp`, `hwk`, `totp` by default). A recent password login is not enough. Otherwise
+`401 step_up_required`, audited; the broker checks the MFA itself, the BFF asking for it is not relied on.
 
 The adapter is chosen per system: `atlassian-dc` (Jira or Confluence Data Center; `product` is `jira` or `confluence`, never
 detected), `gitlab` (user secrets and OAuth), `opensearch` (token exchange at the IdP; `exchangeAudience` is required) and
@@ -91,10 +93,12 @@ Addresses: every URL an administrator gives (`baseUrl`, `oauth.authorizeUrl`, `o
 
 When a change moves where the system points (`baseUrl`, `oauth.authorizeUrl`, `oauth.tokenUrl`, `oauth.clientId` or
 `revokeUrl`), every connection of the system loses its grant and its stored value and gets the status `needs_reconnect`;
-`credential.invalidated` is published per connection and `connections_invalidated` is audited. Nothing is sent to any
+`credential.invalidated` is published per connection and `connections_invalidated` is audited. The connections are marked in the
+same transaction that changes the row of the system; deleting their stored values follows, and every later write of the system
+finishes it if it was interrupted (the write that was interrupted fails with 503). Nothing is sent to any
 provider, neither to the old address nor to the new one. Other changes (scopes, timeout, default type, the secret itself) leave
 the connections alone. Every grant records the client revision it was issued under; a refresh, a revoke or a resolve with a
-different revision is refused, so an instance that has not yet seen a change cannot use a grant with the new definition. A
+different revision, or with none, is refused (the import gives the connections of 1.x their system's revision), so an instance that has not yet seen a change cannot use a grant with the new definition. A
 pending OAuth flow of the old revision cannot be completed either. A connection whose credential type the system dropped is
 `needs_reconnect` as well.
 

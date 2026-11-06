@@ -10,13 +10,14 @@ Built on `mcp-contracts` 7.0.0 (CC-229, CC-235, CC-237, CC-238). Breaking: the s
 - Systems live in PostgreSQL (table `target_system`, migrations `V7` and `V8`) and are managed through the admin API of C4:
   `GET /v1/admin/systems`, `GET`, `PUT` and `DELETE /v1/admin/systems/{system}`. Callers are the portal BFF (certificate
   CN `mcp-portal-bff`) with the token of a user in the group `mcp-platform-admin` (claim `groups`); anything else is `403`.
-  A `PUT` or `DELETE` also needs `auth_time` in the token not older than 300 s, else `401 step_up_required`. A create sends
+  A `PUT` or `DELETE` also needs proof of a fresh MFA in the token: `auth_time` not older than 300 s and an `acr` in
+  `broker.bff-token.mfa-acr-values` or an `amr` with one of `broker.bff-token.mfa-amr-values` (default `mfa`, `otp`, `hwk`,
+  `totp`), else `401 step_up_required`. A create sends
   `If-None-Match: *`, a replace and a delete send `If-Match` with the `ETag` of the last read (`412` when stale, `428` when
   missing). The response never carries a secret, only `clientSecretSet`.
 - The request and view have `product` (`jira` or `confluence`, required for `atlassian-dc`, forbidden otherwise; the probing
   of Jira's and Confluence's paths is gone), `revokeUrl`, `timeout` (ISO 8601, at most 10 minutes), `exchangeAudience`
-  (required for `token-exchange`, forbidden otherwise) and `userSecretScheme` (`Bearer` or `Basic`; `Token` is accepted by the
-  contract but the broker has no such scheme for user secrets and refuses it with `secret_scheme_not_supported`).
+  (required for `token-exchange`, forbidden otherwise) and `userSecretScheme` (`Bearer` or `Basic`; anything else is `400`).
   `authorizeUrl` is only for `user-oauth`. A `token-exchange` system takes no `tokenUrl`: it is always the token endpoint of
   the broker's identity provider (`broker.bff-token.token-url`, default Keycloak's path under `MCP_OIDC_ISSUER`), and a body
   with one is `422 token_url_not_settable`.
@@ -31,7 +32,10 @@ Built on `mcp-contracts` 7.0.0 (CC-229, CC-235, CC-237, CC-238). Breaking: the s
   the system: grants and stored values are deleted, pending flows die, the connections get the new status `needs_reconnect`,
   `credential.invalidated` is published per connection and `connections_invalidated` is audited, and nothing is sent to any
   endpoint, old or new. A grant records the client revision it was issued under (the revision moves only on such a change, so a
-  change of scopes does not break refresh); a refresh, a revoke or a resolve under another revision is refused. A DELETE never
+  change of scopes does not break refresh); a refresh, a revoke or a resolve under another revision, or without one, is
+  refused. Migration `V9` gives existing connections of systems that are rows the revision of their system, and the import of
+  1.x does the same for the others. The connections are marked `needs_reconnect` in the same transaction that updates the
+  system row; deleting their stored values follows and is finished by the next write of the system if it was interrupted. A DELETE never
   calls a provider either. Creating a system whose id has leftovers purges them first, without sending anything.
 - Client secrets are written to OpenBao KV v2 first, as a new version with check-and-set, at
   `secret/data/mcp/system-clients/<system>` (`broker.openbao.system-clients-prefix`; it replaces the path `mcp/oauth-clients`
