@@ -5,60 +5,81 @@ integration builds tag the image `m6-<short sha>`.
 
 ## 2.0.0
 
-Built on `mcp-contracts` 7.0.0. Breaking: the systems are no longer configuration.
+Built on `mcp-contracts` 7.0.0 (CC-229, CC-235, CC-237, CC-238). Breaking: the systems are no longer configuration.
 
-- Systems live in PostgreSQL (table `target_system`, migration `V7`) and are managed through the admin API of C4:
+- Systems live in PostgreSQL (table `target_system`, migrations `V7` and `V8`) and are managed through the admin API of C4:
   `GET /v1/admin/systems`, `GET`, `PUT` and `DELETE /v1/admin/systems/{system}`. Callers are the portal BFF (certificate
-  CN `mcp-portal-bff`) with the token of a user in the group `mcp-platform-admin` (claim `groups`); anything else is
-  `403`. A create sends `If-None-Match: *`, a replace sends `If-Match` with the `ETag` of the last read (`412` when it is
-  stale, `428` when neither is sent). The response never carries a secret, only `clientSecretSet`.
-- Per system the adapter is chosen: `atlassian-dc`, `gitlab`, `opensearch` or `generic-rest`. The checks of the 1.x
-  start-up now answer `422 system_rejected` with a reason: `adapter_type_mismatch`, `credential_types_mixed`,
-  `default_type_not_supported`, `oauth_required`, `secret_scheme_not_supported`, `system_reserved`,
-  `client_secret_required`. Ids follow `SystemId`: `^[a-z][a-z0-9]{1,30}$`, without the reserved names `gateway`,
-  `offboarding`, `portal`, `broker`, `prometheus`, `platform`, `admin`, `registry`, `adapter`, `internal`, `ci`.
-- The OAuth client secret (also the secret of the IdP client of a `token-exchange` system) is written to OpenBao at
-  `<kv-mount>/data/<oauth-clients-prefix>/<system>`, field `client_secret` (by default `secret/data/mcp/oauth-clients/<system>`,
-  the path 1.x already read). A PUT without a secret keeps it only while `baseUrl`, `oauth.authorizeUrl`, `oauth.tokenUrl` and
-  `oauth.clientId` are unchanged. **The AppRole policy of the broker must now allow `create`, `read`, `update` and `delete`
-  on `secret/data/mcp/oauth-clients/*` and `read` and `delete` on `secret/metadata/mcp/oauth-clients/*`** (it was read only).
+  CN `mcp-portal-bff`) with the token of a user in the group `mcp-platform-admin` (claim `groups`); anything else is `403`.
+  A `PUT` or `DELETE` also needs `auth_time` in the token not older than 300 s, else `401 step_up_required`. A create sends
+  `If-None-Match: *`, a replace and a delete send `If-Match` with the `ETag` of the last read (`412` when stale, `428` when
+  missing). The response never carries a secret, only `clientSecretSet`.
+- The request and view have `product` (`jira` or `confluence`, required for `atlassian-dc`, forbidden otherwise; the probing
+  of Jira's and Confluence's paths is gone), `revokeUrl`, `timeout` (ISO 8601, at most 10 minutes), `exchangeAudience`
+  (required for `token-exchange`, forbidden otherwise) and `userSecretScheme` (`Bearer` or `Basic`; `Token` is accepted by the
+  contract but the broker has no such scheme for user secrets and refuses it with `secret_scheme_not_supported`).
+  `authorizeUrl` is only for `user-oauth`. A `token-exchange` system takes no `tokenUrl`: it is always the token endpoint of
+  the broker's identity provider (`broker.bff-token.token-url`, default Keycloak's path under `MCP_OIDC_ISSUER`), and a body
+  with one is `422 token_url_not_settable`.
+- Every URL from an administrator is `https`; `http` only when `broker.allow-plain-http` is set (development).
+- Per system the adapter is chosen: `atlassian-dc`, `gitlab`, `opensearch` or `generic-rest`. The checks of the 1.x start-up
+  now answer `422 system_rejected` with a reason: `adapter_type_mismatch`, `credential_types_mixed`,
+  `default_type_not_supported`, `oauth_required`, `secret_scheme_not_supported`, `product_required`,
+  `exchange_audience_required`, `system_reserved`, `client_secret_required`, `token_url_not_settable`,
+  `authorize_url_not_settable`, `revoke_url_not_settable`. Ids follow `SystemId` (`^[a-z][a-z0-9]{1,30}$`, without the reserved
+  names `gateway`, `offboarding`, `portal`, `broker`, `prometheus`, `platform`, `admin`, `registry`, `adapter`, `internal`, `ci`).
+- A change of `baseUrl`, `oauth.authorizeUrl`, `oauth.tokenUrl`, `oauth.clientId` or `revokeUrl` invalidates every connection of
+  the system: grants and stored values are deleted, pending flows die, the connections get the new status `needs_reconnect`,
+  `credential.invalidated` is published per connection and `connections_invalidated` is audited, and nothing is sent to any
+  endpoint, old or new. A grant records the client revision it was issued under (the revision moves only on such a change, so a
+  change of scopes does not break refresh); a refresh, a revoke or a resolve under another revision is refused. A DELETE never
+  calls a provider either. Creating a system whose id has leftovers purges them first, without sending anything.
+- Client secrets are written to OpenBao KV v2 first, as a new version with check-and-set, at
+  `secret/data/mcp/system-clients/<system>` (`broker.openbao.system-clients-prefix`; it replaces the path `mcp/oauth-clients`
+  of 1.x, which is read only by the import). The row stores the version together with its new etag in one conditional update,
+  readers ask for exactly that version, and a version that no row points at is destroyed (a lost race, a rotation, a delete).
+  A PUT without a secret keeps it only while the five addresses and the client are unchanged. **The AppRole policy needs
+  `create`, `read`, `update` on `secret/data/mcp/system-clients/*`, `read` on `secret/metadata/mcp/system-clients/*`, `update`
+  on `secret/destroy/mcp/system-clients/*`, and `read` on `secret/data/mcp/oauth-clients/*` for the import** (README lists
+  the lines).
 - Every instance polls the table (`broker.system-sync.interval`, 5 s by default) and swaps its list of systems, so a change
   made on any instance is visible on all of them within about that interval, without a restart; the instance that took the
   write reloads at once. Polling was chosen over Redis pub/sub because a lost message would leave an instance on an old list
-  until the next restart, and the broker's Redis account may publish only `credential.invalidated`. The cached client secret
-  is keyed by the revision of the system, so a rotation is read again on every instance after that poll.
+  until the next restart, and the broker's Redis account may publish only `credential.invalidated`. A foreign key from
+  `connection.system` to the table (not validated for rows of 1.x) makes a write of an instance that has not seen a delete
+  fail.
 - `DELETE` removes the connections of users to the system and their stored values (each removal publishes
-  `credential.invalidated` and writes `connection_change` with reason `system_deleted`), then the row and the client secret.
-  It is idempotent and can be repeated after a failure. A broker instance that has not yet seen the deletion can accept a
-  connection for the removed system during one poll interval; repeat the `DELETE` to remove it.
-- `GET /v1/systems` reads the stored systems. `resolve` for an id nobody configured answers `422 system_not_configured`;
-  a connection whose credential type the system no longer supports is listed with status `error` and `resolve` asks the user
-  to connect again.
-- Every change writes an `admin_change` event with reason `system_created`, `system_updated` or `system_deleted`
-  (`denied` with the reason of the refusal, such as `precondition_failed` or `not_admin`), the administrator as `sub` and
-  the system as `server`. The audit field `policyRevision` and the claim `prv` of the internal JWT are integers (CC-237).
-- `atlassian-dc` no longer knows whether it talks to Jira or Confluence from the id of the system: the first `whoami` tries
-  Jira's path and, on `404`, Confluence's, and remembers the product that answered.
+  `credential.invalidated` and writes `connection_change` with reason `system_deleted`), then the row and the version of the
+  client secret. A `DELETE` of an id that has no system is `204` and deletes nothing. It can be repeated after a failure.
+- `GET /v1/systems` reads the stored systems. `resolve` for an id nobody configured answers `422 system_not_configured`.
+  The audit field `server` is written only for an id that has a system, or that the call itself creates or removes.
+- Every change writes an `admin_change` event with reason `system_created`, `system_updated`, `system_deleted` or
+  `connections_invalidated` (`denied` with the reason of the refusal, such as `precondition_failed`, `not_admin` or
+  `step_up_required`), the administrator as `sub` and the system as `server`. The audit field `policyRevision` and the claim
+  `prv` of the internal JWT are integers (CC-237).
 - **Removed:** the list of known systems in the code (`SystemRegistry.KNOWN_SYSTEMS`) and the `broker.systems` block of
   `application.yml`. `MCP_JIRA_URL` and the other per system variables are no longer required.
 
 ### Moving from 1.x
 
-1. Back up PostgreSQL, and give the AppRole of the broker the policy above.
-2. Keep the `BROKER_SYSTEMS_*` (or `broker.systems.*`) settings of 1.x for the first start of 2.0.0. When the table is empty
-   and nothing was imported before, the broker stores those systems once (one `admin_change` event `system_imported` each) and
-   remembers that it did (table `target_system_import`), so that deleting every system later does not bring them back.
-   Client secrets are not copied: the secret at `mcp/oauth-clients/<system>`, which 1.x already required, is used as it is;
-   a dev only `oauth.client-secret` property is written to OpenBao once. Fields that the admin API does not have (`timeout`,
-   OAuth `revoke-url`, `deployment`, the token exchange `audience`) are imported and kept when the system is replaced
-   through the API. `user-secret-scheme` is folded into `secret-scheme` for a system that takes only `user-secret`.
-3. After the first start remove the `broker.systems.*` settings; they are ignored from then on (a warning says so).
-4. Without the old settings, or on a table that already has systems, nothing is imported: create the systems with
-   `PUT /v1/admin/systems/{system}` through the portal. Mapping from the 1.x settings: `base-url` is `baseUrl`, `adapter`,
-   `supported-types` and `default-type` keep their meaning, `secret-scheme` is `secretScheme`, `oauth.client-id`,
-   `oauth.authorize-url` and `oauth.token-url` are the same fields of `oauth`, `oauth-scopes` is `oauth.scopes`. A
-   `token-exchange` system puts the client of the IdP in `oauth` (`clientId`, `clientSecret`, `tokenUrl`, `scopes`;
-   `authorizeUrl` is required by the contract and unused) and takes the system id as the audience.
+1. Back up PostgreSQL, and give the AppRole of the broker the policy lines above.
+2. Keep the `BROKER_SYSTEMS_*` (or `broker.systems.*`) settings of 1.x for the first start of 2.0.0. On that start the broker
+   takes a database lock and, in one transaction, stores those systems when the table is empty and writes a marker
+   (`target_system_import`); the marker is written whatever the settings say, also when they are absent or the table already
+   has systems, so deleting every system later does not bring them back. One `admin_change` event `system_imported` per system.
+   Ids that are not valid system ids stop the start with an error naming them. An `atlassian-dc` system gets its product from
+   its old id (`jira` or `confluence`); one with another id stops the start and has to be created through the API. The client
+   secret is copied from `mcp/oauth-clients/<system>` to the new path (a dev only `oauth.client-secret` property is written
+   there instead), `token-exchange` systems use the token endpoint of the broker's identity provider, and connections of 1.x
+   are adopted under the revision of their system. Fields that the admin API now has (`timeout`, `revoke-url`,
+   `user-secret-scheme`, the exchange audience) are imported; `deployment` is imported and kept when the system is replaced.
+3. After the first start remove the `broker.systems.*` settings; they are ignored from then on (a warning says so) and
+   `read` on `secret/data/mcp/oauth-clients/*` can be dropped from the policy.
+4. Without the old settings, nothing is imported: create the systems with `PUT /v1/admin/systems/{system}` through the portal.
+   Mapping from the 1.x settings: `base-url` is `baseUrl`, `adapter`, `supported-types` and `default-type` keep their meaning,
+   `secret-scheme` is `secretScheme`, `user-secret-scheme` is `userSecretScheme`, `oauth.client-id`, `oauth.authorize-url`,
+   `oauth.token-url` and `oauth.revoke-url` are `oauth.clientId`, `oauth.authorizeUrl`, `oauth.tokenUrl` and `revokeUrl`,
+   `oauth-scopes` is `oauth.scopes`. A `token-exchange` system puts the client of the IdP in `oauth` (`clientId`,
+   `clientSecret`, `scopes`) and its `token-exchange.audience` in `exchangeAudience`.
 
 ## 1.0.0
 

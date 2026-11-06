@@ -71,35 +71,69 @@ to every instance within `broker.system-sync.interval` (5 s by default), without
 | --- | --- |
 | `GET /v1/admin/systems`, `GET /v1/admin/systems/{system}` | configuration without secrets; the single read has an `ETag` |
 | `PUT /v1/admin/systems/{system}` | create (`If-None-Match: *`) or replace (`If-Match: <ETag>`); `412` when stale, `428` without either |
-| `DELETE /v1/admin/systems/{system}` | removes the system, the connections to it with their stored values, and the client secret |
+| `DELETE /v1/admin/systems/{system}` | `If-Match` required; removes the system, the connections to it with their stored values, and the client secret version |
 | `GET /v1/systems` | what readers (gateway, portal) see: types, default type, OAuth scopes |
 
-The caller is the portal BFF (client certificate `mcp-portal-bff`) with the token of a user whose `groups` claim has
-`mcp-platform-admin`; the user token goes through the same checks as for every portal call. Anything else is `403`. A fresh MFA
-is the BFF's business, the broker does not see it.
+Callers: the portal BFF (client certificate `mcp-portal-bff`) with the token of a user whose `groups` claim has
+`mcp-platform-admin`. Anything else is `403`. A `PUT` or `DELETE` also needs `auth_time` in that token no older than 300 seconds,
+otherwise `401 step_up_required`: the broker checks the MFA itself, the BFF asking for it is not relied on.
 
-The adapter is chosen per system: `atlassian-dc` (Jira or Confluence Data Center, `whoami` for user secrets), `gitlab` (user
-secrets and OAuth), `opensearch` (token exchange at the IdP) and `generic-rest` (a service-account key). The adapter has to fit
-the credential types, as it did at start-up in 1.x: `user-oauth` needs an OAuth capable adapter and an `oauth` client,
-`token-exchange` and `service-account` cannot be combined with other types, and so on; a mismatch is `422 system_rejected`.
+The adapter is chosen per system: `atlassian-dc` (Jira or Confluence Data Center; `product` is `jira` or `confluence`, never
+detected), `gitlab` (user secrets and OAuth), `opensearch` (token exchange at the IdP; `exchangeAudience` is required) and
+`generic-rest` (a service-account key). The adapter has to fit the credential types, as it did at start-up in 1.x:
+`user-oauth` needs an OAuth capable adapter and `oauth.authorizeUrl` and `oauth.tokenUrl`, `token-exchange` and
+`service-account` cannot be combined with other types, and so on; a mismatch is `422 system_rejected`. A `token-exchange`
+system takes no `tokenUrl`: the broker always uses the token endpoint of its identity provider
+(`broker.bff-token.token-url`, `BROKER_BFFTOKEN_TOKENURL`; Keycloak's path under `MCP_OIDC_ISSUER` when not set).
 
-Secrets: the `clientSecret` of the OAuth client is written to OpenBao at `secret/data/mcp/oauth-clients/<system>` (field
-`client_secret`; mount and prefix are `broker.openbao.kv-mount` and `broker.openbao.oauth-clients-prefix`) and removed with
-every version when the system is deleted. It is not stored in the table, never returned and never logged. The AppRole policy
-needs `create`, `read`, `update`, `delete` on `secret/data/mcp/oauth-clients/*` and `read`, `delete` on
-`secret/metadata/mcp/oauth-clients/*`. A replace keeps the secret only while `baseUrl`, `oauth.authorizeUrl`, `oauth.tokenUrl`
-and `oauth.clientId` are unchanged; otherwise it asks for the secret again (`client_secret_required`), so a changed address never
-receives the old one. A service-account key stays where the operator put it (`mcp/service-accounts/<system>`, read only).
+Addresses: every URL an administrator gives (`baseUrl`, `oauth.authorizeUrl`, `oauth.tokenUrl`, `revokeUrl`) is `https`. Plain
+`http` is accepted only when `broker.allow-plain-http` is set, which is for a development stack only.
+
+When a change moves where the system points (`baseUrl`, `oauth.authorizeUrl`, `oauth.tokenUrl`, `oauth.clientId` or
+`revokeUrl`), every connection of the system loses its grant and its stored value and gets the status `needs_reconnect`;
+`credential.invalidated` is published per connection and `connections_invalidated` is audited. Nothing is sent to any
+provider, neither to the old address nor to the new one. Other changes (scopes, timeout, default type, the secret itself) leave
+the connections alone. Every grant records the client revision it was issued under; a refresh, a revoke or a resolve with a
+different revision is refused, so an instance that has not yet seen a change cannot use a grant with the new definition. A
+pending OAuth flow of the old revision cannot be completed either. A connection whose credential type the system dropped is
+`needs_reconnect` as well.
+
+Client secrets (`oauth.clientSecret`, also the IdP client secret of a token-exchange system) are in OpenBao KV v2 at
+`<kv-mount>/data/<system-clients-prefix>/<system>`, field `client_secret`, by default `secret/data/mcp/system-clients/<system>`
+(`broker.openbao.system-clients-prefix`), a prefix of nothing else. A write is a check-and-set to a new version, written before
+the row; the row stores that version and a new etag in one conditional update, and every reader asks for exactly that version.
+A change that loses the race destroys the version it wrote, and a rotated or removed version is destroyed, so two concurrent
+changes never leave the secret of one beside the configuration of the other. The secret is never in the table, a response or a
+log. A replace keeps it only while the five addresses and the client stay as they are; otherwise it asks for it again
+(`client_secret_required`). A service-account key stays where the operator put it (`mcp/service-accounts/<system>`, read only).
+
+The AppRole policy of the broker needs these lines for the admin API (the lines for `mcp/connections`, the authenticators and
+`mcp/service-accounts` are unchanged):
+
+```
+path "secret/data/mcp/system-clients/*"     { capabilities = ["create", "read", "update"] }
+path "secret/metadata/mcp/system-clients/*" { capabilities = ["read"] }
+path "secret/destroy/mcp/system-clients/*"  { capabilities = ["update"] }
+path "secret/data/mcp/oauth-clients/*"      { capabilities = ["read"] }
+```
+
+The last line is the path 1.x read; it is used only by the import of the 1.x properties (below) and can be removed afterwards.
 
 Propagation: the table is the source of truth and every instance reads it every few seconds; the instance that handled a write
 reloads at once. Redis pub/sub was not used for this because a lost message would leave an instance on an old list for good.
+`connection.system` has a foreign key to the table, so a stale instance cannot write a connection to a system that was deleted.
 
-Deleting a system removes every user's connection to it (OAuth grants are revoked at the provider on a best effort basis),
-publishes `credential.invalidated` for each, and writes `connection_change` (`system_deleted`) per connection and one
-`admin_change`. After that `resolve` answers `422 system_not_configured`. The call is idempotent; repeat it after a failure.
+Deleting a system removes every user's connection to it with its stored value, publishes `credential.invalidated` for each, and
+writes `connection_change` (`system_deleted`) per connection and `admin_change` (`system_deleted`, `connections_invalidated`).
+Nothing is sent to the provider: a grant is not revoked with a definition other than the one it was issued under, and that one
+may be gone. After that `resolve` answers `422 system_not_configured`. A delete of an id that has no system is `204` and removes
+nothing. Creating a system whose id still has connections left behind purges them first, again without sending anything.
+The call is idempotent; repeat it after a failure.
 
-Moving from 1.x: keep the old `broker.systems.*` settings for the first start of 2.0.0, which imports them into an empty table
-once, then remove them. Details in the CHANGELOG.
+Moving from 1.x: keep the old `broker.systems.*` settings for the first start of 2.0.0. It imports them into an empty table
+once, in one transaction under a database lock, copies the client secrets from `mcp/oauth-clients/<system>` to the new path
+and writes a marker; on that first start the marker is written whatever the settings say. Then remove them. Details in the
+CHANGELOG.
 
 ## Security
 
