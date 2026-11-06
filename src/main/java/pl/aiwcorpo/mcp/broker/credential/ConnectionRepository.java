@@ -21,7 +21,7 @@ public class ConnectionRepository {
 
     public Optional<Connection> find(String sub, String system) {
         return jdbc.sql("""
-                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision
+                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision, verified
                 from connection where sub = :sub and system = :system
                 """)
                 .param("sub", sub)
@@ -32,13 +32,13 @@ public class ConnectionRepository {
 
     public void upsert(Connection connection, Instant now) {
         jdbc.sql("""
-                insert into connection (sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision, updated_at)
-                values (:sub, :system, :type, :state, :backendUser, :expiresAt, :connectedAt, :lastUsedAt, :secretVersion, :accessExpiresAt, :clientRevision, :now)
+                insert into connection (sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision, verified, updated_at)
+                values (:sub, :system, :type, :state, :backendUser, :expiresAt, :connectedAt, :lastUsedAt, :secretVersion, :accessExpiresAt, :clientRevision, :verified, :now)
                 on conflict (sub, system) do update set
                     type = excluded.type, state = excluded.state, backend_user = excluded.backend_user,
                     expires_at = excluded.expires_at, connected_at = excluded.connected_at,
                     last_used_at = excluded.last_used_at, secret_version = excluded.secret_version,
-                    access_expires_at = excluded.access_expires_at, client_revision = excluded.client_revision,
+                    access_expires_at = excluded.access_expires_at, client_revision = excluded.client_revision, verified = excluded.verified,
                     updated_at = excluded.updated_at
                 """)
                 .param("sub", connection.sub())
@@ -52,13 +52,14 @@ public class ConnectionRepository {
                 .param("secretVersion", connection.secretVersion())
                 .param("accessExpiresAt", timestamp(connection.accessExpiresAt()))
                 .param("clientRevision", connection.clientRevision())
+                .param("verified", connection.verified())
                 .param("now", timestamp(now))
                 .update();
     }
 
     public List<Connection> findAll(String sub) {
         return jdbc.sql("""
-                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision
+                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision, verified
                 from connection where sub = :sub order by system
                 """)
                 .param("sub", sub)
@@ -84,7 +85,7 @@ public class ConnectionRepository {
      */
     public List<Connection> findNeedingInvalidation(String system, String clientRevision, int limit) {
         return jdbc.sql("""
-                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision
+                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision, verified
                 from connection
                 where system = :system
                   and ((state <> 'needs_reconnect' and client_revision is distinct from :revision)
@@ -125,7 +126,7 @@ public class ConnectionRepository {
     /** Every connection to the system, whatever its state. */
     public List<Connection> findBySystem(String system, int limit) {
         return jdbc.sql("""
-                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision
+                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision, verified
                 from connection where system = :system order by sub limit :limit
                 """)
                 .param("system", system)
@@ -156,7 +157,7 @@ public class ConnectionRepository {
      */
     public List<Connection> findLastActivityBefore(Instant cutoff, int limit, int skip) {
         return jdbc.sql("""
-                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision
+                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision, verified
                 from connection
                 where coalesce(last_used_at, connected_at) < :cutoff
                 order by coalesce(last_used_at, connected_at), sub, system limit :limit offset :skip
@@ -177,7 +178,7 @@ public class ConnectionRepository {
             return List.of();
         }
         return jdbc.sql("""
-                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision
+                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision, verified
                 from connection
                 where type = 'user-oauth' and state = 'connected' and system in (:systems) and access_expires_at < :deadline
                 order by access_expires_at limit :limit
@@ -246,6 +247,6 @@ public class ConnectionRepository {
                 Connection.StoredState.valueOf(rs.getString("state").toUpperCase(Locale.ROOT)),
                 rs.getString("backend_user"), instant(rs, "expires_at"), instant(rs, "connected_at"),
                 instant(rs, "last_used_at"), rs.getString("secret_version"), instant(rs, "access_expires_at"),
-                rs.getString("client_revision"));
+                rs.getString("client_revision"), rs.getBoolean("verified"));
     }
 }

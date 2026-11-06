@@ -47,8 +47,11 @@ class SystemRulesTest {
 
     @Test
     void theAdapterMustFitTheCredentialTypes() {
-        assertThat(reasonOf(system("notes", "generic-rest", List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET,
-                CredentialScheme.BEARER, null))).isEqualTo("adapter_type_mismatch");
+        assertThat(reasonOf(system("notes", "generic-rest", List.of(CredentialType.USER_OAUTH), CredentialType.USER_OAUTH,
+                CredentialScheme.BEARER, CLIENT))).isEqualTo("credential_type_not_supported_by_adapter");
+        assertThat(reasonOf(system("notes", "generic-rest", List.of(CredentialType.USER_OAUTH, CredentialType.USER_SECRET),
+                CredentialType.USER_SECRET, CredentialScheme.BEARER, CLIENT))).as("not mixed either")
+                .isEqualTo("credential_type_not_supported_by_adapter");
         assertThat(reasonOf(system("notes", "atlassian-dc", List.of(CredentialType.SERVICE_ACCOUNT), CredentialType.SERVICE_ACCOUNT,
                 CredentialScheme.BEARER, null))).isEqualTo("adapter_type_mismatch");
         assertThat(reasonOf(system("notes", "gitlab", List.of(CredentialType.TOKEN_EXCHANGE), CredentialType.TOKEN_EXCHANGE,
@@ -87,6 +90,26 @@ class SystemRulesTest {
                 CredentialScheme.BEARER, CLIENT))).isNull();
         assertThat(reasonOf(system("desk", "generic-rest", List.of(CredentialType.SERVICE_ACCOUNT), CredentialType.SERVICE_ACCOUNT,
                 CredentialScheme.BEARER, null))).isNull();
+        assertThat(reasonOf(system("notes", "generic-rest", List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET,
+                CredentialScheme.BEARER, null))).as("generic-rest takes user secrets since 7.0.0").isNull();
+    }
+
+    @Test
+    void genericRestTakesUserSecretOrServiceAccountNeverBoth() {
+        assertThat(reasonOf(system("notes", "generic-rest", List.of(CredentialType.USER_SECRET, CredentialType.SERVICE_ACCOUNT),
+                CredentialType.USER_SECRET, CredentialScheme.BEARER, null))).isEqualTo("credential_types_mixed");
+    }
+
+    @Test
+    void aWhoamiBelongsToAGenericRestSystemWithUserSecrets() {
+        SystemDefinition.Whoami whoami = new SystemDefinition.Whoami("/api/me", "username");
+        java.util.function.BiFunction<String, List<CredentialType>, SystemDefinition> withWhoami = (adapter, types) ->
+                new SystemDefinition("notes", URI.create("https://backend.test"), adapter, "atlassian-dc".equals(adapter) ? "jira" : null,
+                        types, types.get(0), CredentialScheme.BEARER, null, null, null, null, null, null, "etag-etag-etag",
+                        "revision-revision", null, whoami);
+        assertThat(reasonOf(withWhoami.apply("generic-rest", List.of(CredentialType.USER_SECRET)))).isNull();
+        assertThat(reasonOf(withWhoami.apply("generic-rest", List.of(CredentialType.SERVICE_ACCOUNT)))).isEqualTo("whoami_not_applicable");
+        assertThat(reasonOf(withWhoami.apply("atlassian-dc", List.of(CredentialType.USER_SECRET)))).isEqualTo("whoami_not_applicable");
     }
 
     @Test

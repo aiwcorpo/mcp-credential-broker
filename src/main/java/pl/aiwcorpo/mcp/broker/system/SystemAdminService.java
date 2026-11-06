@@ -364,6 +364,9 @@ public class SystemAdminService {
         if (!SystemRules.ADAPTERS.contains(request.adapter())) {
             throw SystemAdminException.invalid("adapter");
         }
+        if (request.whoami() != null && !"generic-rest".equals(request.adapter())) {
+            throw SystemAdminException.invalid("whoami");
+        }
         if (new HashSet<>(request.supportedTypes()).size() != request.supportedTypes().size()) {
             throw SystemAdminException.invalid("supportedTypes");
         }
@@ -402,7 +405,8 @@ public class SystemAdminService {
         return new SystemDefinition(id, baseUrl, request.adapter(), request.product(), types, request.defaultType(),
                 request.secretScheme(), oauth, null, request.timeout() == null ? null : Duration.parse(request.timeout()),
                 request.exchangeAudience(), userScheme, previous == null ? null : previous.deployment(), null, null,
-                request.displayName());
+                request.displayName(), request.whoami() == null ? null
+                        : new SystemDefinition.Whoami(request.whoami().path(), request.whoami().usernameField()));
     }
 
     private URI url(String value, String field) {
@@ -456,6 +460,7 @@ public class SystemAdminService {
                 system.userSecretScheme() == null ? null : system.userSecretScheme().wire(),
                 client == null ? null : new SystemAdminView.Oauth(client.clientId(),
                         client.authorizeUrl() == null ? null : client.authorizeUrl().toString(),
-                        client.tokenUrl() == null ? null : client.tokenUrl().toString(), client.scopes(), system.clientSecretSet()));
+                        client.tokenUrl() == null ? null : client.tokenUrl().toString(), client.scopes(), system.clientSecretSet()),
+                system.whoami() == null ? null : new SystemAdminView.Whoami(system.whoami().path(), system.whoami().usernameField()));
     }
 }

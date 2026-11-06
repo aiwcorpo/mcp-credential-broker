@@ -44,7 +44,7 @@ public class OAuthController {
                 SecretValue.of(request.code()), request.state());
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
-                .body(new OAuthCompleteResponse(completed.status().wire(), completed.backendUser()));
+                .body(new OAuthCompleteResponse(completed.status().wire(), completed.backendUser(), true));
     }
 
     private static Caller.PortalUser portalUser(Caller caller) {

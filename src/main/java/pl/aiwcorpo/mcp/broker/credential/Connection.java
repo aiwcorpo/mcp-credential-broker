@@ -21,12 +21,20 @@ public record Connection(
         Instant lastUsedAt,
         String secretVersion,
         Instant accessExpiresAt,
-        String clientRevision) {
+        String clientRevision,
+        boolean verified) {
+
+    /** A connection whose secret was checked with a whoami (always the case but for a generic-rest system without one). */
+    public Connection(String sub, String system, CredentialType type, StoredState state, String backendUser, Instant expiresAt,
+            Instant connectedAt, Instant lastUsedAt, String secretVersion, Instant accessExpiresAt, String clientRevision) {
+        this(sub, system, type, state, backendUser, expiresAt, connectedAt, lastUsedAt, secretVersion, accessExpiresAt,
+                clientRevision, true);
+    }
 
     /** Without a client revision: a connection of 1.x, or one a test builds. */
     public Connection(String sub, String system, CredentialType type, StoredState state, String backendUser, Instant expiresAt,
             Instant connectedAt, Instant lastUsedAt, String secretVersion, Instant accessExpiresAt) {
-        this(sub, system, type, state, backendUser, expiresAt, connectedAt, lastUsedAt, secretVersion, accessExpiresAt, null);
+        this(sub, system, type, state, backendUser, expiresAt, connectedAt, lastUsedAt, secretVersion, accessExpiresAt, null, true);
     }
 
     public SecretKey secretKey() {
@@ -34,16 +42,16 @@ public record Connection(
     }
 
     public Connection withSecretVersion(String version) {
-        return new Connection(sub, system, type, state, backendUser, expiresAt, connectedAt, lastUsedAt, version, accessExpiresAt, clientRevision);
+        return new Connection(sub, system, type, state, backendUser, expiresAt, connectedAt, lastUsedAt, version, accessExpiresAt, clientRevision, verified);
     }
 
     public Connection withAccessExpiresAt(Instant accessExpiry) {
-        return new Connection(sub, system, type, state, backendUser, expiresAt, connectedAt, lastUsedAt, secretVersion, accessExpiry, clientRevision);
+        return new Connection(sub, system, type, state, backendUser, expiresAt, connectedAt, lastUsedAt, secretVersion, accessExpiry, clientRevision, verified);
     }
 
     public Connection withClientRevision(String revision) {
         return new Connection(sub, system, type, state, backendUser, expiresAt, connectedAt, lastUsedAt, secretVersion,
-                accessExpiresAt, revision);
+                accessExpiresAt, revision, verified);
     }
 
     /**

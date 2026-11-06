@@ -45,7 +45,7 @@ public class AuditLog {
      * character (so also no unpaired surrogate), a line or paragraph separator, a noncharacter, an invisible
      * filler or a variation selector.
      */
-    static boolean validBackendUser(String value) {
+    public static boolean validBackendUser(String value) {
         int length = value.codePointCount(0, value.length());
         return length >= 1 && length <= 255 && !FORBIDDEN_IN_BACKEND_USER.matcher(value).find();
     }

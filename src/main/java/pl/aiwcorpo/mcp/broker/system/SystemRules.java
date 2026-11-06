@@ -34,11 +34,18 @@ public final class SystemRules {
         }
         boolean userTypes = types.stream().anyMatch(USER_TYPES::contains);
         String adapter = system.adapter();
-        if (userTypes && !USER_ADAPTERS.contains(adapter)) {
+        if ("generic-rest".equals(adapter) && types.contains(CredentialType.USER_OAUTH)) {
+            throw new SystemRejectedException("credential_type_not_supported_by_adapter",
+                    "the adapter generic-rest takes user-secret or service-account, not user-oauth");
+        }
+        if (userTypes && !USER_ADAPTERS.contains(adapter) && !"generic-rest".equals(adapter)) {
             throw new SystemRejectedException("adapter_type_mismatch", "adapter " + adapter + " has no user credentials");
         }
         if (types.equals(List.of(CredentialType.TOKEN_EXCHANGE)) && !"opensearch".equals(adapter)) {
             throw new SystemRejectedException("adapter_type_mismatch", "token-exchange needs the adapter opensearch");
+        }
+        if (system.whoami() != null && (!"generic-rest".equals(adapter) || !types.contains(CredentialType.USER_SECRET))) {
+            throw new SystemRejectedException("whoami_not_applicable", "whoami belongs to a generic-rest system with user-secret");
         }
         if (types.equals(List.of(CredentialType.SERVICE_ACCOUNT)) && !"generic-rest".equals(adapter)) {
             throw new SystemRejectedException("adapter_type_mismatch", "service-account needs the adapter generic-rest");

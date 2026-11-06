@@ -626,7 +626,8 @@ class SystemAdminIntegrationTest {
         mixed.put("defaultType", "service-account");
         bodies.put("credential_types_mixed", mixed);
         ObjectNode mismatch = jiraBody(env.upstreamUrl());
-        mismatch.put("adapter", "generic-rest").remove("product");
+        ((tools.jackson.databind.node.ArrayNode) mismatch.path("supportedTypes")).removeAll().add("service-account");
+        mismatch.put("defaultType", "service-account");
         bodies.put("adapter_type_mismatch", mismatch);
         ObjectNode noOauth = gitlabBody(null);
         noOauth.remove("oauth");

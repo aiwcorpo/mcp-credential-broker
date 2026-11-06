@@ -46,7 +46,8 @@ public class SystemAdapters {
             case "atlassian-dc" -> new AtlassianDcAdapter(AtlassianDcAdapter.Product.valueOf(definition.product().toUpperCase(java.util.Locale.ROOT)),
                     config.baseUrl(), config.timeout(), http, json);
             case "opensearch" -> new OpenSearchAdapter(config.tokenExchange(), config.timeout(), clientSecret, http, json, clock, meters);
-            case "generic-rest" -> new GenericRestAdapter(id, config.secretScheme(), serviceAccountKeys);
+            case "generic-rest" -> new GenericRestAdapter(id, config.secretScheme(), serviceAccountKeys, config.baseUrl(), definition.whoami(), config.timeout(),
+                    http, json);
             default -> throw new SystemRejectedException("adapter_unknown", "unknown adapter " + definition.adapter());
         };
         TokenExchanger exchanger = adapter instanceof TokenExchanger found ? found : null;

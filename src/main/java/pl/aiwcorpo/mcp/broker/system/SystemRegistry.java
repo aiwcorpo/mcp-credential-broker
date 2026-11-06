@@ -40,6 +40,11 @@ public class SystemRegistry {
             this(id, config, adapter, null, null, null, null, null);
         }
 
+        /** Whether a user secret is checked with a whoami when it is stored (everywhere but a generic-rest system without one). */
+        public boolean verifiesUserSecrets() {
+            return !(adapter instanceof GenericRestAdapter generic) || generic.hasWhoami();
+        }
+
         public boolean supports(CredentialType type) {
             return config.supportedTypes().contains(type);
         }

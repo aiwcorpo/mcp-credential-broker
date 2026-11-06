@@ -57,7 +57,7 @@ public class CredentialService {
         }
     }
 
-    public record Stored(ConnectionStatus status, String backendUser, Instant expiresAt) {
+    public record Stored(ConnectionStatus status, String backendUser, Instant expiresAt, boolean verified) {
     }
 
     /** lastUsedAt is informational; writing it on every resolve would put a database write on the hot path. */
@@ -252,8 +252,11 @@ public class CredentialService {
             BackendIdentity identity = switch (system.adapter().whoami(scheme, kept)) {
                 case WhoamiResult.Rejected rejected -> throw new SecretRejectedException("secret_invalid");
                 case WhoamiResult.Identified identified -> identified.identity();
+                case WhoamiResult.Unverified unverified -> null;
             };
-            entry.backendUser(identity.username());
+            boolean verified = identity != null;
+            String backendUser = verified ? identity.username() : null;
+            entry.backendUser(backendUser);
 
             Instant expires = expiresAt == null ? null : expiresAt.truncatedTo(ChronoUnit.SECONDS);
             Replaced replaced = oauth.underWriteLock(caller.sub(), system.id(), () -> {
@@ -261,8 +264,8 @@ public class CredentialService {
                 StoredCredential oldGrant = previous.map(oauth::grantToRevoke).orElse(null);
                 Connection written = store.replace(
                         new Connection(caller.sub(), system.id(), CredentialType.USER_SECRET, Connection.StoredState.CONNECTED,
-                                identity.username(), expires, now.truncatedTo(ChronoUnit.SECONDS), null, null, null,
-                                system.clientRevision()),
+                                backendUser, expires, now.truncatedTo(ChronoUnit.SECONDS), null, null, null,
+                                system.clientRevision(), verified),
                         StoredCredential.userSecret(kept, system.config().userSecretIsBasic() ? CredentialScheme.BASIC : null), previous, true);
                 boolean revoked = oauth.revokeReplacedGrant(system.id(), previous, oldGrant);
                 if (previous.isPresent() && oauth.holdsGrant(previous.get()) && (oldGrant == null || !revoked)) {
@@ -271,8 +274,8 @@ public class CredentialService {
                 return new Replaced(written, previous);
             });
             Optional<Connection> previous = replaced.previous();
-            Stored stored = new Stored(replaced.connection().status(now, expiringThreshold), identity.username(), expires);
-            entry.ok(previous.isPresent() ? "secret_replaced" : "secret_stored");
+            Stored stored = new Stored(replaced.connection().status(now, expiringThreshold), backendUser, expires, verified);
+            entry.ok(!verified ? "secret_stored_unverified" : previous.isPresent() ? "secret_replaced" : "secret_stored");
             return stored;
         } catch (SecretRejectedException e) {
             entry.denied(e.reason(), null);

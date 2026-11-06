@@ -52,6 +52,6 @@ public class CredentialController {
                 SecretValue.of(request.secret()), request.expiresAt());
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
-                .body(new PutSecretResponse(stored.status().wire(), stored.backendUser(), stored.expiresAt()));
+                .body(new PutSecretResponse(stored.status().wire(), stored.backendUser(), stored.verified(), stored.expiresAt()));
     }
 }

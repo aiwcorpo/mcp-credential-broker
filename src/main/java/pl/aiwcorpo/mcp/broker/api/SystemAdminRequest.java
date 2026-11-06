@@ -27,7 +27,14 @@ public record SystemAdminRequest(
         @Pattern(regexp = "^PT(?:[1-9][0-9]{0,2}S|[1-9]M(?:[0-5]?[0-9]S)?|10M)$") String timeout,
         @Size(min = 1, max = 255) String exchangeAudience,
         CredentialScheme userSecretScheme,
-        @Valid Oauth oauth) {
+        @Valid Oauth oauth,
+        @Valid Whoami whoami) {
+
+    /** How a generic-rest system names the owner of a user secret (C4 SystemWhoami). */
+    public record Whoami(
+            @NotNull @Pattern(regexp = "^/(?!/)(?!.*\\.\\.)[A-Za-z0-9._~!$&'()*+,;=:@%/-]{0,511}$") @Size(max = 512) String path,
+            @NotNull @Pattern(regexp = "^(?:[A-Za-z_][A-Za-z0-9_-]{0,63}|(?:/[A-Za-z0-9_~-]{1,64}){1,8})$") String usernameField) {
+    }
 
     public record Oauth(
             @NotBlank @Size(max = 255) String clientId,

@@ -31,7 +31,7 @@ public class ConnectionsController {
         List<ConnectionResponse> body = credentials.connections(portalUser(caller)).stream()
                 .map(listed -> {
                     Connection c = listed.connection();
-                    return new ConnectionResponse(c.system(), c.type().wire(), listed.status().wire(), c.backendUser(),
+                    return new ConnectionResponse(c.system(), c.type().wire(), listed.status().wire(), c.backendUser(), c.verified(),
                             c.expiresAt(), c.connectedAt(),
                             c.lastUsedAt() == null ? null : c.lastUsedAt().truncatedTo(ChronoUnit.SECONDS));
                 })

@@ -179,6 +179,8 @@ public class OAuthService {
                 case WhoamiResult.Rejected rejected ->
                     throw new UpstreamUnavailableException("provider issued a token that its own whoami refuses");
                 case WhoamiResult.Identified identified -> identified.identity();
+                case WhoamiResult.Unverified unverified ->
+                    throw new UpstreamUnavailableException("an OAuth system has no way to say whose token this is");
             };
             entry.backendUser(identity.username());
             TokenSet issued = tokens;
