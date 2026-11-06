@@ -18,6 +18,10 @@ public class SystemAdminException extends RuntimeException {
         return new SystemAdminException(403, "forbidden", null, null);
     }
 
+    public static SystemAdminException stepUpRequired() {
+        return new SystemAdminException(401, "step_up_required", null, null);
+    }
+
     public static SystemAdminException notFound() {
         return new SystemAdminException(404, "not_found", null, null);
     }

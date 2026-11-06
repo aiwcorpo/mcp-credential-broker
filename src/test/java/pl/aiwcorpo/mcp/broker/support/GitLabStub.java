@@ -120,6 +120,11 @@ public final class GitLabStub {
         return forms("/oauth/revoke");
     }
 
+    /** Every request the stub received, whatever the path. */
+    public int requestCount() {
+        return server.getAllServeEvents().size();
+    }
+
     public int whoamiCalls() {
         return server.countRequestsMatching(com.github.tomakehurst.wiremock.client.WireMock.getRequestedFor(urlPathEqualTo("/api/v4/user")).build())
                 .getCount();

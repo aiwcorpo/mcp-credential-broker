@@ -4,6 +4,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
@@ -29,6 +30,7 @@ public class AuditLog {
     private static final DateTimeFormatter TS = DateTimeFormatter.ISO_INSTANT;
 
     private final JsonMapper json;
+    private volatile Predicate<String> knownSystem = SystemIds::isValid;
     private final String componentId;
     private final Clock clock;
 
@@ -46,6 +48,14 @@ public class AuditLog {
     static boolean validBackendUser(String value) {
         int length = value.codePointCount(0, value.length());
         return length >= 1 && length <= 255 && !FORBIDDEN_IN_BACKEND_USER.matcher(value).find();
+    }
+
+    /**
+     * Which ids the {@code server} field may name: the systems of the table. An id from a request that no system has is not
+     * written, so a caller cannot put its own text into the audit log. The broker sets it at start; the default is any valid id, for code that builds an AuditLog alone.
+     */
+    public void knownSystems(Predicate<String> knownSystem) {
+        this.knownSystem = knownSystem;
     }
 
     public Entry event(String event, String requestId) {
@@ -111,8 +121,14 @@ public class AuditLog {
             return this;
         }
 
-        /** A name that is not a SystemId comes from the caller and is not written (C8 server is a ServerId). */
+        /** An id that is not the id of a configured system comes from the caller and is not written (C8 server is a ServerId). */
         public Entry system(String system) {
+            this.server = SystemIds.isValid(system) && knownSystem.test(system) ? "mcp-" + system : null;
+            return this;
+        }
+
+        /** For a system the call itself creates, replaces or removes: valid in shape, and not necessarily in the table. */
+        public Entry systemBeingChanged(String system) {
             this.server = SystemIds.isValid(system) ? "mcp-" + system : null;
             return this;
         }

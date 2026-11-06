@@ -61,8 +61,8 @@ class OAuthRefreshFailureIntegrationTest {
         registry.add("broker.retention.orphan-secrets-after", () -> "PT1S");
         registry.add("broker.retention.orphan-sweep-delete", () -> "true");
         registry.add("broker.retention.orphan-max-fraction", () -> "1.0");
-        registry.add("broker.openbao.oauth-clients-prefix", () -> "mcp/oauth-clients-it");
-        var stored = env.bao("POST", "secret/data/mcp/oauth-clients-it/gitlab",
+        registry.add("broker.openbao.system-clients-prefix", () -> "mcp/system-clients-it");
+        var stored = env.bao("POST", "secret/data/mcp/system-clients-it/gitlab",
                 "{\"data\":{\"client_id\":\"" + TestEnvironment.GITLAB_CLIENT_ID + "\",\"client_secret\":\""
                         + CLIENT_SECRET_IN_OPENBAO + "\"}}");
         assertThat(stored.statusCode()).isLessThan(300);

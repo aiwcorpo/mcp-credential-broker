@@ -18,16 +18,21 @@ import pl.aiwcorpo.mcp.broker.credential.CredentialType;
 public record SystemAdminRequest(
         @NotBlank @Size(max = 255) String baseUrl,
         @NotBlank String adapter,
+        @Pattern(regexp = "^(jira|confluence)$") String product,
         @NotEmpty List<@NotNull CredentialType> supportedTypes,
         @NotNull CredentialType defaultType,
         @NotNull CredentialScheme secretScheme,
+        @Size(max = 255) String revokeUrl,
+        @Pattern(regexp = "^PT(?:[1-9][0-9]{0,2}S|[1-9]M(?:[0-5]?[0-9]S)?|10M)$") String timeout,
+        @Size(min = 1, max = 255) String exchangeAudience,
+        CredentialScheme userSecretScheme,
         @Valid Oauth oauth) {
 
     public record Oauth(
             @NotBlank @Size(max = 255) String clientId,
             @Size(min = 1, max = 1024) String clientSecret,
-            @NotBlank String authorizeUrl,
-            @NotBlank String tokenUrl,
+            @Size(max = 255) String authorizeUrl,
+            @Size(max = 255) String tokenUrl,
             List<@NotNull @Pattern(regexp = "^[!#-\\[\\]-~]{1,128}$") String> scopes) {
 
         /** The secret is never printed. */

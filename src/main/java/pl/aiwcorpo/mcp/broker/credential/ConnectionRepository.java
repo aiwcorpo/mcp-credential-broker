@@ -21,7 +21,7 @@ public class ConnectionRepository {
 
     public Optional<Connection> find(String sub, String system) {
         return jdbc.sql("""
-                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at
+                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision
                 from connection where sub = :sub and system = :system
                 """)
                 .param("sub", sub)
@@ -32,13 +32,13 @@ public class ConnectionRepository {
 
     public void upsert(Connection connection, Instant now) {
         jdbc.sql("""
-                insert into connection (sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, updated_at)
-                values (:sub, :system, :type, :state, :backendUser, :expiresAt, :connectedAt, :lastUsedAt, :secretVersion, :accessExpiresAt, :now)
+                insert into connection (sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision, updated_at)
+                values (:sub, :system, :type, :state, :backendUser, :expiresAt, :connectedAt, :lastUsedAt, :secretVersion, :accessExpiresAt, :clientRevision, :now)
                 on conflict (sub, system) do update set
                     type = excluded.type, state = excluded.state, backend_user = excluded.backend_user,
                     expires_at = excluded.expires_at, connected_at = excluded.connected_at,
                     last_used_at = excluded.last_used_at, secret_version = excluded.secret_version,
-                    access_expires_at = excluded.access_expires_at,
+                    access_expires_at = excluded.access_expires_at, client_revision = excluded.client_revision,
                     updated_at = excluded.updated_at
                 """)
                 .param("sub", connection.sub())
@@ -51,13 +51,14 @@ public class ConnectionRepository {
                 .param("lastUsedAt", timestamp(connection.lastUsedAt()))
                 .param("secretVersion", connection.secretVersion())
                 .param("accessExpiresAt", timestamp(connection.accessExpiresAt()))
+                .param("clientRevision", connection.clientRevision())
                 .param("now", timestamp(now))
                 .update();
     }
 
     public List<Connection> findAll(String sub) {
         return jdbc.sql("""
-                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at
+                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision
                 from connection where sub = :sub order by system
                 """)
                 .param("sub", sub)
@@ -76,16 +77,48 @@ public class ConnectionRepository {
         return paths;
     }
 
-    /** Connections to one system, for the removal of the system. */
+    /** Connections of the system that were not issued under {@code clientRevision} and are not yet marked. */
+    public List<Connection> findOutdatedBySystem(String system, String clientRevision, int limit) {
+        return jdbc.sql("""
+                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision
+                from connection
+                where system = :system and state <> 'needs_reconnect' and client_revision is distinct from :revision
+                order by sub limit :limit
+                """)
+                .param("system", system)
+                .param("revision", clientRevision)
+                .param("limit", limit)
+                .query(ConnectionRepository::map)
+                .list();
+    }
+
+    /** Gives the connections written before the system was a row the revision of the system it was imported as. */
+    public int adoptRevision(String system, String clientRevision) {
+        return jdbc.sql("update connection set client_revision = :revision where system = :system and client_revision is null")
+                .param("revision", clientRevision)
+                .param("system", system)
+                .update();
+    }
+
+    /** Every connection to the system, whatever its state. */
     public List<Connection> findBySystem(String system, int limit) {
         return jdbc.sql("""
-                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at
+                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision
                 from connection where system = :system order by sub limit :limit
                 """)
                 .param("system", system)
                 .param("limit", limit)
                 .query(ConnectionRepository::map)
                 .list();
+    }
+
+    /** The value of the connection is gone; the user has to connect again. */
+    public void markNeedsReconnect(String sub, String system, Instant now) {
+        jdbc.sql("update connection set state = 'needs_reconnect', updated_at = :now where sub = :sub and system = :system")
+                .param("now", timestamp(now))
+                .param("sub", sub)
+                .param("system", system)
+                .update();
     }
 
     public void delete(String sub, String system) {
@@ -101,7 +134,7 @@ public class ConnectionRepository {
      */
     public List<Connection> findLastActivityBefore(Instant cutoff, int limit, int skip) {
         return jdbc.sql("""
-                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at
+                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision
                 from connection
                 where coalesce(last_used_at, connected_at) < :cutoff
                 order by coalesce(last_used_at, connected_at), sub, system limit :limit offset :skip
@@ -122,7 +155,7 @@ public class ConnectionRepository {
             return List.of();
         }
         return jdbc.sql("""
-                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at
+                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision
                 from connection
                 where type = 'user-oauth' and state = 'connected' and system in (:systems) and access_expires_at < :deadline
                 order by access_expires_at limit :limit
@@ -190,6 +223,7 @@ public class ConnectionRepository {
         return new Connection(rs.getString("sub"), rs.getString("system"), credentialType,
                 Connection.StoredState.valueOf(rs.getString("state").toUpperCase(Locale.ROOT)),
                 rs.getString("backend_user"), instant(rs, "expires_at"), instant(rs, "connected_at"),
-                instant(rs, "last_used_at"), rs.getString("secret_version"), instant(rs, "access_expires_at"));
+                instant(rs, "last_used_at"), rs.getString("secret_version"), instant(rs, "access_expires_at"),
+                rs.getString("client_revision"));
     }
 }

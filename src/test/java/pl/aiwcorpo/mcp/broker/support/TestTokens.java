@@ -96,8 +96,13 @@ public final class TestTokens {
 
     /** The token of an administrator: the group claim of the IdP carries mcp-platform-admin. */
     public String bffAdmin(String sub, String username) {
+        return bffAdmin(sub, username, Instant.now().minusSeconds(30));
+    }
+
+    /** The same with the moment of the last MFA authentication chosen by the test. */
+    public String bffAdmin(String sub, String username, Instant authTime) {
         return idpToken(IDP_ISSUER, sub, username, "mcp-portal-bff", "mcp-credential-broker", Instant.now().plusSeconds(300),
-                JOSEObjectType.JWT, List.of("mcp-platform-admin", "mcp-jira-read"));
+                JOSEObjectType.JWT, List.of("mcp-platform-admin", "mcp-jira-read"), authTime);
     }
 
     /** Token the BFF gets from token exchange: aud contains the broker, azp is the BFF client. */
@@ -127,6 +132,11 @@ public final class TestTokens {
 
     public String idpToken(String issuer, String sub, String username, String azp, String audience, Instant expiresAt,
             JOSEObjectType type, List<String> groups) {
+        return idpToken(issuer, sub, username, azp, audience, expiresAt, type, groups, null);
+    }
+
+    public String idpToken(String issuer, String sub, String username, String azp, String audience, Instant expiresAt,
+            JOSEObjectType type, List<String> groups, Instant authTime) {
         Instant now = Instant.now();
         JWTClaimsSet.Builder builder = new JWTClaimsSet.Builder()
                 .issuer(issuer)
@@ -140,6 +150,9 @@ public final class TestTokens {
                 .jwtID(UUID.randomUUID().toString());
         if (groups != null) {
             builder.claim("groups", groups);
+        }
+        if (authTime != null) {
+            builder.claim("auth_time", authTime.getEpochSecond());
         }
         JWTClaimsSet claims = builder.build();
         try {

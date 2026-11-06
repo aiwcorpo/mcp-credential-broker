@@ -12,6 +12,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.Base64;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Supplier;
@@ -115,7 +116,8 @@ public class OAuthService {
             String flowId = "flow-" + randomToken(16);
             String state = randomToken(32);
             SecretValue verifier = SecretValue.of(randomToken(32));
-            flows.start(new OAuthFlowStore.Flow(flowId, caller.sub(), system.id(), state, verifier), settings.flowTtl());
+            flows.start(new OAuthFlowStore.Flow(flowId, caller.sub(), system.id(), state, verifier, system.clientRevision()),
+                    settings.flowTtl());
             URI authorizeUrl = system.oauth().orElseThrow().authorizeUrl(state, challenge(verifier), redirectUri,
                     system.config().oauthScopes().stream().distinct().toList());
             entry.ok("oauth_started");
@@ -163,6 +165,10 @@ public class OAuthService {
                 // Not consumed either: a callback with a wrong state is not the owner finishing the flow.
                 throw new SecretRejectedException("flow_invalid", "state_mismatch");
             }
+            if (!Objects.equals(pending.clientRevision(), system.clientRevision())) {
+                // The system was changed to point elsewhere, or deleted and made again, after the user was sent away.
+                throw new SecretRejectedException("flow_invalid", "client_changed");
+            }
             OAuthFlowStore.Flow flow = flows.take(flowId).orElseThrow(() -> new SecretRejectedException("flow_invalid"));
             try {
                 tokens = provider.exchangeCode(code, flow.codeVerifier(), redirectUri);
@@ -183,10 +189,11 @@ public class OAuthService {
                 store.replace(
                         new Connection(caller.sub(), system.id(), CredentialType.USER_OAUTH, Connection.StoredState.CONNECTED,
                                 identity.username(), null, now.truncatedTo(ChronoUnit.SECONDS), null, null,
-                                accessExpiry(issued, now)),
+                                accessExpiry(issued, now), system.clientRevision()),
                         new StoredCredential(CredentialType.USER_OAUTH, issued.accessToken(), issued.refreshToken()),
                         previous, true);
-                boolean revoked = revokeGrantQuietly(system.oauth().orElseThrow(), oldGrant);
+                boolean revoked = previous.isPresent() && !previous.get().issuedUnder(system.clientRevision()) ? false
+                        : revokeGrantQuietly(system.oauth().orElseThrow(), oldGrant);
                 if (previous.isPresent() && holdsGrant(previous.get()) && (oldGrant == null || !revoked)) {
                     auditReplacedGrantNotRevoked(caller.requestId(), caller.sub(), system.id());
                 }
@@ -367,6 +374,10 @@ public class OAuthService {
         if (system.isEmpty() || system.get().oauth().isEmpty()) {
             return !hadGrant;
         }
+        if (hadGrant && !connection.issuedUnder(system.get().clientRevision())) {
+            // The grant belongs to another definition of the system than the one this instance would call.
+            return false;
+        }
         StoredCredential grant = grantToRevoke(connection, onUnreadable);
         if (grant == null) {
             return !hadGrant;
@@ -398,8 +409,12 @@ public class OAuthService {
     }
 
     /** Revokes the tokens of a grant that a new connection has just replaced; the first argument names its system. */
-    boolean revokeReplacedGrant(String systemId, StoredCredential grant) {
-        return systems.find(systemId).flatMap(ConfiguredSystem::oauth).map(provider -> revokeGrantQuietly(provider, grant)).orElse(true);
+    boolean revokeReplacedGrant(String systemId, Optional<Connection> previous, StoredCredential grant) {
+        Optional<ConfiguredSystem> system = systems.find(systemId);
+        if (grant != null && previous.isPresent() && system.isPresent() && !previous.get().issuedUnder(system.get().clientRevision())) {
+            return false;
+        }
+        return system.flatMap(ConfiguredSystem::oauth).map(provider -> revokeGrantQuietly(provider, grant)).orElse(true);
     }
 
     /** Whether the connection held a grant at a provider: what an unreadable stored value must not be mistaken for "nothing". */
@@ -440,7 +455,8 @@ public class OAuthService {
         boolean entryClosed = false;
         try {
             Connection current = connections.find(sub, systemId).orElseThrow(() -> new CredentialRequiredException(systemId));
-            if (current.type() != CredentialType.USER_OAUTH || current.state() != Connection.StoredState.CONNECTED) {
+            if (current.type() != CredentialType.USER_OAUTH || current.state() != Connection.StoredState.CONNECTED
+                    || !current.issuedUnder(system.clientRevision())) {
                 throw new CredentialRequiredException(systemId);
             }
             entry.backendUser(current.backendUser());

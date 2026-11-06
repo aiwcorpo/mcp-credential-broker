@@ -27,7 +27,7 @@ class ServiceAccountKeysTest {
     private final MutableClock clock = new MutableClock(Instant.now());
     private final ServiceAccountKeys keys = new ServiceAccountKeys(
             new OpenBaoClient(new BrokerProperties.OpenBao(URI.create(env.openBaoUrl()), TestEnvironment.BAO_ROLE_ID,
-                    TestEnvironment.BAO_SECRET_ID, "secret", "mcp/connections", "mcp/oauth-clients", "mcp/service-accounts",
+                    TestEnvironment.BAO_SECRET_ID, "secret", "mcp/connections", "mcp/oauth-clients", "mcp/system-clients", "mcp/service-accounts",
                     "transit", "mcp-credential-broker", Duration.ofSeconds(5)), HttpClient.newHttpClient(),
                     JsonMapper.builder().build(), Clock.systemUTC()),
             "secret", "mcp/service-accounts", clock);

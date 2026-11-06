@@ -21,8 +21,9 @@ class SystemRulesTest {
 
     private static SystemDefinition system(String id, String adapter, List<CredentialType> types, CredentialType defaultType,
             CredentialScheme scheme, SystemDefinition.Oauth oauth) {
-        return new SystemDefinition(id, URI.create("https://backend.test"), adapter, types, defaultType, scheme, oauth, false, null,
-                null, null, null, "etag-etag-etag");
+        return new SystemDefinition(id, URI.create("https://backend.test"), adapter, "atlassian-dc".equals(adapter) ? "jira" : null,
+                types, defaultType, scheme, oauth, null, null, types.contains(CredentialType.TOKEN_EXCHANGE) ? "audience" : null, null,
+                null, "etag-etag-etag", "revision-revision");
     }
 
     private static String reasonOf(SystemDefinition definition) {
@@ -86,6 +87,55 @@ class SystemRulesTest {
                 CredentialScheme.BEARER, CLIENT))).isNull();
         assertThat(reasonOf(system("desk", "generic-rest", List.of(CredentialType.SERVICE_ACCOUNT), CredentialType.SERVICE_ACCOUNT,
                 CredentialScheme.BEARER, null))).isNull();
+    }
+
+    @Test
+    void anAtlassianSystemNeedsItsProductAndNoOtherAdapterTakesOne() {
+        SystemDefinition base = system("jira", "atlassian-dc", List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET,
+                CredentialScheme.BEARER, null);
+        SystemDefinition withoutProduct = new SystemDefinition(base.id(), base.baseUrl(), base.adapter(), null, base.supportedTypes(),
+                base.defaultType(), base.secretScheme(), null, null, null, null, null, null, "etag-etag-etag", "revision-revision");
+        assertThat(reasonOf(withoutProduct)).isEqualTo("product_required");
+        SystemDefinition unknownProduct = new SystemDefinition(base.id(), base.baseUrl(), base.adapter(), "bitbucket",
+                base.supportedTypes(), base.defaultType(), base.secretScheme(), null, null, null, null, null, null, "etag-etag-etag",
+                "revision-revision");
+        assertThat(reasonOf(unknownProduct)).isEqualTo("product_required");
+        SystemDefinition gitlabWithProduct = new SystemDefinition("lab", base.baseUrl(), "gitlab", "jira", base.supportedTypes(),
+                base.defaultType(), base.secretScheme(), null, null, null, null, null, null, "etag-etag-etag", "revision-revision");
+        assertThat(reasonOf(gitlabWithProduct)).isEqualTo("product_required");
+    }
+
+    @Test
+    void theExchangeAudienceBelongsToTokenExchangeOnly() {
+        SystemDefinition search = system("search", "opensearch", List.of(CredentialType.TOKEN_EXCHANGE), CredentialType.TOKEN_EXCHANGE,
+                CredentialScheme.BEARER, CLIENT);
+        SystemDefinition withoutAudience = new SystemDefinition(search.id(), search.baseUrl(), search.adapter(), null,
+                search.supportedTypes(), search.defaultType(), search.secretScheme(), CLIENT, null, null, null, null, null,
+                "etag-etag-etag", "revision-revision");
+        assertThat(reasonOf(withoutAudience)).isEqualTo("exchange_audience_required");
+        SystemDefinition jiraWithAudience = new SystemDefinition("jira", search.baseUrl(), "atlassian-dc", "jira",
+                List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET, CredentialScheme.BEARER, null, null, null, "audience",
+                null, null, "etag-etag-etag", "revision-revision");
+        assertThat(reasonOf(jiraWithAudience)).isEqualTo("exchange_audience_required");
+    }
+
+    @Test
+    void aUserSecretSchemeIsBearerOrBasicAndOnlyForUserSecrets() {
+        SystemDefinition base = system("jira", "atlassian-dc", List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET,
+                CredentialScheme.BEARER, null);
+        for (CredentialScheme scheme : List.of(CredentialScheme.TOKEN, CredentialScheme.API_KEY)) {
+            assertThat(reasonOf(new SystemDefinition("jira", base.baseUrl(), "atlassian-dc", "jira", base.supportedTypes(),
+                    base.defaultType(), CredentialScheme.BEARER, null, null, null, null, scheme, null, "etag-etag-etag",
+                    "revision-revision"))).as(scheme.name()).isEqualTo("secret_scheme_not_supported");
+        }
+        assertThat(reasonOf(new SystemDefinition("jira", base.baseUrl(), "atlassian-dc", "jira", base.supportedTypes(),
+                base.defaultType(), CredentialScheme.TOKEN, null, null, null, null, CredentialScheme.BASIC, null, "etag-etag-etag",
+                "revision-revision"))).as("a Basic login with a Token scheme for the rest").isNull();
+        SystemDefinition desk = system("desk", "generic-rest", List.of(CredentialType.SERVICE_ACCOUNT), CredentialType.SERVICE_ACCOUNT,
+                CredentialScheme.BEARER, null);
+        assertThat(reasonOf(new SystemDefinition("desk", desk.baseUrl(), "generic-rest", null, desk.supportedTypes(),
+                desk.defaultType(), CredentialScheme.BEARER, null, null, null, null, CredentialScheme.BASIC, null, "etag-etag-etag",
+                "revision-revision"))).isEqualTo("secret_scheme_not_supported");
     }
 
     @Test

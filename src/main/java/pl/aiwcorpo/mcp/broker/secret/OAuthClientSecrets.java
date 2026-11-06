@@ -4,72 +4,96 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
-import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 import tools.jackson.databind.JsonNode;
 
 /**
- * The OAuth client secret of the broker at a provider (or at the IdP, for token exchange), kept in OpenBao KV
- * ({@code <kvMount>/data/<prefix>/<system>}, field {@code client_secret}). Written by the admin API of systems, read by the
- * adapters. A read is cached for a few minutes, keyed by the revision (etag) of the system: a write on another instance
- * changes the etag, which every instance sees within the poll interval of the registry, so a rotation does not wait for the
- * cache to expire.
+ * The client secrets of the admin-managed systems, in OpenBao KV v2 at {@code <kvMount>/data/<prefix>/<system>}, field
+ * {@code client_secret}, a prefix of their own. A write is a check-and-set against the current version and returns the new
+ * version; the system row stores it together with its new etag, and every reader asks for exactly that version, so a secret
+ * written by one change is never read with the configuration of another. A version is immutable, so a cached value is keyed
+ * by (system, version) and is never stale. Versions that no row points at are destroyed, not left behind.
+ *
+ * <p>{@code legacyPrefix} is where 1.x read its secrets; it is read only by the import of the 1.x properties.
  */
 public class OAuthClientSecrets {
 
     private static final Duration CACHE = Duration.ofMinutes(5);
 
-    private record Cached(SecretValue value, Instant fetchedAt, String revision) {
+    private record Key(String system, int version) {
+    }
+
+    private record Cached(SecretValue value, Instant fetchedAt) {
     }
 
     private final OpenBaoClient client;
     private final String kvMount;
     private final String prefix;
+    private final String legacyPrefix;
     private final Clock clock;
-    private final Map<String, Cached> cache = new ConcurrentHashMap<>();
+    private final Map<Key, Cached> cache = new ConcurrentHashMap<>();
 
-    public OAuthClientSecrets(OpenBaoClient client, String kvMount, String prefix, Clock clock) {
+    public OAuthClientSecrets(OpenBaoClient client, String kvMount, String prefix, String legacyPrefix, Clock clock) {
         this.client = client;
         this.kvMount = kvMount;
         this.prefix = prefix;
+        this.legacyPrefix = legacyPrefix;
         this.clock = clock;
     }
 
-    /** @param revision the etag of the system definition the caller works with */
-    public SecretValue clientSecret(String system, String revision) {
-        Cached cached = cache.get(system);
-        if (cached != null && Objects.equals(cached.revision(), revision) && cached.fetchedAt().plus(CACHE).isAfter(clock.instant())) {
+    /** The secret of exactly this version. */
+    public SecretValue read(String system, Integer version) {
+        if (version == null) {
+            throw new SecretStoreUnavailableException("no OAuth client secret for " + system);
+        }
+        Key key = new Key(system, version);
+        Cached cached = cache.get(key);
+        if (cached != null && cached.fetchedAt().plus(CACHE).isAfter(clock.instant())) {
             return cached.value();
         }
-        String secret = read(system);
+        JsonNode stored = client.read(dataPath(system) + "?version=" + version);
+        String secret = stored == null ? null : stored.path("data").path("data").path("client_secret").asString(null);
         if (secret == null || secret.isEmpty()) {
             throw new SecretStoreUnavailableException("no OAuth client secret for " + system + " in the secret store");
         }
         SecretValue value = SecretValue.of(secret);
-        cache.put(system, new Cached(value, clock.instant(), revision));
+        cache.put(key, new Cached(value, clock.instant()));
         return value;
     }
 
-    public boolean exists(String system) {
-        String secret = read(system);
-        return secret != null && !secret.isEmpty();
+    /**
+     * Writes a new version if the current one is still the one read a moment ago.
+     *
+     * @throws ClientSecretConflictException when another write came in between
+     * @return the new version
+     */
+    public int write(String system, SecretValue secret) {
+        JsonNode metadata = client.read(kvMount + "/metadata/" + prefix + "/" + system);
+        int current = metadata == null ? 0 : metadata.path("data").path("current_version").asInt(0);
+        try {
+            JsonNode written = client.write(dataPath(system), client.object()
+                    .set("options", client.object().put("cas", current))
+                    .set("data", client.object().put("client_secret", secret.reveal())));
+            return written.path("data").path("version").asInt(current + 1);
+        } catch (StoreRefusedException e) {
+            throw new ClientSecretConflictException();
+        }
     }
 
-    public void write(String system, SecretValue secret) {
-        client.write(dataPath(system), client.object().set("data", client.object().put("client_secret", secret.reveal())));
-        cache.remove(system);
+    /** Destroys one version (the data is gone, the history stays). Absent or already destroyed is fine. */
+    public void destroy(String system, int version) {
+        client.write(kvMount + "/destroy/" + prefix + "/" + system, client.object()
+                .set("versions", client.object().arrayNode().add(version)));
+        cache.remove(new Key(system, version));
     }
 
-    /** Removes every version, so a later system with the same id starts without a secret. */
-    public void delete(String system) {
-        client.delete(kvMount + "/metadata/" + prefix + "/" + system);
-        cache.remove(system);
-    }
-
-    private String read(String system) {
-        JsonNode stored = client.read(dataPath(system));
-        return stored == null ? null : stored.path("data").path("data").path("client_secret").asString(null);
+    /** The secret 1.x kept for the system, for the import only. */
+    public Optional<SecretValue> readLegacy(String system) {
+        JsonNode stored = client.read(kvMount + "/data/" + legacyPrefix + "/" + system);
+        String secret = stored == null ? null : stored.path("data").path("data").path("client_secret").asString(null);
+        return secret == null || secret.isEmpty() ? Optional.empty() : Optional.of(SecretValue.of(secret));
     }
 
     private String dataPath(String system) {

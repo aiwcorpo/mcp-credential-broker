@@ -61,9 +61,11 @@ public final class TestEnvironment {
     private static final String BAO_POLICY = """
             path "secret/data/mcp/connections/*"     { capabilities = ["create", "read", "update", "delete"] }
             path "secret/metadata/mcp/connections/*" { capabilities = ["read", "list", "delete"] }
-            path "secret/data/mcp/oauth-clients/*"   { capabilities = ["create", "read", "update", "delete"] }
-            path "secret/metadata/mcp/oauth-clients/*" { capabilities = ["read", "delete"] }
-            path "secret/data/mcp/oauth-clients-it/*" { capabilities = ["read"] }
+            path "secret/data/mcp/system-clients/*"     { capabilities = ["create", "read", "update"] }
+            path "secret/metadata/mcp/system-clients/*" { capabilities = ["read"] }
+            path "secret/destroy/mcp/system-clients/*"  { capabilities = ["update"] }
+            path "secret/data/mcp/system-clients-it/*"  { capabilities = ["read"] }
+            path "secret/data/mcp/oauth-clients/*"      { capabilities = ["read"] }
             path "secret/data/mcp/service-accounts/*" { capabilities = ["read"] }
             path "transit/encrypt/mcp-credential-broker" { capabilities = ["update"] }
             path "transit/decrypt/mcp-credential-broker" { capabilities = ["update"] }
@@ -81,6 +83,7 @@ public final class TestEnvironment {
     public final HttpServer upstream;
     public final HttpServer confluenceUpstream;
     public final SystemRepository systems;
+    private final JdbcClient jdbc;
     public final AtomicInteger whoamiCalls = new AtomicInteger();
     public final AtomicInteger confluenceWhoamiCalls = new AtomicInteger();
     public final GitLabStub gitlab = new GitLabStub();
@@ -198,11 +201,12 @@ public final class TestEnvironment {
 
             DriverManagerDataSource dataSource = new DriverManagerDataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
             Flyway.configure().dataSource(dataSource).locations("classpath:db/migration").load().migrate();
-            systems = new SystemRepository(JdbcClient.create(dataSource), Contracts.JSON);
+            jdbc = JdbcClient.create(dataSource);
+            systems = new SystemRepository(jdbc, Contracts.JSON);
             for (String id : List.of("jira", "confluence", "gitlab", "opensearch")) {
                 putSystem(standardSystem(id));
             }
-            requireOk(bao("POST", "secret/data/mcp/oauth-clients/gitlab", "{\"data\":{\"client_secret\":\"" + GITLAB_CLIENT_SECRET + "\"}}"));
+            requireOk(bao("POST", "secret/data/mcp/system-clients/gitlab", "{\"data\":{\"client_secret\":\"" + GITLAB_CLIENT_SECRET + "\"}}"));
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -224,28 +228,32 @@ public final class TestEnvironment {
     public SystemDefinition standardSystem(String id) {
         List<CredentialType> userSecret = List.of(CredentialType.USER_SECRET);
         return switch (id) {
-            case "jira" -> new SystemDefinition("jira", URI.create(upstreamUrl()), "atlassian-dc", userSecret,
-                    CredentialType.USER_SECRET, CredentialScheme.BEARER, null, false, null, null, null, null, SystemDefinition.newEtag());
-            case "confluence" -> new SystemDefinition("confluence", URI.create(confluenceUrl()), "atlassian-dc", userSecret,
-                    CredentialType.USER_SECRET, CredentialScheme.BEARER, null, false, null, null, null, null, SystemDefinition.newEtag());
-            case "gitlab" -> new SystemDefinition("gitlab", URI.create(gitlab.url()), "gitlab",
+            case "jira" -> new SystemDefinition("jira", URI.create(upstreamUrl()), "atlassian-dc", "jira", userSecret,
+                    CredentialType.USER_SECRET, CredentialScheme.BEARER, null, null, null, null, null, null, SystemDefinition.newToken(),
+                    SystemDefinition.newToken());
+            case "confluence" -> new SystemDefinition("confluence", URI.create(confluenceUrl()), "atlassian-dc", "confluence", userSecret,
+                    CredentialType.USER_SECRET, CredentialScheme.BEARER, null, null, null, null, null, null, SystemDefinition.newToken(),
+                    SystemDefinition.newToken());
+            case "gitlab" -> new SystemDefinition("gitlab", URI.create(gitlab.url()), "gitlab", null,
                     List.of(CredentialType.USER_OAUTH, CredentialType.USER_SECRET), CredentialType.USER_OAUTH, CredentialScheme.BEARER,
                     new SystemDefinition.Oauth(GITLAB_CLIENT_ID, URI.create("https://gitlab.test/oauth/authorize"),
                             URI.create(gitlab.url() + "/oauth/token"), null, List.of("read_api", "api")),
-                    true, Duration.ofSeconds(1), null, null, null, SystemDefinition.newEtag());
-            case "opensearch" -> new SystemDefinition("opensearch", URI.create(upstreamUrl()), "opensearch",
+                    1, Duration.ofSeconds(1), null, null, null, SystemDefinition.newToken(), SystemDefinition.newToken());
+            case "opensearch" -> new SystemDefinition("opensearch", URI.create(upstreamUrl()), "opensearch", null,
                     List.of(CredentialType.TOKEN_EXCHANGE), CredentialType.TOKEN_EXCHANGE, CredentialScheme.BEARER,
                     new SystemDefinition.Oauth(EXCHANGE_CLIENT_ID, URI.create(idp.tokenUrl()), URI.create(idp.tokenUrl()), null,
                             List.of("opensearch-audience")),
-                    true, Duration.ofSeconds(2), "opensearch", null, null, SystemDefinition.newEtag());
+                    1, Duration.ofSeconds(2), "opensearch", null, null, SystemDefinition.newToken(), SystemDefinition.newToken());
             default -> throw new IllegalArgumentException(id);
         };
     }
 
     /** Replaces the stored system; running brokers see it within their sync interval. */
     public synchronized void putSystem(SystemDefinition system) {
-        SystemDefinition next = system.withEtag(SystemDefinition.newEtag());
         var existing = systems.find(system.id());
+        // A test that replaces a system changes how it is configured, not where it points: grants stay valid.
+        SystemDefinition next = existing.map(old -> system.withClientRevision(old.clientRevision())).orElse(system)
+                .withEtag(SystemDefinition.newToken());
         if (existing.isEmpty()) {
             systems.insert(next, java.time.Instant.now());
         } else if (!systems.update(next, existing.get().etag(), java.time.Instant.now())) {
@@ -253,7 +261,12 @@ public final class TestEnvironment {
         }
     }
 
+    public synchronized void resetSystem(String id) {
+        putSystem(standardSystem(id));
+    }
+
     public synchronized void removeSystem(String id) {
+        jdbc.sql("delete from connection where system = :system").param("system", id).update();
         systems.delete(id);
     }
 
@@ -268,19 +281,14 @@ public final class TestEnvironment {
     }
 
     public SystemDefinition withTimeout(SystemDefinition system, Duration timeout) {
-        return new SystemDefinition(system.id(), system.baseUrl(), system.adapter(), system.supportedTypes(), system.defaultType(),
-                system.secretScheme(), system.oauth(), system.clientSecretSet(), timeout, system.exchangeAudience(),
-                system.userSecretScheme(), system.deployment(), system.etag());
-    }
-
-    public synchronized void resetSystem(String id) {
-        putSystem(standardSystem(id));
+        return system.withTimeout(timeout);
     }
 
     /** Service Desk as service-account; not among the standard systems, so that other tests have an unconfigured one. */
     public SystemDefinition serviceDesk() {
-        return new SystemDefinition("servicedesk", URI.create(upstreamUrl()), "generic-rest", List.of(CredentialType.SERVICE_ACCOUNT),
-                CredentialType.SERVICE_ACCOUNT, CredentialScheme.BEARER, null, false, null, null, null, null, SystemDefinition.newEtag());
+        return new SystemDefinition("servicedesk", URI.create(upstreamUrl()), "generic-rest", null, List.of(CredentialType.SERVICE_ACCOUNT),
+                CredentialType.SERVICE_ACCOUNT, CredentialScheme.BEARER, null, null, null, null, null, null, SystemDefinition.newToken(),
+                SystemDefinition.newToken());
     }
 
     public void registerProperties(DynamicPropertyRegistry registry) {
@@ -303,6 +311,7 @@ public final class TestEnvironment {
         registry.add("MCP_GATEWAY_JWKS_FILE", () -> workDir.resolve("gateway-jwks.json").toString());
         registry.add("MCP_ALLOW_TEST_KEYS", () -> "true");
         registry.add("broker.system-sync.interval", () -> "200ms");
+        registry.add("broker.bff-token.token-url", idp::tokenUrl);
         registry.add("broker.oauth-flow.sweep-interval", () -> "PT1H");
         registry.add("broker.oauth-flow.refresh-lock-wait", () -> "3s");
         registry.add("MCP_PORTAL_URL", () -> "https://mcp-portal.test");
@@ -330,7 +339,7 @@ public final class TestEnvironment {
         requireOk(bao("POST", "transit/keys/mcp-authenticators", "{\"type\":\"aes256-gcm96\"}"));
         requireOk(bao("PUT", "sys/policies/acl/mcp-credential-broker",
                 Contracts.JSON.createObjectNode().put("policy", BAO_POLICY).toString()));
-        requireOk(bao("POST", "secret/data/mcp/oauth-clients/opensearch",
+        requireOk(bao("POST", "secret/data/mcp/system-clients/opensearch",
                 "{\"data\":{\"client_id\":\"" + EXCHANGE_CLIENT_ID + "\",\"client_secret\":\"" + EXCHANGE_CLIENT_SECRET + "\"}}"));
         requireOk(bao("POST", "sys/auth/approle", "{\"type\":\"approle\"}"));
         requireOk(bao("POST", "auth/approle/role/mcp-credential-broker",

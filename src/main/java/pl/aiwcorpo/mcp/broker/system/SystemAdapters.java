@@ -35,17 +35,18 @@ public class SystemAdapters {
         SystemRules.check(definition);
         BrokerProperties.SystemConfig config = definition.toConfig();
         String id = definition.id();
-        String revision = definition.etag();
-        Supplier<SecretValue> clientSecret = () -> clientSecrets.clientSecret(id, revision);
+        Integer secretVersion = definition.secretVersion();
+        Supplier<SecretValue> clientSecret = () -> clientSecrets.read(id, secretVersion);
         Object adapter = switch (definition.adapter()) {
             case "gitlab" -> new GitLabAdapter(config.baseUrl(), config.timeout(), config.oauth(), clientSecret, http, json);
-            case "atlassian-dc" -> new AtlassianDcAdapter(config.baseUrl(), config.timeout(), http, json);
+            case "atlassian-dc" -> new AtlassianDcAdapter(AtlassianDcAdapter.Product.valueOf(definition.product().toUpperCase(java.util.Locale.ROOT)),
+                    config.baseUrl(), config.timeout(), http, json);
             case "opensearch" -> new OpenSearchAdapter(config.tokenExchange(), config.timeout(), clientSecret, http, json, clock, meters);
             case "generic-rest" -> new GenericRestAdapter(id, config.secretScheme(), serviceAccountKeys);
             default -> throw new SystemRejectedException("adapter_unknown", "unknown adapter " + definition.adapter());
         };
         return new SystemRegistry.ConfiguredSystem(id, config, adapter instanceof SystemAdapter whoami ? whoami : null,
                 adapter instanceof TokenExchanger exchanger ? exchanger : null,
-                adapter instanceof ServiceAccountSource source ? source : null, definition.etag());
+                adapter instanceof ServiceAccountSource source ? source : null, definition.etag(), definition.clientRevision());
     }
 }

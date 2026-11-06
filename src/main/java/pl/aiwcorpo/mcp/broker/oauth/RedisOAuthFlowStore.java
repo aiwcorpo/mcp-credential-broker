@@ -40,7 +40,8 @@ public class RedisOAuthFlowStore implements OAuthFlowStore {
                 .put("sub", flow.sub())
                 .put("system", flow.system())
                 .put("state", flow.state())
-                .put("codeVerifier", flow.codeVerifier().reveal());
+                .put("codeVerifier", flow.codeVerifier().reveal())
+                .put("clientRevision", flow.clientRevision());
         String userKey = userKey(flow.sub(), flow.system());
         try {
             String earlier = redis.opsForValue().getAndDelete(userKey);
@@ -96,7 +97,7 @@ public class RedisOAuthFlowStore implements OAuthFlowStore {
             JsonNode node = json.readTree(stored);
             return Optional.of(new Flow(node.path("flowId").asString(), node.path("sub").asString(),
                     node.path("system").asString(), node.path("state").asString(),
-                    SecretValue.of(node.path("codeVerifier").asString())));
+                    SecretValue.of(node.path("codeVerifier").asString()), node.path("clientRevision").asString(null)));
         } catch (JacksonException | IllegalArgumentException e) {
             throw new SecretStoreUnavailableException("stored flow is not readable");
         }

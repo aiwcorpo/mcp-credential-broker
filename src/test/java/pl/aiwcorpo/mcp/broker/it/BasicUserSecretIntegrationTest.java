@@ -45,9 +45,9 @@ class BasicUserSecretIntegrationTest {
 
     @BeforeAll
     static void addCloudWiki() {
-        env.putSystem(new SystemDefinition("cloudwiki", URI.create(env.confluenceUrl()), "atlassian-dc",
-                List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET, CredentialScheme.BASIC, null, false, null, null,
-                null, BrokerProperties.Deployment.CLOUD, SystemDefinition.newEtag()));
+        env.putSystem(new SystemDefinition("cloudwiki", URI.create(env.confluenceUrl()), "atlassian-dc", "confluence",
+                List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET, CredentialScheme.BASIC, null, null, null, null,
+                null, BrokerProperties.Deployment.CLOUD, SystemDefinition.newToken(), SystemDefinition.newToken()));
         env.awaitSystemSync();
     }
 

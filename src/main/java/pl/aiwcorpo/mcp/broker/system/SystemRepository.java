@@ -22,9 +22,9 @@ import tools.jackson.databind.json.JsonMapper;
 public class SystemRepository {
 
     private static final String COLUMNS = """
-            id, base_url, adapter, supported_types, default_type, secret_scheme, oauth_client_id, oauth_authorize_url,
-            oauth_token_url, oauth_revoke_url, oauth_scopes, client_secret_set, exchange_audience, user_secret_scheme,
-            deployment, timeout_ms, etag
+            id, base_url, adapter, product, supported_types, default_type, secret_scheme, oauth_client_id, oauth_authorize_url,
+            oauth_token_url, oauth_revoke_url, oauth_scopes, secret_version, exchange_audience, user_secret_scheme,
+            deployment, timeout_ms, etag, client_revision
             """;
 
     private final JdbcClient jdbc;
@@ -46,12 +46,12 @@ public class SystemRepository {
     /** @return false when a system with this id exists */
     public boolean insert(SystemDefinition system, Instant now) {
         return write("""
-                insert into target_system (id, base_url, adapter, supported_types, default_type, secret_scheme, oauth_client_id,
-                    oauth_authorize_url, oauth_token_url, oauth_revoke_url, oauth_scopes, client_secret_set, exchange_audience,
-                    user_secret_scheme, deployment, timeout_ms, etag, created_at, updated_at)
-                values (:id, :baseUrl, :adapter, cast(:types as jsonb), :defaultType, :secretScheme, :clientId, :authorizeUrl,
-                    :tokenUrl, :revokeUrl, cast(:scopes as jsonb), :secretSet, :audience, :userScheme, :deployment, :timeoutMs,
-                    :etag, :now, :now)
+                insert into target_system (id, base_url, adapter, product, supported_types, default_type, secret_scheme,
+                    oauth_client_id, oauth_authorize_url, oauth_token_url, oauth_revoke_url, oauth_scopes, secret_version,
+                    exchange_audience, user_secret_scheme, deployment, timeout_ms, etag, client_revision, created_at, updated_at)
+                values (:id, :baseUrl, :adapter, :product, cast(:types as jsonb), :defaultType, :secretScheme, :clientId,
+                    :authorizeUrl, :tokenUrl, :revokeUrl, cast(:scopes as jsonb), :secretVersion, :audience, :userScheme,
+                    :deployment, :timeoutMs, :etag, :revision, :now, :now)
                 on conflict (id) do nothing
                 """, system, now, null) == 1;
     }
@@ -59,18 +59,29 @@ public class SystemRepository {
     /** @return false when the row is gone or its etag is no longer {@code expectedEtag} */
     public boolean update(SystemDefinition system, String expectedEtag, Instant now) {
         return write("""
-                update target_system set base_url = :baseUrl, adapter = :adapter, supported_types = cast(:types as jsonb),
+                update target_system set base_url = :baseUrl, adapter = :adapter, product = :product,
+                    supported_types = cast(:types as jsonb),
                     default_type = :defaultType, secret_scheme = :secretScheme, oauth_client_id = :clientId,
                     oauth_authorize_url = :authorizeUrl, oauth_token_url = :tokenUrl, oauth_revoke_url = :revokeUrl,
-                    oauth_scopes = cast(:scopes as jsonb), client_secret_set = :secretSet, exchange_audience = :audience,
+                    oauth_scopes = cast(:scopes as jsonb), secret_version = :secretVersion, exchange_audience = :audience,
                     user_secret_scheme = :userScheme, deployment = :deployment, timeout_ms = :timeoutMs, etag = :etag,
-                    updated_at = :now
+                    client_revision = :revision, updated_at = :now
                 where id = :id and etag = :expected
                 """, system, now, expectedEtag) == 1;
     }
 
     public boolean delete(String id) {
         return jdbc.sql("delete from target_system where id = :id").param("id", id).update() == 1;
+    }
+
+    /** @return false when the row is gone or changed since {@code etag} */
+    public boolean delete(String id, String etag) {
+        return jdbc.sql("delete from target_system where id = :id and etag = :etag").param("id", id).param("etag", etag).update() == 1;
+    }
+
+    /** Serializes the import of 1.x properties between instances that start together; released at the end of the transaction. */
+    public void lockForImport() {
+        jdbc.sql("select pg_advisory_xact_lock(7311002)").query().singleRow();
     }
 
     public boolean importDone() {
@@ -92,6 +103,7 @@ public class SystemRepository {
                 .param("id", system.id())
                 .param("baseUrl", system.baseUrl().toString())
                 .param("adapter", system.adapter())
+                .param("product", system.product())
                 .param("types", json.writeValueAsString(system.supportedTypes().stream().map(CredentialType::wire).toList()))
                 .param("defaultType", system.defaultType().wire())
                 .param("secretScheme", system.secretScheme().wire())
@@ -100,12 +112,13 @@ public class SystemRepository {
                 .param("tokenUrl", oauth == null ? null : oauth.tokenUrl().toString())
                 .param("revokeUrl", oauth == null || oauth.revokeUrl() == null ? null : oauth.revokeUrl().toString())
                 .param("scopes", json.writeValueAsString(oauth == null ? List.of() : oauth.scopes()))
-                .param("secretSet", system.clientSecretSet())
+                .param("secretVersion", system.secretVersion())
                 .param("audience", system.exchangeAudience())
                 .param("userScheme", system.userSecretScheme() == null ? null : system.userSecretScheme().wire())
                 .param("deployment", system.deployment() == null ? null : system.deployment().wire())
                 .param("timeoutMs", system.timeout() == null ? null : (int) system.timeout().toMillis())
                 .param("etag", system.etag())
+                .param("revision", system.clientRevision())
                 .param("now", Timestamp.from(now));
         if (expectedEtag != null) {
             statement = statement.param("expected", expectedEtag);
@@ -126,12 +139,15 @@ public class SystemRepository {
                 uri(rs.getString("oauth_revoke_url")), scopes);
         int timeoutMs = rs.getInt("timeout_ms");
         boolean noTimeout = rs.wasNull();
-        return new SystemDefinition(rs.getString("id"), URI.create(rs.getString("base_url")), rs.getString("adapter"), types,
+        int version = rs.getInt("secret_version");
+        boolean noVersion = rs.wasNull();
+        return new SystemDefinition(rs.getString("id"), URI.create(rs.getString("base_url")), rs.getString("adapter"),
+                rs.getString("product"), types,
                 CredentialType.fromWire(rs.getString("default_type")).orElseThrow(() -> new SQLException("unknown default type")),
-                scheme(rs.getString("secret_scheme")), oauth, rs.getBoolean("client_secret_set"),
+                scheme(rs.getString("secret_scheme")), oauth, noVersion ? null : version,
                 noTimeout ? null : Duration.ofMillis(timeoutMs), rs.getString("exchange_audience"),
                 rs.getString("user_secret_scheme") == null ? null : scheme(rs.getString("user_secret_scheme")),
-                deployment(rs.getString("deployment")), rs.getString("etag"));
+                deployment(rs.getString("deployment")), rs.getString("etag"), rs.getString("client_revision"));
     }
 
     private static URI uri(String value) {

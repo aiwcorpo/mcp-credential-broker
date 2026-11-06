@@ -7,7 +7,8 @@ public enum ConnectionStatus {
     EXPIRING("expiring"),
     EXPIRED("expired"),
     REVOKED("revoked"),
-    ERROR("error");
+    ERROR("error"),
+    NEEDS_RECONNECT("needs_reconnect");
 
     private final String wire;
 

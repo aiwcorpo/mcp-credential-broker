@@ -178,7 +178,7 @@ class OpenBaoClientTest {
     private OpenBaoClient client(Duration timeout) {
         BrokerProperties.OpenBao config = new BrokerProperties.OpenBao(
                 URI.create("http://127.0.0.1:" + server.getAddress().getPort()), "role", "secret", "secret",
-                "mcp/connections", "mcp/oauth-clients", "mcp/service-accounts", "transit", "mcp-credential-broker", timeout);
+                "mcp/connections", "mcp/oauth-clients", "mcp/system-clients", "mcp/service-accounts", "transit", "mcp-credential-broker", timeout);
         return new OpenBaoClient(config, HttpClient.newHttpClient(), JsonMapper.builder().build(), clock);
     }
 

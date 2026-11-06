@@ -16,7 +16,7 @@ import pl.aiwcorpo.mcp.broker.support.MutableClock;
 import pl.aiwcorpo.mcp.broker.support.TestEnvironment;
 import tools.jackson.databind.json.JsonMapper;
 
-/** The OAuth client secret from the real OpenBao of the test environment, with the broker's own AppRole and policy. */
+/** The client secrets from the real OpenBao of the test environment, with the broker's own AppRole and policy. */
 class OAuthClientSecretsTest {
 
     private static final TestEnvironment env = TestEnvironment.get();
@@ -24,51 +24,57 @@ class OAuthClientSecretsTest {
     private final MutableClock clock = new MutableClock(Instant.parse("2026-10-28T12:00:00Z"));
     private final OAuthClientSecrets secrets = new OAuthClientSecrets(
             new OpenBaoClient(new BrokerProperties.OpenBao(URI.create(env.openBaoUrl()), TestEnvironment.BAO_ROLE_ID,
-                    TestEnvironment.BAO_SECRET_ID, "secret", "mcp/connections", "mcp/oauth-clients", "mcp/service-accounts", "transit",
-                    "mcp-credential-broker", Duration.ofSeconds(5)), HttpClient.newHttpClient(), JsonMapper.builder().build(), clock),
-            "secret", "mcp/oauth-clients", clock);
+                    TestEnvironment.BAO_SECRET_ID, "secret", "mcp/connections", "mcp/oauth-clients", "mcp/system-clients",
+                    "mcp/service-accounts", "transit", "mcp-credential-broker", Duration.ofSeconds(5)), HttpClient.newHttpClient(),
+                    JsonMapper.builder().build(), clock),
+            "secret", "mcp/system-clients", "mcp/oauth-clients", clock);
 
     @Test
-    void aRotationIsPickedUpWhenTheRevisionOfTheSystemChangesOrTheCacheExpires() {
-        String system = "sys-" + UUID.randomUUID();
-        put(system, "first-value");
-        assertThat(secrets.clientSecret(system, "rev-1").reveal()).isEqualTo("first-value");
+    void everyWriteIsANewVersionAndAReaderGetsExactlyTheVersionItAsksFor() {
+        String system = "sys" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        assertThat(secrets.write(system, SecretValue.of("first-value"))).isEqualTo(1);
+        assertThat(secrets.write(system, SecretValue.of("second-value"))).isEqualTo(2);
 
-        put(system, "second-value");
-        assertThat(secrets.clientSecret(system, "rev-1").reveal()).as("cached").isEqualTo("first-value");
-        assertThat(secrets.clientSecret(system, "rev-2").reveal()).as("another instance wrote: the etag moved").isEqualTo("second-value");
-
-        put(system, "third-value");
-        clock.advance(Duration.ofMinutes(6));
-        assertThat(secrets.clientSecret(system, "rev-2").reveal()).isEqualTo("third-value");
+        assertThat(secrets.read(system, 1).reveal()).isEqualTo("first-value");
+        assertThat(secrets.read(system, 2).reveal()).isEqualTo("second-value");
+        assertThatThrownBy(() -> secrets.read(system, 3)).isInstanceOf(SecretStoreUnavailableException.class);
+        assertThatThrownBy(() -> secrets.read(system, null)).isInstanceOf(SecretStoreUnavailableException.class);
     }
 
     @Test
-    void withoutAStoredSecretThereIsNone() {
-        String other = "sys-" + UUID.randomUUID();
-        assertThatThrownBy(() -> secrets.clientSecret(other, "rev-1")).isInstanceOf(SecretStoreUnavailableException.class);
-        assertThat(secrets.exists(other)).isFalse();
-    }
-
-    @Test
-    void writeThenDeleteRemovesEveryVersion() {
-        String system = "sys-" + UUID.randomUUID();
+    void aDestroyedVersionIsGoneAndTheOthersStay() {
+        String system = "sys" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         secrets.write(system, SecretValue.of("one"));
         secrets.write(system, SecretValue.of("two"));
-        assertThat(secrets.exists(system)).isTrue();
-        assertThat(secrets.clientSecret(system, "rev-1").reveal()).isEqualTo("two");
 
-        secrets.delete(system);
+        secrets.destroy(system, 1);
+        clock.advance(Duration.ofMinutes(6));
 
-        assertThat(secrets.exists(system)).isFalse();
-        assertThat(env.bao("GET", "secret/metadata/mcp/oauth-clients/" + system, null).statusCode()).isEqualTo(404);
-        assertThatThrownBy(() -> secrets.clientSecret(system, "rev-1")).isInstanceOf(SecretStoreUnavailableException.class);
-        secrets.delete(system);
+        assertThatThrownBy(() -> secrets.read(system, 1)).isInstanceOf(SecretStoreUnavailableException.class);
+        assertThat(secrets.read(system, 2).reveal()).isEqualTo("two");
+        secrets.destroy(system, 1);
+        assertThat(env.bao("GET", "secret/data/mcp/system-clients/" + system + "?version=2", null).statusCode()).isEqualTo(200);
     }
 
-    private static void put(String system, String value) {
-        var response = env.bao("POST", "secret/data/mcp/oauth-clients/" + system,
-                "{\"data\":{\"client_id\":\"mcp-broker\",\"client_secret\":\"" + value + "\"}}");
-        assertThat(response.statusCode()).isLessThan(300);
+    @Test
+    void aSecretIsCachedPerVersionOnly() {
+        String system = "sys" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        secrets.write(system, SecretValue.of("one"));
+        assertThat(secrets.read(system, 1).reveal()).isEqualTo("one");
+        env.bao("POST", "secret/destroy/mcp/system-clients/" + system, "{\"versions\":[1]}");
+        assertThat(secrets.read(system, 1).reveal()).as("immutable, so cached for the window").isEqualTo("one");
+        clock.advance(Duration.ofMinutes(6));
+        assertThatThrownBy(() -> secrets.read(system, 1)).isInstanceOf(SecretStoreUnavailableException.class);
+    }
+
+    @Test
+    void theOldPathOfOneDotXIsReadOnlyForTheImport() {
+        String system = "sys" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        assertThat(secrets.readLegacy(system)).isEmpty();
+        var stored = env.bao("POST", "secret/data/mcp/oauth-clients/" + system, "{\"data\":{\"client_secret\":\"from-1x\"}}");
+        assertThat(stored.statusCode()).isLessThan(300);
+
+        assertThat(secrets.readLegacy(system)).hasValueSatisfying(value -> assertThat(value.reveal()).isEqualTo("from-1x"));
+        assertThatThrownBy(() -> secrets.read(system, 1)).as("not the path of the admin API").isInstanceOf(SecretStoreUnavailableException.class);
     }
 }

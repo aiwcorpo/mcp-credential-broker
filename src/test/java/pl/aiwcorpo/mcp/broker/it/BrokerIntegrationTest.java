@@ -665,7 +665,7 @@ class BrokerIntegrationTest {
             assertThat(e.path("event").stringValue()).isEqualTo("credential_resolve");
             assertThat(e.path("reason").stringValue()).isEqualTo("system_not_configured");
             assertThat(e.path("outcome").stringValue()).isEqualTo("error");
-            assertThat(e.path("server").stringValue()).isEqualTo("mcp-wiki");
+            assertThat(e.has("server")).as("no system has this id, so it is not written").isFalse();
         });
 
         String start = TestTokens.newRequestId();

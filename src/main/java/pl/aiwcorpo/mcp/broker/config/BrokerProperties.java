@@ -88,7 +88,21 @@ public record BrokerProperties(
             @NotNull URI jwksUri,
             @DefaultValue("mcp-credential-broker") @NotBlank String audience,
             @DefaultValue("mcp-portal-bff") @NotEmpty Set<String> allowedAzp,
-            @DefaultValue("preferred_username") @NotBlank String usernameClaim) {
+            @DefaultValue("preferred_username") @NotBlank String usernameClaim,
+            URI tokenUrl) {
+
+        /**
+         * The token endpoint of the identity provider the broker exchanges tokens at; the one value a token-exchange system
+         * takes, since the administrator may not point the broker's client credentials anywhere else. Keycloak's path under
+         * the issuer unless configured.
+         */
+        public URI effectiveTokenUrl() {
+            if (tokenUrl != null) {
+                return tokenUrl;
+            }
+            String base = issuer.endsWith("/") ? issuer.substring(0, issuer.length() - 1) : issuer;
+            return URI.create(base + "/protocol/openid-connect/token");
+        }
     }
 
     public record OpenBao(
@@ -98,6 +112,7 @@ public record BrokerProperties(
             @DefaultValue("secret") @NotBlank String kvMount,
             @DefaultValue("mcp/connections") @NotBlank String pathPrefix,
             @DefaultValue("mcp/oauth-clients") @NotBlank String oauthClientsPrefix,
+            @DefaultValue("mcp/system-clients") @NotBlank String systemClientsPrefix,
             @DefaultValue("mcp/service-accounts") @NotBlank String serviceAccountsPrefix,
             @DefaultValue("transit") @NotBlank String transitMount,
             @DefaultValue("mcp-credential-broker") @NotBlank String transitKey,

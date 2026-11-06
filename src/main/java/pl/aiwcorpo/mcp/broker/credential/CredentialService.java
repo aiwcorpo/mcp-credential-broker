@@ -179,7 +179,7 @@ public class CredentialService {
             throw new CredentialRequiredException(system.id());
         }
         StoredCredential stored = read.get();
-        if (!system.supports(found.type())) {
+        if (!system.supports(found.type()) || !found.issuedUnder(system.clientRevision())) {
             // The system no longer takes this kind of credential (its types were changed through the admin API).
             throw new CredentialRequiredException(system.id());
         }
@@ -261,9 +261,10 @@ public class CredentialService {
                 StoredCredential oldGrant = previous.map(oauth::grantToRevoke).orElse(null);
                 Connection written = store.replace(
                         new Connection(caller.sub(), system.id(), CredentialType.USER_SECRET, Connection.StoredState.CONNECTED,
-                                identity.username(), expires, now.truncatedTo(ChronoUnit.SECONDS), null, null, null),
+                                identity.username(), expires, now.truncatedTo(ChronoUnit.SECONDS), null, null, null,
+                                system.clientRevision()),
                         StoredCredential.userSecret(kept, system.config().userSecretIsBasic() ? CredentialScheme.BASIC : null), previous, true);
-                boolean revoked = oauth.revokeReplacedGrant(system.id(), oldGrant);
+                boolean revoked = oauth.revokeReplacedGrant(system.id(), previous, oldGrant);
                 if (previous.isPresent() && oauth.holdsGrant(previous.get()) && (oldGrant == null || !revoked)) {
                     oauth.auditReplacedGrantNotRevoked(caller.requestId(), caller.sub(), system.id());
                 }
@@ -322,7 +323,7 @@ public class CredentialService {
         Instant now = clock.instant();
         return connections.findAll(caller.sub()).stream()
                 .map(c -> new Listed(c, systems.find(c.system()).filter(s -> s.supports(c.type())).isPresent()
-                        ? c.status(now, expiringThreshold) : ConnectionStatus.ERROR))
+                        ? c.status(now, expiringThreshold) : ConnectionStatus.NEEDS_RECONNECT))
                 .toList();
     }
 

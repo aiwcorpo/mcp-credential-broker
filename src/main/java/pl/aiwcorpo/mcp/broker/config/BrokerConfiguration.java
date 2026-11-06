@@ -152,7 +152,8 @@ public class BrokerConfiguration {
 
     @Bean
     OAuthClientSecrets oauthClientSecrets(BrokerProperties properties, OpenBaoClient client, Clock clock) {
-        return new OAuthClientSecrets(client, properties.openbao().kvMount(), properties.openbao().oauthClientsPrefix(), clock);
+        return new OAuthClientSecrets(client, properties.openbao().kvMount(), properties.openbao().systemClientsPrefix(),
+                properties.openbao().oauthClientsPrefix(), clock);
     }
 
     @Bean
@@ -174,7 +175,8 @@ public class BrokerConfiguration {
     /** Fills an empty table from the {@code broker.systems.*} properties of a 1.x installation, then loads the table. */
     @Bean
     SystemRegistry systemRegistry(BrokerProperties properties, SystemRepository repository, SystemAdapters adapters,
-            OAuthClientSecrets clientSecrets, AuditLog audit, Clock clock) {
+            OAuthClientSecrets clientSecrets, AuditLog audit, Clock clock, ConnectionRepository connections,
+            PlatformTransactionManager transactions) {
         requireTls(properties.portalBaseUrl(), "broker.portal-base-url", properties.allowPlainHttp());
         properties.systems().forEach((id, system) -> {
             requireTls(system.baseUrl(), "broker.systems." + id + ".base-url", properties.allowPlainHttp());
@@ -199,8 +201,12 @@ public class BrokerConfiguration {
                         properties.allowPlainHttp());
             }
         });
-        new LegacySystemImport(repository, clientSecrets, audit, clock).run(properties.systems());
-        return new SystemRegistry(repository, adapters);
+        requireTls(properties.bffToken().effectiveTokenUrl(), "broker.bff-token.token-url", properties.allowPlainHttp());
+        new LegacySystemImport(repository, connections, clientSecrets, audit, clock, new TransactionTemplate(transactions),
+                properties.bffToken().effectiveTokenUrl()).run(properties.systems());
+        SystemRegistry registry = new SystemRegistry(repository, adapters);
+        audit.knownSystems(id -> registry.find(id).isPresent());
+        return registry;
     }
 
     @Bean
@@ -213,7 +219,7 @@ public class BrokerConfiguration {
             ConnectionRepository connections, SecretStore secrets, InvalidationPublisher invalidations, OAuthService oauth,
             AuditLog audit, Clock clock, BrokerProperties properties) {
         return new SystemAdminService(repository, registry, clientSecrets, connections, secrets, invalidations, oauth, audit, clock,
-                properties.allowPlainHttp());
+                properties.allowPlainHttp(), properties.bffToken().effectiveTokenUrl());
     }
 
     @Bean

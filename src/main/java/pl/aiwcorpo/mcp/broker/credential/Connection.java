@@ -20,22 +20,42 @@ public record Connection(
         Instant connectedAt,
         Instant lastUsedAt,
         String secretVersion,
-        Instant accessExpiresAt) {
+        Instant accessExpiresAt,
+        String clientRevision) {
+
+    /** Without a client revision: a connection of 1.x, or one a test builds. */
+    public Connection(String sub, String system, CredentialType type, StoredState state, String backendUser, Instant expiresAt,
+            Instant connectedAt, Instant lastUsedAt, String secretVersion, Instant accessExpiresAt) {
+        this(sub, system, type, state, backendUser, expiresAt, connectedAt, lastUsedAt, secretVersion, accessExpiresAt, null);
+    }
 
     public SecretKey secretKey() {
         return new SecretKey(sub, system, secretVersion);
     }
 
     public Connection withSecretVersion(String version) {
-        return new Connection(sub, system, type, state, backendUser, expiresAt, connectedAt, lastUsedAt, version, accessExpiresAt);
+        return new Connection(sub, system, type, state, backendUser, expiresAt, connectedAt, lastUsedAt, version, accessExpiresAt, clientRevision);
     }
 
     public Connection withAccessExpiresAt(Instant accessExpiry) {
-        return new Connection(sub, system, type, state, backendUser, expiresAt, connectedAt, lastUsedAt, secretVersion, accessExpiry);
+        return new Connection(sub, system, type, state, backendUser, expiresAt, connectedAt, lastUsedAt, secretVersion, accessExpiry, clientRevision);
+    }
+
+    public Connection withClientRevision(String revision) {
+        return new Connection(sub, system, type, state, backendUser, expiresAt, connectedAt, lastUsedAt, secretVersion,
+                accessExpiresAt, revision);
+    }
+
+    /**
+     * A grant is used with the definition it was issued under. A connection without a revision (written by 1.x) is accepted:
+     * a change of where the system points deletes the grants of every connection of the system anyway.
+     */
+    public boolean issuedUnder(String systemClientRevision) {
+        return clientRevision == null || clientRevision.equals(systemClientRevision);
     }
 
     public enum StoredState {
-        CONNECTED, REVOKED, ERROR
+        CONNECTED, REVOKED, ERROR, NEEDS_RECONNECT
     }
 
     /** C4 status: expiring when the credential expires within the threshold (7 days by default). */
@@ -43,6 +63,7 @@ public record Connection(
         return switch (state) {
             case REVOKED -> ConnectionStatus.REVOKED;
             case ERROR -> ConnectionStatus.ERROR;
+            case NEEDS_RECONNECT -> ConnectionStatus.NEEDS_RECONNECT;
             case CONNECTED -> {
                 if (expiresAt == null) {
                     yield ConnectionStatus.CONNECTED;

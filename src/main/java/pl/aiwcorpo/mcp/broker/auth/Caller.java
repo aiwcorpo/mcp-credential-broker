@@ -26,6 +26,15 @@ public sealed interface Caller {
             return claims.get(claim) instanceof String value && !value.isBlank() ? value : null;
         }
 
+        /** When the user last authenticated (claim {@code auth_time}, seconds), or null when the token does not say. */
+        public java.time.Instant authTime() {
+            return switch (claims.get("auth_time")) {
+                case Number seconds -> java.time.Instant.ofEpochSecond(seconds.longValue());
+                case java.time.Instant instant -> instant;
+                case null, default -> null;
+            };
+        }
+
         /** Group of the {@code groups} claim of the IdP token. */
         public boolean hasGroup(String group) {
             return claims.get("groups") instanceof java.util.Collection<?> groups && groups.contains(group);

@@ -11,7 +11,8 @@ import pl.aiwcorpo.mcp.broker.secret.SecretValue;
  */
 public interface OAuthFlowStore {
 
-    record Flow(String flowId, String sub, String system, String state, SecretValue codeVerifier) {
+    /** {@code clientRevision}: the revision of the system's client the flow was started under; a flow of another revision is dead. */
+    record Flow(String flowId, String sub, String system, String state, SecretValue codeVerifier, String clientRevision) {
 
         @Override
         public String toString() {

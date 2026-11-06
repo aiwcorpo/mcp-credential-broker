@@ -13,6 +13,7 @@ public final class SystemRules {
 
     private static final Set<CredentialType> USER_TYPES = Set.of(CredentialType.USER_SECRET, CredentialType.USER_OAUTH);
     private static final Set<String> USER_ADAPTERS = Set.of("gitlab", "atlassian-dc");
+    private static final Set<String> PRODUCTS = Set.of("jira", "confluence");
     private static final Set<String> OAUTH_ADAPTERS = Set.of("gitlab");
 
     private SystemRules() {
@@ -49,7 +50,24 @@ public final class SystemRules {
             throw new SystemRejectedException("oauth_required", types.contains(CredentialType.USER_OAUTH)
                     ? "user-oauth needs an oauth client" : "token-exchange needs the client of the identity provider in oauth");
         }
-        if (types.contains(CredentialType.USER_SECRET) && system.secretScheme() != CredentialScheme.BEARER
+        if ("atlassian-dc".equals(adapter) ? system.product() == null || !PRODUCTS.contains(system.product()) : system.product() != null) {
+            throw new SystemRejectedException("product_required", "atlassian-dc needs product jira or confluence, other adapters take none");
+        }
+        boolean exchange = types.contains(CredentialType.TOKEN_EXCHANGE);
+        if (exchange ? system.exchangeAudience() == null || system.exchangeAudience().isBlank() : system.exchangeAudience() != null) {
+            throw new SystemRejectedException("exchange_audience_required",
+                    "exchangeAudience is required for token-exchange and not allowed otherwise");
+        }
+        if (types.contains(CredentialType.USER_OAUTH) && (system.oauth().authorizeUrl() == null || system.oauth().tokenUrl() == null)) {
+            throw new SystemRejectedException("oauth_required", "user-oauth needs authorizeUrl and tokenUrl");
+        }
+        CredentialScheme userScheme = system.userSecretScheme();
+        if (userScheme != null && ((userScheme != CredentialScheme.BEARER && userScheme != CredentialScheme.BASIC)
+                || !types.contains(CredentialType.USER_SECRET))) {
+            throw new SystemRejectedException("secret_scheme_not_supported",
+                    "userSecretScheme is Bearer or Basic and only for a system with user-secret");
+        }
+        if (types.contains(CredentialType.USER_SECRET) && userScheme == null && system.secretScheme() != CredentialScheme.BEARER
                 && system.secretScheme() != CredentialScheme.BASIC) {
             throw new SystemRejectedException("secret_scheme_not_supported", "a user-secret system takes the scheme Bearer or Basic");
         }

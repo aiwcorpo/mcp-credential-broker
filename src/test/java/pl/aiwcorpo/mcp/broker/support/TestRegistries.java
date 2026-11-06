@@ -27,9 +27,10 @@ public final class TestRegistries {
         SystemRepository repository = mock(SystemRepository.class);
         SystemDefinition.Oauth oauth = config.oauth() == null ? null : new SystemDefinition.Oauth(config.oauth().clientId(),
                 config.oauth().authorizeUrl(), config.oauth().tokenUrl(), config.oauth().revokeUrl(), config.oauthScopes());
-        when(repository.findAll()).thenReturn(List.of(new SystemDefinition(id, config.baseUrl(), config.adapter(),
-                config.supportedTypes(), config.defaultType(), config.secretScheme(), oauth, false, config.timeout(), null,
-                config.userSecretScheme(), config.deployment(), "etag-" + id)));
+        String product = "atlassian-dc".equals(config.adapter()) ? id : null;
+        when(repository.findAll()).thenReturn(List.of(new SystemDefinition(id, config.baseUrl(), config.adapter(), product,
+                config.supportedTypes(), config.defaultType(), config.secretScheme(), oauth, null, config.timeout(), null,
+                config.userSecretScheme(), config.deployment(), "etag-" + id, "revision-" + id)));
         SystemAdapters adapters = new SystemAdapters(HttpClient.newHttpClient(), JsonMapper.builder().build(),
                 mock(OAuthClientSecrets.class), mock(ServiceAccountKeys.class), Clock.systemUTC(), new SimpleMeterRegistry());
         return new SystemRegistry(repository, adapters);

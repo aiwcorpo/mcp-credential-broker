@@ -49,8 +49,8 @@ public class SystemAdminController {
 
     @DeleteMapping(path = "/v1/admin/systems/{system}")
     public ResponseEntity<Void> delete(@RequestAttribute(CallerAuthenticationFilter.CALLER) Caller caller,
-            @PathVariable("system") String system) {
-        systems.delete(portalUser(caller), system);
+            @PathVariable("system") String system, @RequestHeader(value = "If-Match", required = false) String ifMatch) {
+        systems.delete(portalUser(caller), system, ifMatch);
         return ResponseEntity.noContent().build();
     }
 
