@@ -24,7 +24,7 @@ public record AuditEvent(
         String client,
         String server,
         String tool,
-        String policyRevision,
+        Long policyRevision,
         String credentialType,
         String decision,
         String reason,

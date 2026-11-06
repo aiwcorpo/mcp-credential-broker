@@ -68,7 +68,7 @@ public final class TestTokens {
                 .claim("grp", List.of("mcp-jira-read"))
                 .claim("azp", "claude-code")
                 .claim("rid", requestId)
-                .claim("prv", "20261026120000-a1b2c3d")
+                .claim("prv", 7L)
                 .claim("iat", now.getEpochSecond())
                 .claim("exp", now.getEpochSecond() + 60)
                 .jwtID(UUID.randomUUID().toString());
@@ -87,11 +87,17 @@ public final class TestTokens {
                 .subject("system:mcp-gateway")
                 .claim("grp", List.of())
                 .claim("rid", requestId)
-                .claim("prv", "20261026120000-a1b2c3d")
+                .claim("prv", 7L)
                 .claim("iat", now.getEpochSecond())
                 .claim("exp", now.getEpochSecond() + 60)
                 .jwtID(UUID.randomUUID().toString())
                 .build());
+    }
+
+    /** The token of an administrator: the group claim of the IdP carries mcp-platform-admin. */
+    public String bffAdmin(String sub, String username) {
+        return idpToken(IDP_ISSUER, sub, username, "mcp-portal-bff", "mcp-credential-broker", Instant.now().plusSeconds(300),
+                JOSEObjectType.JWT, List.of("mcp-platform-admin", "mcp-jira-read"));
     }
 
     /** Token the BFF gets from token exchange: aud contains the broker, azp is the BFF client. */
@@ -116,8 +122,13 @@ public final class TestTokens {
     /** Same, with the header type (typ) chosen by the test. */
     public String idpToken(String issuer, String sub, String username, String azp, String audience, Instant expiresAt,
             JOSEObjectType type) {
+        return idpToken(issuer, sub, username, azp, audience, expiresAt, type, null);
+    }
+
+    public String idpToken(String issuer, String sub, String username, String azp, String audience, Instant expiresAt,
+            JOSEObjectType type, List<String> groups) {
         Instant now = Instant.now();
-        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+        JWTClaimsSet.Builder builder = new JWTClaimsSet.Builder()
                 .issuer(issuer)
                 .subject(sub)
                 .audience(List.of(audience))
@@ -126,8 +137,11 @@ public final class TestTokens {
                 .claim("email", username + "@corp.test")
                 .issueTime(Date.from(now.minusSeconds(3600)))
                 .expirationTime(expiresAt == null ? null : Date.from(expiresAt))
-                .jwtID(UUID.randomUUID().toString())
-                .build();
+                .jwtID(UUID.randomUUID().toString());
+        if (groups != null) {
+            builder.claim("groups", groups);
+        }
+        JWTClaimsSet claims = builder.build();
         try {
             SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(idpKey.getKeyID())
                     .type(type).build(), claims);

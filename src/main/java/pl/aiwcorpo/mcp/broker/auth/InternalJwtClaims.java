@@ -4,7 +4,7 @@ import java.util.List;
 
 /**
  * Verified claims of the gateway's internal JWT (C2). In the service variant ({@link #service()}) only
- * sub, rid, prv and jti are set.
+ * sub, rid, prv (the revision of the gateway policy data, a counter) and jti are set.
  */
 public record InternalJwtClaims(
         String sub,
@@ -13,7 +13,7 @@ public record InternalJwtClaims(
         String azp,
         String tool,
         String rid,
-        String prv,
+        long prv,
         String jti,
         boolean service) {
 

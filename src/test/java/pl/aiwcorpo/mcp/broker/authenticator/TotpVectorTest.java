@@ -317,7 +317,7 @@ class TotpVectorTest {
 
     private static Caller.Gateway gateway(String sub) {
         return new Caller.Gateway("0192d1b2-7c3a-7d4e-8f10-2a3b4c5d6e7f", new InternalJwtClaims(sub, "vector-user", List.of(),
-                "claude-code", "delete_issue", "0192d1b2-7c3a-7d4e-8f10-2a3b4c5d6e7f", "20261026120000-a1b2c3d",
+                "claude-code", "delete_issue", "0192d1b2-7c3a-7d4e-8f10-2a3b4c5d6e7f", 7L,
                 UUID.randomUUID().toString(), false));
     }
 

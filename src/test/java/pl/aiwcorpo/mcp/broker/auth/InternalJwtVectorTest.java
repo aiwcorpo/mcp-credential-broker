@@ -129,7 +129,7 @@ class InternalJwtVectorTest {
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
                 .issuer("https://mcp-gateway.internal").claim("aud", "mcp-credential-broker").subject("u-1")
                 .claim("usr", "alice").claim("grp", List.of()).claim("azp", "claude-code").claim("tool", "get_issue")
-                .claim("rid", rid).claim("prv", "20261026120000-a1b2c3d")
+                .claim("rid", rid).claim("prv", 7L)
                 .claim("iat", now.getEpochSecond()).claim("exp", now.getEpochSecond() + 60).jwtID("j-1").build();
         SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.ES256).keyID(renamed.getKeyID()).build(), claims);
         jwt.sign(new ECDSASigner(renamed));

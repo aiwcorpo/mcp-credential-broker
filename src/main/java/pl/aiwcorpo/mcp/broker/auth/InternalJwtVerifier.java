@@ -33,7 +33,8 @@ import com.nimbusds.jwt.SignedJWT;
 public class InternalJwtVerifier {
 
     static final Pattern REQUEST_ID = Pattern.compile("^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$");
-    private static final Pattern POLICY_REVISION = Pattern.compile("^[0-9]{14}-[0-9a-f]{7}$");
+    /** 2^53 - 1: the largest integer every JSON implementation reads back exactly (PolicyRevision). */
+    private static final long MAX_POLICY_REVISION = 9007199254740991L;
     private static final Pattern GROUP_NAME = Pattern.compile("^mcp-[A-Za-z0-9][A-Za-z0-9._-]*$");
     private static final Pattern TOOL_NAME = Pattern.compile("^[a-z][a-z0-9]*(_[a-z0-9]+)*$");
     private static final Pattern COMPONENT_ID = Pattern.compile("^mcp-[a-z0-9]+(-[a-z0-9]+)*$");
@@ -205,7 +206,7 @@ public class InternalJwtVerifier {
         }
         commonShape(claims);
         return new InternalJwtClaims(InternalJwtClaims.SERVICE_SUB, null, List.of(), null, null,
-                (String) claims.get("rid"), (String) claims.get("prv"), (String) claims.get("jti"), true);
+                (String) claims.get("rid"), ((Number) claims.get("prv")).longValue(), (String) claims.get("jti"), true);
     }
 
     private InternalJwtClaims userClaims(Map<String, Object> claims) {
@@ -232,7 +233,7 @@ public class InternalJwtVerifier {
             throw new TokenRejectedException("invalid_claims");
         }
         return new InternalJwtClaims(sub, usr, grp, azp, tool,
-                (String) claims.get("rid"), (String) claims.get("prv"), (String) claims.get("jti"), false);
+                (String) claims.get("rid"), ((Number) claims.get("prv")).longValue(), (String) claims.get("jti"), false);
     }
 
     private static void commonShape(Map<String, Object> claims) {
@@ -240,8 +241,7 @@ public class InternalJwtVerifier {
         if (!(claims.get("aud") instanceof String aud) || !COMPONENT_ID.matcher(aud).matches() || aud.length() > 64) {
             throw new TokenRejectedException("invalid_claims");
         }
-        if (!REQUEST_ID.matcher(string(claims, "rid", 36)).matches()
-                || !POLICY_REVISION.matcher(string(claims, "prv", 22)).matches()) {
+        if (!REQUEST_ID.matcher(string(claims, "rid", 36)).matches() || number(claims, "prv") > MAX_POLICY_REVISION) {
             throw new TokenRejectedException("invalid_claims");
         }
         string(claims, "jti", 128);

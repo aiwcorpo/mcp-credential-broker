@@ -9,7 +9,7 @@ import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import pl.aiwcorpo.mcp.broker.system.SystemRegistry;
+import pl.aiwcorpo.mcp.broker.system.SystemIds;
 import tools.jackson.core.json.JsonWriteFeature;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -68,7 +68,7 @@ public class AuditLog {
         private String client;
         private String server;
         private String tool;
-        private String policyRevision;
+        private Long policyRevision;
         private String credentialType;
         private String decision;
         private String reason;
@@ -105,15 +105,15 @@ public class AuditLog {
             return this;
         }
 
-        public Entry gatewayContext(String tool, String policyRevision) {
+        public Entry gatewayContext(String tool, long policyRevision) {
             this.tool = tool;
             this.policyRevision = policyRevision;
             return this;
         }
 
-        /** Unknown system names come from the caller and are not written (C8 server is an enum). */
+        /** A name that is not a SystemId comes from the caller and is not written (C8 server is a ServerId). */
         public Entry system(String system) {
-            this.server = system != null && SystemRegistry.KNOWN_SYSTEMS.contains(system) ? "mcp-" + system : null;
+            this.server = SystemIds.isValid(system) ? "mcp-" + system : null;
             return this;
         }
 
