@@ -74,6 +74,10 @@ to every instance within `broker.system-sync.interval` (5 s by default), without
 | `DELETE /v1/admin/systems/{system}` | `If-Match` required; removes the system, the connections to it with their stored values, and the client secret version |
 | `GET /v1/systems` | what readers (gateway, portal) see: types, default type, OAuth scopes |
 
+Input that is not well formed (an `If-Match` or `If-None-Match` value, a path id that does not match `SystemId`) is `400`, never
+`404`; a well-formed id with no system is `404` (`204` for a `DELETE`), a stale `If-Match` is `412`. A system can have a
+`displayName` for the portal; the admin view shows the id when none is set.
+
 Callers: the portal BFF (client certificate `mcp-portal-bff`) with the token of a user whose `groups` claim has
 `mcp-platform-admin`. Anything else is `403`. A `PUT` or `DELETE` also needs proof of a fresh MFA in that token: `auth_time` no older than 300 seconds and
 either `acr` in `broker.bff-token.mfa-acr-values` (empty by default) or `amr` containing one of
@@ -87,6 +91,12 @@ detected), `gitlab` (user secrets and OAuth), `opensearch` (token exchange at th
 `service-account` cannot be combined with other types, and so on; a mismatch is `422 system_rejected`. A `token-exchange`
 system takes no `tokenUrl`: the broker always uses the token endpoint of its identity provider
 (`broker.bff-token.token-url`, `BROKER_BFFTOKEN_TOKENURL`; Keycloak's path under `MCP_OIDC_ISSUER` when not set).
+
+Token exchange: the broker exchanges the caller's token for the `exchangeAudience` of the system and sends the result to its
+`baseUrl`, so the audience is restricted by configuration: `broker.token-exchange.allowed-audiences` (exact values or patterns
+with `*`, `BROKER_TOKENEXCHANGE_ALLOWEDAUDIENCES`). Empty by default, which means no token-exchange system can be created
+(`422`, reason `audience_not_allowed`). A stored system whose audience is not allowed is refused at `resolve`, with a warning
+when the systems are loaded.
 
 Addresses: every URL an administrator gives (`baseUrl`, `oauth.authorizeUrl`, `oauth.tokenUrl`, `revokeUrl`) is `https`. Plain
 `http` is accepted only when `broker.allow-plain-http` is set, which is for a development stack only.

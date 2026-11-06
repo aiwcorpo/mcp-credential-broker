@@ -21,6 +21,19 @@ Built on `mcp-contracts` 7.0.0 (CC-229, CC-235, CC-237, CC-238). Breaking: the s
   `authorizeUrl` is only for `user-oauth`. A `token-exchange` system takes no `tokenUrl`: it is always the token endpoint of
   the broker's identity provider (`broker.bff-token.token-url`, default Keycloak's path under `MCP_OIDC_ISSUER`), and a body
   with one is `422 token_url_not_settable`.
+- A token-exchange system may only name an audience from `broker.token-exchange.allowed-audiences` (exact values or patterns
+  with `*`; env `BROKER_TOKENEXCHANGE_ALLOWEDAUDIENCES`, comma separated). The broker exchanges the token of every caller for the
+  audience of the system and sends it to the system's `baseUrl`, so an unrestricted audience would let an administrator collect
+  tokens for any service. The default is empty: no token-exchange system can be created (`422 system_rejected`, reason
+  `audience_not_allowed`, audited). A stored system whose audience is no longer allowed is refused at `resolve` (503, the
+  identity provider is not asked) and a warning says so when its list is loaded. Systems imported from 1.x are not checked at
+  import, only at `resolve`, so allow their audiences before the first start.
+- A system may have a `displayName` (1 to 64 characters, no control or format characters; migration `V10`). The admin view
+  always has one (the id when none was given), `GET /v1/systems` carries it only when set. A replace without it clears it.
+- Malformed input is `400 invalid_request`, never `404`: an `If-Match` or `If-None-Match` that is not well formed (checked
+  before anything is looked up) and a path id that does not match `SystemId`, reserved names included, on `GET` and `DELETE`.
+  A well-formed id with no system is `404`, a `DELETE` of such an id is `204`, and a well-formed but stale `If-Match` is `412`.
+  A `PUT` of a reserved id stays `422 system_reserved`.
 - Every URL from an administrator is `https`; `http` only when `broker.allow-plain-http` is set (development).
 - Per system the adapter is chosen: `atlassian-dc`, `gitlab`, `opensearch` or `generic-rest`. The checks of the 1.x start-up
   now answer `422 system_rejected` with a reason: `adapter_type_mismatch`, `credential_types_mixed`,
