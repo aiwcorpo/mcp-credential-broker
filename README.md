@@ -92,6 +92,12 @@ detected), `gitlab` (user secrets and OAuth), `opensearch` (token exchange at th
 system takes no `tokenUrl`: the broker always uses the token endpoint of its identity provider
 (`broker.bff-token.token-url`, `BROKER_BFFTOKEN_TOKENURL`; Keycloak's path under `MCP_OIDC_ISSUER` when not set).
 
+A `generic-rest` system may take user secrets instead of a service-account key (never both, never OAuth). With a `whoami`
+(`path` relative to `baseUrl`, `usernameField` a top-level field or a JSON pointer) the broker checks a secret with
+`GET baseUrl+path` when it is stored: a 2xx with the field stores it with that backend user, 401 or 403 is `secret_invalid`,
+anything else `upstream_unavailable`. Without one the secret is stored unverified (`verified` false, no backend user, audit reason
+`secret_stored_unverified`). The gateway gets the stored secret from `resolve` as for any user-secret system.
+
 Token exchange: the broker exchanges the caller's token for the `exchangeAudience` of the system and sends the result to its
 `baseUrl`, so the audience is restricted by configuration: `broker.token-exchange.allowed-audiences` (exact values or patterns
 with `*`, `BROKER_TOKENEXCHANGE_ALLOWEDAUDIENCES`). Empty by default, which means no token-exchange system can be created

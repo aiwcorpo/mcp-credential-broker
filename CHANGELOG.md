@@ -21,6 +21,16 @@ Built on `mcp-contracts` 7.0.0 (CC-229, CC-235, CC-237, CC-238). Breaking: the s
   `authorizeUrl` is only for `user-oauth`. A `token-exchange` system takes no `tokenUrl`: it is always the token endpoint of
   the broker's identity provider (`broker.bff-token.token-url`, default Keycloak's path under `MCP_OIDC_ISSUER`), and a body
   with one is `422 token_url_not_settable`.
+- `generic-rest` takes `user-secret` or `service-account`, never both and never `user-oauth` (`422`, reason
+  `credential_type_not_supported_by_adapter`). A `generic-rest` system with user secrets may have a `whoami`
+  (`{path, usernameField}`; migration `V11`): `path` is relative to `baseUrl` (starts with `/`, not `//`, no `..`, no query, at
+  most 512 characters), `usernameField` is a top-level field or an RFC 6901 pointer. Storing a secret then calls
+  `GET baseUrl+path` with it (scheme per `userSecretScheme`, no redirects followed): a 2xx whose field is a usable name stores the
+  secret with that backend user, 401 and 403 are `secret_invalid`, anything else (also a 2xx without the field) is
+  `upstream_unavailable`. Without `whoami` the secret is stored unverified: no backend user, `verified` false, audit reason
+  `secret_stored_unverified`, and nothing is sent to the system. `Connection`, `PutSecretResponse` and `OAuthCompleteResponse`
+  have `verified`, `backendUser` may be null, and `GET /v1/systems` has `userSecretVerified` for systems with user secrets.
+  A change of `whoami` leaves the connections alone; a change of `baseUrl` still invalidates them.
 - A token-exchange system may only name an audience from `broker.token-exchange.allowed-audiences` (exact values or patterns
   with `*`; env `BROKER_TOKENEXCHANGE_ALLOWEDAUDIENCES`, comma separated). The broker exchanges the token of every caller for the
   audience of the system and sends it to the system's `baseUrl`, so an unrestricted audience would let an administrator collect
