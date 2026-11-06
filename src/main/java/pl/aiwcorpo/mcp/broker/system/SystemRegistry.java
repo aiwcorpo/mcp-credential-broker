@@ -24,13 +24,20 @@ public class SystemRegistry {
     /**
      * {@code adapter} (whoami) exists for the systems with user credentials; {@code exchanger} for token-exchange and
      * {@code serviceAccount} for service-account, and each of the three is null where it does not apply. {@code etag} is
-     * the revision of the stored definition and {@code clientRevision} the one that grants are issued under.
+     * the revision of the stored definition and {@code clientRevision} the one that grants are issued under; {@code displayName} is what the administrator
+     * named the system, or null.
      */
     public record ConfiguredSystem(String id, BrokerProperties.SystemConfig config, SystemAdapter adapter,
-            TokenExchanger exchanger, ServiceAccountSource serviceAccount, String etag, String clientRevision) {
+            TokenExchanger exchanger, ServiceAccountSource serviceAccount, String etag, String clientRevision,
+            String displayName) {
+
+        public ConfiguredSystem(String id, BrokerProperties.SystemConfig config, SystemAdapter adapter, TokenExchanger exchanger,
+                ServiceAccountSource serviceAccount, String etag, String clientRevision) {
+            this(id, config, adapter, exchanger, serviceAccount, etag, clientRevision, null);
+        }
 
         public ConfiguredSystem(String id, BrokerProperties.SystemConfig config, SystemAdapter adapter) {
-            this(id, config, adapter, null, null, null, null);
+            this(id, config, adapter, null, null, null, null, null);
         }
 
         public boolean supports(CredentialType type) {

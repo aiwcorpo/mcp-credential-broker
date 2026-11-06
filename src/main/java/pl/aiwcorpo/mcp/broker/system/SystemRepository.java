@@ -24,7 +24,7 @@ public class SystemRepository {
     private static final String COLUMNS = """
             id, base_url, adapter, product, supported_types, default_type, secret_scheme, oauth_client_id, oauth_authorize_url,
             oauth_token_url, oauth_revoke_url, oauth_scopes, secret_version, exchange_audience, user_secret_scheme,
-            deployment, timeout_ms, etag, client_revision
+            deployment, timeout_ms, etag, client_revision, display_name
             """;
 
     private final JdbcClient jdbc;
@@ -48,10 +48,10 @@ public class SystemRepository {
         return write("""
                 insert into target_system (id, base_url, adapter, product, supported_types, default_type, secret_scheme,
                     oauth_client_id, oauth_authorize_url, oauth_token_url, oauth_revoke_url, oauth_scopes, secret_version,
-                    exchange_audience, user_secret_scheme, deployment, timeout_ms, etag, client_revision, created_at, updated_at)
+                    exchange_audience, user_secret_scheme, deployment, timeout_ms, etag, client_revision, display_name, created_at, updated_at)
                 values (:id, :baseUrl, :adapter, :product, cast(:types as jsonb), :defaultType, :secretScheme, :clientId,
                     :authorizeUrl, :tokenUrl, :revokeUrl, cast(:scopes as jsonb), :secretVersion, :audience, :userScheme,
-                    :deployment, :timeoutMs, :etag, :revision, :now, :now)
+                    :deployment, :timeoutMs, :etag, :revision, :displayName, :now, :now)
                 on conflict (id) do nothing
                 """, system, now, null) == 1;
     }
@@ -65,7 +65,7 @@ public class SystemRepository {
                     oauth_authorize_url = :authorizeUrl, oauth_token_url = :tokenUrl, oauth_revoke_url = :revokeUrl,
                     oauth_scopes = cast(:scopes as jsonb), secret_version = :secretVersion, exchange_audience = :audience,
                     user_secret_scheme = :userScheme, deployment = :deployment, timeout_ms = :timeoutMs, etag = :etag,
-                    client_revision = :revision, updated_at = :now
+                    client_revision = :revision, display_name = :displayName, updated_at = :now
                 where id = :id and etag = :expected
                 """, system, now, expectedEtag) == 1;
     }
@@ -119,6 +119,7 @@ public class SystemRepository {
                 .param("timeoutMs", system.timeout() == null ? null : (int) system.timeout().toMillis())
                 .param("etag", system.etag())
                 .param("revision", system.clientRevision())
+                .param("displayName", system.displayName())
                 .param("now", Timestamp.from(now));
         if (expectedEtag != null) {
             statement = statement.param("expected", expectedEtag);
@@ -147,7 +148,7 @@ public class SystemRepository {
                 scheme(rs.getString("secret_scheme")), oauth, noVersion ? null : version,
                 noTimeout ? null : Duration.ofMillis(timeoutMs), rs.getString("exchange_audience"),
                 rs.getString("user_secret_scheme") == null ? null : scheme(rs.getString("user_secret_scheme")),
-                deployment(rs.getString("deployment")), rs.getString("etag"), rs.getString("client_revision"));
+                deployment(rs.getString("deployment")), rs.getString("etag"), rs.getString("client_revision"), rs.getString("display_name"));
     }
 
     private static URI uri(String value) {

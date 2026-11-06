@@ -64,6 +64,7 @@ class SystemAdminIntegrationTest {
     private static final String SECRET = "test-only-system-client-secret-0001";
     private static final int PORT_SECOND_INSTANCE = 18718;
     private static final int PORT_STALE_INSTANCE = 18719;
+    private static final int PORT_STRICT_INSTANCE = 18710;
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
@@ -352,6 +353,89 @@ class SystemAdminIntegrationTest {
     }
 
     @Test
+    void malformedInputIs400AndAWellFormedUnknownIdIs404() {
+        String unknown = newId();
+        String wellFormedEtag = "\"Zx8Tq2LmWk93vNpA\"";
+        for (String malformed : List.of("Bad_Id", "a", "UPPER", "has-dash", "x".repeat(40))) {
+            assertThat(get(malformed).status()).as("GET " + malformed).isEqualTo(400);
+            assertThat(delete(malformed, wellFormedEtag).status()).as("DELETE " + malformed).isEqualTo(400);
+            assertThat(bff.send("DELETE", "/v1/admin/systems/" + malformed, tokens.bffAdmin(adminSub, "root"), null, null).status())
+                    .as("DELETE without If-Match " + malformed).isEqualTo(400);
+            assertThat(replace(malformed, gitlabBody(SECRET), wellFormedEtag).status()).as("PUT " + malformed).isEqualTo(400);
+        }
+        assertThat(get(unknown).status()).isEqualTo(404);
+        assertThat(delete(unknown, null).status()).as("a delete of a system that is not there").isEqualTo(204);
+        assertThat(delete(unknown, wellFormedEtag).status()).isEqualTo(204);
+        assertThat(replace(unknown, gitlabBody(SECRET), wellFormedEtag).status()).as("a well-formed etag for nothing").isEqualTo(412);
+
+        for (String badEtag : List.of("abc", "\"short\"", "W/\"Zx8Tq2LmWk93vNpA\"", "Zx8Tq2LmWk93vNpA", "\"has space in it\"", "*", "\"\"")) {
+            assertThat(replace(unknown, gitlabBody(SECRET), badEtag).status()).as("PUT If-Match " + badEtag).isEqualTo(400);
+            assertThat(delete(unknown, badEtag).status()).as("DELETE If-Match " + badEtag + " on a system that is not there").isEqualTo(400);
+        }
+        for (String badNoneMatch : List.of("abc", "\"Zx8Tq2LmWk93vNpA\"", "**", "")) {
+            assertThat(put(unknown, gitlabBody(SECRET), Map.of("If-None-Match", badNoneMatch)).status())
+                    .as("PUT If-None-Match '" + badNoneMatch + "'").isEqualTo(400);
+        }
+        BrokerClient.Response created = create(unknown, gitlabBody(SECRET));
+        assertThat(created.status()).isEqualTo(200);
+        assertThat(replace(unknown, gitlabBody(null), "not-an-etag").status()).isEqualTo(400);
+        assertThat(replace(unknown, gitlabBody(null), wellFormedEtag).status()).as("well-formed but stale").isEqualTo(412);
+        assertThat(delete(unknown, wellFormedEtag).status()).as("well-formed but stale").isEqualTo(412);
+        assertThat(delete(unknown, "garbage").status()).isEqualTo(400);
+        assertThat(get(unknown).status()).as("nothing of this changed it").isEqualTo(200);
+    }
+
+    @Test
+    void aSystemMayHaveADisplayNameAndTheAdminViewAlwaysHasOne() {
+        String plain = newId();
+        BrokerClient.Response withoutName = create(plain, gitlabBody(SECRET));
+        assertThat(withoutName.status()).isEqualTo(200);
+        assertThat(Contracts.brokerSchemaErrors("SystemAdminView", withoutName.json())).isEmpty();
+        assertThat(withoutName.json().path("displayName").stringValue()).as("the id when none is given").isEqualTo(plain);
+        assertThat(get(plain).json().path("displayName").stringValue()).isEqualTo(plain);
+
+        String named = newId();
+        ObjectNode body = jiraBody(env.upstreamUrl());
+        body.put("displayName", "Jira (Nowy Sacz) \u0142\u00f3d\u017a");
+        BrokerClient.Response created = create(named, body);
+        assertThat(created.status()).isEqualTo(200);
+        assertThat(Contracts.brokerSchemaErrors("SystemAdminView", created.json())).isEmpty();
+        assertThat(created.json().path("displayName").stringValue()).isEqualTo("Jira (Nowy Sacz) \u0142\u00f3d\u017a");
+        assertThat(list().json().valueStream().filter(system -> named.equals(system.path("system").stringValue())).findFirst())
+                .hasValueSatisfying(system -> assertThat(system.path("displayName").stringValue()).startsWith("Jira"));
+
+        String rid = TestTokens.newRequestId();
+        Map<String, JsonNode> readers = systemsOf(gateway);
+        assertThat(readers.get(named).path("displayName").stringValue()).isEqualTo("Jira (Nowy Sacz) \u0142\u00f3d\u017a");
+        assertThat(readers.get(plain).has("displayName")).as("SystemInfo carries it only when set").isFalse();
+        for (JsonNode system : readers.values()) {
+            assertThat(Contracts.brokerSchemaErrors("SystemInfo", system)).isEmpty();
+        }
+        assertThat(rid).isNotNull();
+
+        ObjectNode renamed = jiraBody(env.upstreamUrl());
+        BrokerClient.Response replaced = replace(named, renamed, created.header("ETag"));
+        assertThat(replaced.status()).isEqualTo(200);
+        assertThat(replaced.json().path("displayName").stringValue()).as("a replace without it clears it").isEqualTo(named);
+        assertThat(systemsOf(gateway).get(named).has("displayName")).isFalse();
+
+        ObjectNode longest = jiraBody(env.upstreamUrl());
+        longest.put("displayName", "n".repeat(64));
+        assertThat(create(newId(), longest).status()).isEqualTo(200);
+    }
+
+    @Test
+    void aDisplayNameIsOneToSixtyFourCharactersWithoutControlOrFormatCharacters() {
+        for (String bad : List.of("", "n".repeat(65), "tab\there", "bell\u0007", "new\nline", "zero\u200bwidth", "bidi\u202eflip",
+                "bom\ufeff", "line\u2028sep", "para\u2029sep")) {
+            ObjectNode body = jiraBody(env.upstreamUrl());
+            body.put("displayName", bad);
+            assertThat(create(newId(), body).status()).as("'" + bad.replace("\n", "\\n") + "'").isEqualTo(400);
+        }
+        assertThat(env.systems.findAll()).extracting(system -> system.id()).containsExactlyInAnyOrderElementsOf(STANDARD);
+    }
+
+    @Test
     void reservedAndMalformedIdsAreRefused() {
         for (String reserved : List.of("gateway", "offboarding", "portal", "broker", "prometheus", "platform", "admin", "registry",
                 "adapter", "internal", "ci")) {
@@ -359,7 +443,8 @@ class SystemAdminIntegrationTest {
             assertThat(response.status()).as(reserved).isEqualTo(422);
             assertThat(Contracts.brokerSchemaErrors("SystemRejected", response.json())).isEmpty();
             assertThat(response.json().path("reason").stringValue()).isEqualTo("system_reserved");
-            assertThat(get(reserved).status()).isEqualTo(404);
+            assertThat(get(reserved).status()).as("it does not match the pattern of a system id").isEqualTo(400);
+            assertThat(delete(reserved, "\"Zx8Tq2LmWk93vNpA\"").status()).isEqualTo(400);
         }
         for (String malformed : List.of("Notes", "a", "1abc", "has-dash", "x".repeat(32))) {
             assertThat(create(malformed, gitlabBody(SECRET)).status()).as(malformed).isEqualTo(400);
@@ -608,6 +693,97 @@ class SystemAdminIntegrationTest {
         assertThat(created.json().path("oauth").path("tokenUrl").stringValue()).isEqualTo(env.idp.tokenUrl());
         assertThat(created.json().path("oauth").has("authorizeUrl")).isFalse();
         assertThat(registry.find(id)).hasValueSatisfying(system -> assertThat(system.tokenExchanger()).isPresent());
+    }
+
+    private ObjectNode exchangeBody(String audience) {
+        ObjectNode exchange = Contracts.JSON.createObjectNode();
+        exchange.put("baseUrl", env.upstreamUrl()).put("adapter", "opensearch");
+        exchange.putArray("supportedTypes").add("token-exchange");
+        exchange.put("defaultType", "token-exchange").put("secretScheme", "Bearer").put("exchangeAudience", audience);
+        ObjectNode oauth = exchange.putObject("oauth");
+        oauth.put("clientId", "idp-client").put("clientSecret", SECRET);
+        return exchange;
+    }
+
+    @Test
+    void aTokenExchangeSystemMayOnlyNameAnAllowedAudience(CapturedOutput output) {
+        for (String audience : List.of("opensearch", "aud-reports", "aud-")) {
+            assertThat(create(newId(), exchangeBody(audience)).status()).as(audience).isEqualTo(200);
+        }
+        for (String audience : List.of("billing-api", "aud", "opensearch2", "OPENSEARCH", "https://evil.test")) {
+            String id = newId();
+            String rid = TestTokens.newRequestId();
+            BrokerClient.Response refused = bff.send("PUT", "/v1/admin/systems/" + id, tokens.bffAdmin(adminSub, "root"), rid,
+                    exchangeBody(audience).toString(), Map.of("If-None-Match", "*"));
+            assertThat(refused.status()).as(audience).isEqualTo(422);
+            assertThat(Contracts.brokerSchemaErrors("SystemRejected", refused.json())).isEmpty();
+            assertThat(refused.json().path("reason").stringValue()).isEqualTo("audience_not_allowed");
+            assertThat(AuditLines.of(output, rid)).as(audience).singleElement().satisfies(event -> {
+                assertThat(event.path("outcome").stringValue()).isEqualTo("denied");
+                assertThat(event.path("reason").stringValue()).isEqualTo("audience_not_allowed");
+            });
+            assertThat(get(id).status()).isEqualTo(404);
+            assertThat(storedSecretExists(id)).as("no secret was written for a refused system").isFalse();
+        }
+    }
+
+    private boolean storedSecretExists(String id) {
+        return env.bao("GET", "secret/data/mcp/system-clients/" + id, null).statusCode() == 200;
+    }
+
+    @Test
+    void aReplaceCannotMoveAnAllowedSystemToAnAudienceThatIsNot() {
+        String id = newId();
+        BrokerClient.Response created = create(id, exchangeBody("aud-notes"));
+        assertThat(created.status()).isEqualTo(200);
+
+        BrokerClient.Response refused = replace(id, exchangeBody("billing-api"), created.header("ETag"));
+
+        assertThat(refused.status()).isEqualTo(422);
+        assertThat(refused.json().path("reason").stringValue()).isEqualTo("audience_not_allowed");
+        assertThat(get(id).json().path("exchangeAudience").stringValue()).isEqualTo("aud-notes");
+        assertThat(replace(id, exchangeBody("aud-other"), created.header("ETag")).status()).isEqualTo(200);
+    }
+
+    @Test
+    void aStoredSystemWhoseAudienceIsNoLongerAllowedIsRefusedAtResolveAndNothingIsSent() {
+        String id = newId();
+        env.putSystem(new pl.aiwcorpo.mcp.broker.system.SystemDefinition(id, URI.create(env.upstreamUrl()), "opensearch", null,
+                List.of(pl.aiwcorpo.mcp.broker.credential.CredentialType.TOKEN_EXCHANGE),
+                pl.aiwcorpo.mcp.broker.credential.CredentialType.TOKEN_EXCHANGE, pl.aiwcorpo.mcp.broker.credential.CredentialScheme.BEARER,
+                new pl.aiwcorpo.mcp.broker.system.SystemDefinition.Oauth("idp-client", null, URI.create(env.idp.tokenUrl()), null,
+                        List.of()),
+                1, null, "billing-api", null, null, pl.aiwcorpo.mcp.broker.system.SystemDefinition.newToken(),
+                pl.aiwcorpo.mcp.broker.system.SystemDefinition.newToken()));
+        registry.reload();
+        String sub = UUID.randomUUID().toString();
+        String subjectToken = tokens.subjectToken(sub, "alice");
+        env.idp.issues(subjectToken, "must-never-be-issued", 300);
+        int before = env.idp.requests().size();
+        String rid = TestTokens.newRequestId();
+
+        BrokerClient.Response resolved = gateway.send("POST", "/v1/credentials/resolve", tokens.gatewayUser(sub, "alice", rid), rid,
+                "{\"system\":\"" + id + "\",\"subjectToken\":\"" + subjectToken + "\"}");
+
+        assertThat(resolved.status()).isEqualTo(503);
+        assertThat(resolved.body()).doesNotContain("must-never-be-issued");
+        assertThat(env.idp.requests()).as("the identity provider was not asked").hasSize(before);
+        assertThat(resolve(sub, "opensearch").status()).as("an allowed system is not affected").isNotEqualTo(503);
+    }
+
+    @Test
+    void withoutAConfiguredListNoTokenExchangeSystemCanBeCreated() throws Exception {
+        try (BrokerProcess strict = BrokerProcess.start(env, PORT_STRICT_INSTANCE, Map.of("broker.token-exchange.allowed-audiences", ""))) {
+            BrokerClient other = new BrokerClient(env.pki.clientContext(env.bffClient), strict.port());
+            String id = newId();
+            BrokerClient.Response refused = other.send("PUT", "/v1/admin/systems/" + id, tokens.bffAdmin(adminSub, "root"), null,
+                    exchangeBody("opensearch").toString(), Map.of("If-None-Match", "*"));
+            assertThat(refused.status()).isEqualTo(422);
+            assertThat(refused.json().path("reason").stringValue()).isEqualTo("audience_not_allowed");
+            ObjectNode jira = jiraBody(env.upstreamUrl());
+            assertThat(other.send("PUT", "/v1/admin/systems/" + newId(), tokens.bffAdmin(adminSub, "root"), null, jira.toString(),
+                    Map.of("If-None-Match", "*")).status()).as("other types are not affected").isEqualTo(200);
+        }
     }
 
     private static ObjectNode withTokenUrl(ObjectNode body, String url) {
@@ -1018,7 +1194,7 @@ class SystemAdminIntegrationTest {
             assertThat(event.has("server")).isFalse();
         });
         assertThat(bff.send("DELETE", "/v1/admin/systems/Not-A-System", tokens.bffAdmin(adminSub, "root"), null, null).status())
-                .isEqualTo(204);
+                .as("a malformed id is not an id nobody has").isEqualTo(400);
         env.bao("DELETE", "secret/metadata/mcp/system-clients/" + mistyped, null);
     }
 

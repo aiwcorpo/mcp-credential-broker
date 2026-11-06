@@ -18,6 +18,7 @@ import pl.aiwcorpo.mcp.broker.credential.CredentialType;
 public record SystemAdminRequest(
         @NotBlank @Size(max = 255) String baseUrl,
         @NotBlank String adapter,
+        @Pattern(regexp = "^[^\\p{Cc}\\p{Cf}\\p{Cs}\\u2028\\u2029]{1,64}$") String displayName,
         @Pattern(regexp = "^(jira|confluence)$") String product,
         @NotEmpty List<@NotNull CredentialType> supportedTypes,
         @NotNull CredentialType defaultType,

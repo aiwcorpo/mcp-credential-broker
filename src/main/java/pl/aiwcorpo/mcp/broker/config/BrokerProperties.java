@@ -41,7 +41,45 @@ public record BrokerProperties(
         @DefaultValue @Valid @NotNull RateLimits rateLimits,
         @DefaultValue @Valid @NotNull LostSecretBrake lostSecretBrake,
         @DefaultValue @Valid @NotNull SystemSync systemSync,
+        @DefaultValue @Valid @NotNull TokenExchangePolicy tokenExchange,
         @DefaultValue Map<String, @Valid SystemConfig> systems) {
+
+    /**
+     * The audiences a token-exchange system may ask the identity provider for. The broker exchanges the token of every caller
+     * for the audience of the system and sends the result to the system's address, so an administrator who could choose any
+     * audience could have tokens for any service sent to a host of their own. Each entry is an exact value or a pattern in
+     * which {@code *} stands for any characters. Empty (the default) allows none, so no token-exchange system can be created.
+     */
+    public record TokenExchangePolicy(@DefaultValue List<String> allowedAudiences) {
+
+        public TokenExchangePolicy {
+            allowedAudiences = allowedAudiences == null ? List.of()
+                    : allowedAudiences.stream().map(String::trim).filter(entry -> !entry.isEmpty()).toList();
+        }
+
+        public boolean allows(String audience) {
+            if (audience == null || audience.isEmpty()) {
+                return false;
+            }
+            for (String entry : allowedAudiences) {
+                if (entry.indexOf('*') < 0 ? entry.equals(audience) : globMatches(entry, audience)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static boolean globMatches(String glob, String value) {
+            StringBuilder regex = new StringBuilder();
+            for (String part : glob.split("\\*", -1)) {
+                if (regex.length() > 0) {
+                    regex.append(".*");
+                }
+                regex.append(java.util.regex.Pattern.quote(part));
+            }
+            return java.util.regex.Pattern.matches(regex.toString(), value);
+        }
+    }
 
     /** How often an instance reads the systems table to see changes made through another instance. */
     public record SystemSync(@DefaultValue("5s") @NotNull Duration interval) {

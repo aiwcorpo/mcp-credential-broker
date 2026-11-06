@@ -115,7 +115,7 @@ class LegacySystemImportIntegrationTest {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         jdbc.sql("insert into connection (sub, system, type, state, backend_user, connected_at, updated_at)"
                 + " values ('legacy-sub', 'jira', 'user-secret', 'connected', 'legacy', now(), now())").update();
-        migrate("9");
+        migrate("10");
         SystemRepository repository = repository();
         LegacySystemImport importer = importer();
 
@@ -168,10 +168,9 @@ class LegacySystemImportIntegrationTest {
         newDatabase();
         migrate("8");
         JdbcClient jdbc = JdbcClient.create(dataSource);
-        SystemDefinition notes = new SystemDefinition("notes", URI.create("https://notes.internal"), "atlassian-dc", "jira",
-                List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET, CredentialScheme.BEARER, null, null, null, null, null,
-                null, SystemDefinition.newToken(), "revision-of-notes");
-        assertThat(repository().insert(notes, clock.instant())).isTrue();
+        jdbc.sql("insert into target_system (id, base_url, adapter, product, supported_types, default_type, secret_scheme, etag,"
+                + " client_revision, created_at, updated_at) values ('notes', 'https://notes.internal', 'atlassian-dc', 'jira',"
+                + " '[\"user-secret\"]', 'user-secret', 'Bearer', 'etag-of-notes', 'revision-of-notes', now(), now())").update();
         jdbc.sql("insert into connection (sub, system, type, state, backend_user, connected_at, updated_at)"
                 + " values ('someone', 'notes', 'user-secret', 'connected', 'someone', now(), now())").update();
 
@@ -184,7 +183,7 @@ class LegacySystemImportIntegrationTest {
     @Test
     void theMarkerIsWrittenOnTheFirstStartWhateverThePropertiesSay() throws Exception {
         newDatabase();
-        migrate("9");
+        migrate("10");
         SystemRepository repository = repository();
 
         assertThat(importer().run(Map.of())).isZero();
@@ -197,7 +196,7 @@ class LegacySystemImportIntegrationTest {
     @Test
     void aTableThatHasSystemsIsNotTouchedButIsMarked() throws Exception {
         newDatabase();
-        migrate("9");
+        migrate("10");
         SystemRepository repository = repository();
         SystemDefinition existing = new SystemDefinition("notes", URI.create("https://notes.internal"), "atlassian-dc", "jira",
                 List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET, CredentialScheme.BEARER, null, null, null, null, null,
@@ -215,7 +214,7 @@ class LegacySystemImportIntegrationTest {
     @Test
     void twoInstancesStartingTogetherImportOnce() throws Exception {
         newDatabase();
-        migrate("9");
+        migrate("10");
         SystemRepository repository = repository();
         ExecutorService pool = Executors.newFixedThreadPool(2);
         CountDownLatch go = new CountDownLatch(1);
@@ -245,7 +244,7 @@ class LegacySystemImportIntegrationTest {
     @Test
     void aSystemIdThatIsNotOneIsAStartupErrorAndNothingIsStored() throws Exception {
         newDatabase();
-        migrate("9");
+        migrate("10");
         SystemRepository repository = repository();
         for (String bad : List.of("Jira", "j", "my-system", "gateway", "x".repeat(32))) {
             assertThatThrownBy(() -> importer().run(Map.of(bad, jira())))
@@ -260,7 +259,7 @@ class LegacySystemImportIntegrationTest {
     @Test
     void anAtlassianSystemThatIsNeitherJiraNorConfluenceMustBeCreatedThroughTheApi() throws Exception {
         newDatabase();
-        migrate("9");
+        migrate("10");
 
         assertThatThrownBy(() -> importer().run(Map.of("wiki", jira()))).isInstanceOf(SystemRejectedException.class)
                 .hasMessageContaining("product");

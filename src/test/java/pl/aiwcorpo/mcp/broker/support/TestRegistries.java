@@ -32,7 +32,8 @@ public final class TestRegistries {
                 config.supportedTypes(), config.defaultType(), config.secretScheme(), oauth, null, config.timeout(), null,
                 config.userSecretScheme(), config.deployment(), "etag-" + id, "revision-" + id)));
         SystemAdapters adapters = new SystemAdapters(HttpClient.newHttpClient(), JsonMapper.builder().build(),
-                mock(OAuthClientSecrets.class), mock(ServiceAccountKeys.class), Clock.systemUTC(), new SimpleMeterRegistry());
+                mock(OAuthClientSecrets.class), mock(ServiceAccountKeys.class), Clock.systemUTC(), new SimpleMeterRegistry(),
+                new BrokerProperties.TokenExchangePolicy(List.of("*")));
         return new SystemRegistry(repository, adapters);
     }
 }

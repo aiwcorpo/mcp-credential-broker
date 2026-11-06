@@ -33,7 +33,17 @@ public record SystemDefinition(
         CredentialScheme userSecretScheme,
         BrokerProperties.Deployment deployment,
         String etag,
-        String clientRevision) {
+        String clientRevision,
+        String displayName) {
+
+    /** Without a display name: the portal shows the id. */
+    public SystemDefinition(String id, URI baseUrl, String adapter, String product, List<CredentialType> supportedTypes,
+            CredentialType defaultType, CredentialScheme secretScheme, Oauth oauth, Integer secretVersion, Duration timeout,
+            String exchangeAudience, CredentialScheme userSecretScheme, BrokerProperties.Deployment deployment, String etag,
+            String clientRevision) {
+        this(id, baseUrl, adapter, product, supportedTypes, defaultType, secretScheme, oauth, secretVersion, timeout,
+                exchangeAudience, userSecretScheme, deployment, etag, clientRevision, null);
+    }
 
     public record Oauth(String clientId, URI authorizeUrl, URI tokenUrl, URI revokeUrl, List<String> scopes) {
 
@@ -57,22 +67,22 @@ public record SystemDefinition(
 
     public SystemDefinition withEtag(String newEtag) {
         return new SystemDefinition(id, baseUrl, adapter, product, supportedTypes, defaultType, secretScheme, oauth, secretVersion,
-                timeout, exchangeAudience, userSecretScheme, deployment, newEtag, clientRevision);
+                timeout, exchangeAudience, userSecretScheme, deployment, newEtag, clientRevision, displayName);
     }
 
     public SystemDefinition withSecretVersion(Integer version) {
         return new SystemDefinition(id, baseUrl, adapter, product, supportedTypes, defaultType, secretScheme, oauth, version,
-                timeout, exchangeAudience, userSecretScheme, deployment, etag, clientRevision);
+                timeout, exchangeAudience, userSecretScheme, deployment, etag, clientRevision, displayName);
     }
 
     public SystemDefinition withClientRevision(String revision) {
         return new SystemDefinition(id, baseUrl, adapter, product, supportedTypes, defaultType, secretScheme, oauth, secretVersion,
-                timeout, exchangeAudience, userSecretScheme, deployment, etag, revision);
+                timeout, exchangeAudience, userSecretScheme, deployment, etag, revision, displayName);
     }
 
     public SystemDefinition withTimeout(Duration newTimeout) {
         return new SystemDefinition(id, baseUrl, adapter, product, supportedTypes, defaultType, secretScheme, oauth, secretVersion,
-                newTimeout, exchangeAudience, userSecretScheme, deployment, etag, clientRevision);
+                newTimeout, exchangeAudience, userSecretScheme, deployment, etag, clientRevision, displayName);
     }
 
     /** Whether the other definition points to the same places with the same client: what decides if connections survive. */

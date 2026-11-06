@@ -167,9 +167,10 @@ public class BrokerConfiguration {
     }
 
     @Bean
-    SystemAdapters systemAdapters(SslBundles sslBundles, JsonMapper json, OAuthClientSecrets clientSecrets,
+    SystemAdapters systemAdapters(BrokerProperties properties, SslBundles sslBundles, JsonMapper json, OAuthClientSecrets clientSecrets,
             ServiceAccountKeys serviceAccountKeys, Clock clock, MeterRegistry meters) {
-        return new SystemAdapters(internalClient(sslBundles), json, clientSecrets, serviceAccountKeys, clock, meters);
+        return new SystemAdapters(internalClient(sslBundles), json, clientSecrets, serviceAccountKeys, clock, meters,
+                properties.tokenExchange());
     }
 
     /** Fills an empty table from the {@code broker.systems.*} properties of a 1.x installation, then loads the table. */
@@ -220,7 +221,7 @@ public class BrokerConfiguration {
             AuditLog audit, Clock clock, BrokerProperties properties, PlatformTransactionManager transactions) {
         return new SystemAdminService(repository, registry, clientSecrets, connections, secrets, invalidations, oauth, audit, clock,
                 properties.allowPlainHttp(), properties.bffToken().effectiveTokenUrl(), new TransactionTemplate(transactions),
-                properties.bffToken());
+                properties.bffToken(), properties.tokenExchange());
     }
 
     @Bean

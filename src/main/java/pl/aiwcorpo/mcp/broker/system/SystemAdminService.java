@@ -72,11 +72,12 @@ public class SystemAdminService {
     private final URI idpTokenUrl;
     private final TransactionTemplate transaction;
     private final BrokerProperties.BffToken mfaRules;
+    private final BrokerProperties.TokenExchangePolicy tokenExchangePolicy;
 
     public SystemAdminService(SystemRepository repository, SystemRegistry registry, OAuthClientSecrets clientSecrets,
             ConnectionRepository connections, SecretStore secrets, InvalidationPublisher invalidations, OAuthService oauth,
             AuditLog audit, Clock clock, boolean allowPlainHttp, URI idpTokenUrl, TransactionTemplate transaction,
-            BrokerProperties.BffToken mfaRules) {
+            BrokerProperties.BffToken mfaRules, BrokerProperties.TokenExchangePolicy tokenExchangePolicy) {
         this.repository = repository;
         this.registry = registry;
         this.clientSecrets = clientSecrets;
@@ -90,6 +91,7 @@ public class SystemAdminService {
         this.idpTokenUrl = idpTokenUrl;
         this.transaction = transaction;
         this.mfaRules = mfaRules;
+        this.tokenExchangePolicy = tokenExchangePolicy;
     }
 
     public List<SystemAdminView> list(Caller.PortalUser caller) {
@@ -99,6 +101,9 @@ public class SystemAdminService {
 
     public Stored get(Caller.PortalUser caller, String id) {
         requireAdmin(caller);
+        if (!SystemIds.isValid(id)) {
+            throw SystemAdminException.invalid("system id");
+        }
         SystemDefinition found = repository.find(id).orElseThrow(SystemAdminException::notFound);
         return new Stored(view(found), found.etag());
     }
@@ -131,11 +136,12 @@ public class SystemAdminService {
         if (ifNoneMatch != null && !create || create && ifMatch != null) {
             throw SystemAdminException.invalid("If-Match and If-None-Match");
         }
+        String expectedEtag = ifMatch == null ? null : etagOf(ifMatch);
         if (!create && ifMatch == null) {
             throw SystemAdminException.preconditionRequired();
         }
         Optional<SystemDefinition> existing = repository.find(id);
-        if (create ? existing.isPresent() : existing.isEmpty() || !etagOf(ifMatch).equals(existing.get().etag())) {
+        if (create ? existing.isPresent() : existing.isEmpty() || !expectedEtag.equals(existing.get().etag())) {
             throw SystemAdminException.preconditionFailed();
         }
         SystemDefinition previous = create ? null : existing.get();
@@ -145,6 +151,10 @@ public class SystemAdminService {
             SystemRules.check(candidate);
         } catch (SystemRejectedException e) {
             throw SystemAdminException.rejected(e);
+        }
+        if (candidate.supportedTypes().contains(CredentialType.TOKEN_EXCHANGE) && !tokenExchangePolicy.allows(candidate.exchangeAudience())) {
+            throw SystemAdminException.rejected(new SystemRejectedException("audience_not_allowed",
+                    "the audience is not in broker.token-exchange.allowed-audiences"));
         }
         boolean pointsMoved = previous == null || !candidate.pointsSameAs(previous);
         boolean keepsSecret = candidate.oauth() != null && secret == null && !pointsMoved && previous.secretVersion() != null;
@@ -212,7 +222,11 @@ public class SystemAdminService {
         requireFreshMfa(caller);
         AuditLog.Entry entry = entry(caller);
         try {
-            Optional<SystemDefinition> existing = SystemIds.hasValidShape(id) ? repository.find(id) : Optional.empty();
+            if (!SystemIds.isValid(id)) {
+                throw SystemAdminException.invalid("system id");
+            }
+            String expectedEtag = ifMatch == null ? null : etagOf(ifMatch);
+            Optional<SystemDefinition> existing = repository.find(id);
             if (existing.isEmpty()) {
                 entry.ok("nothing_to_delete");
                 return;
@@ -222,7 +236,7 @@ public class SystemAdminService {
             if (ifMatch == null) {
                 throw SystemAdminException.preconditionRequired();
             }
-            if (!etagOf(ifMatch).equals(system.etag())) {
+            if (!expectedEtag.equals(system.etag())) {
                 throw SystemAdminException.preconditionFailed();
             }
             int removed = removeConnections(caller.requestId(), id);
@@ -387,7 +401,8 @@ public class SystemAdminService {
         }
         return new SystemDefinition(id, baseUrl, request.adapter(), request.product(), types, request.defaultType(),
                 request.secretScheme(), oauth, null, request.timeout() == null ? null : Duration.parse(request.timeout()),
-                request.exchangeAudience(), userScheme, previous == null ? null : previous.deployment(), null, null);
+                request.exchangeAudience(), userScheme, previous == null ? null : previous.deployment(), null, null,
+                request.displayName());
     }
 
     private URI url(String value, String field) {
@@ -433,7 +448,8 @@ public class SystemAdminService {
 
     static SystemAdminView view(SystemDefinition system) {
         SystemDefinition.Oauth client = system.oauth();
-        return new SystemAdminView(system.id(), system.baseUrl().toString(), system.adapter(), system.product(),
+        return new SystemAdminView(system.id(), system.displayName() == null ? system.id() : system.displayName(),
+                system.baseUrl().toString(), system.adapter(), system.product(),
                 system.supportedTypes().stream().map(CredentialType::wire).toList(), system.defaultType().wire(),
                 system.secretScheme().wire(), client == null || client.revokeUrl() == null ? null : client.revokeUrl().toString(),
                 system.timeout() == null ? null : system.timeout().toString(), system.exchangeAudience(),
