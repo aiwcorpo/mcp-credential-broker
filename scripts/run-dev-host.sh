@@ -77,7 +77,12 @@ export MCP_REDIS_HOST=localhost MCP_REDIS_PORT=16379 MCP_REDIS_USER=broker MCP_R
 export MCP_BAO_ADDR=http://localhost:18200 MCP_BAO_ROLE_ID="$BAO_BROKER_ROLE_ID" MCP_BAO_SECRET_ID="$BAO_BROKER_SECRET_ID"
 export MCP_OIDC_ISSUER=http://localhost:18080/realms/corp
 export MCP_OIDC_JWKS_URI=http://localhost:18080/realms/corp/protocol/openid-connect/certs
-export MCP_JIRA_URL=http://localhost:18081
+# Since 2.0.0 the systems are rows in the database. The BROKER_SYSTEMS_* settings below are read once, into an empty
+# table; once the systems exist, change them through PUT /v1/admin/systems/<system>.
+export BROKER_SYSTEMS_JIRA_BASEURL=http://localhost:18081
+export BROKER_SYSTEMS_JIRA_ADAPTER=atlassian-dc
+export BROKER_SYSTEMS_JIRA_SUPPORTEDTYPES=user-secret
+export BROKER_SYSTEMS_JIRA_DEFAULTTYPE=user-secret
 export MCP_PORTAL_URL="${MCP_PORTAL_URL:-http://localhost:18090}"
 # OpenBao, Keycloak and the mocks of the dev stack speak plain HTTP.
 export MCP_ALLOW_PLAIN_HTTP=true

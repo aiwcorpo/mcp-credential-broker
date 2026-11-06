@@ -9,13 +9,13 @@ It is a deployable component (container image `mcp-credential-broker`), not a li
 Installation and day-to-day operation of the whole platform are described in
 [mcp-docs](https://github.com/aiwcorpo/mcp-docs), starting from `docs/operator/index.md`.
 
-Contracts: `mcp-contracts` 6.3.2 (`openapi/credential-broker.v1.yaml`, audit events, test vectors). What works, what is missing and
+Contracts: `mcp-contracts` 7.0.0 (`openapi/credential-broker.v1.yaml`, audit events, test vectors). What works, what is missing and
 the known deviations: [STATUS.md](STATUS.md) (in Polish). License: Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)).
 Changes: [CHANGELOG.md](CHANGELOG.md). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Reporting vulnerabilities: [SECURITY.md](SECURITY.md).
 
 ## What it needs
 
-PostgreSQL (connection metadata and authenticator counters; Flyway creates the schema at start), Redis with a `broker` account
+PostgreSQL (the target systems, connection metadata and authenticator counters; Flyway creates the schema at start), Redis with a `broker` account
 (one-time OAuth flows, refresh locks, rate limits, `jti` of internal tokens, `credential.invalidated` events), OpenBao (AppRole
 login, KV v2 for values, Transit for the authenticator seeds), the identity provider's JWKS for BFF tokens, and the gateway's
 JWKS for the internal JWT. Everything is reached over TLS; callers need a client certificate from the internal CA. The Compose install in `mcp-docs`
@@ -45,9 +45,8 @@ socket and without a token, the full run is for the main branch. The release wor
 ## Configuration
 
 All settings are environment variables read from `src/main/resources/application.yml`. The generated table of variables, defaults
-and which ones are mandatory is in mcp-docs: `docs/reference/env-broker.md`. Do not copy it here. Target systems are declared with
-`BROKER_SYSTEMS_<SYSTEM>_*` (Spring relaxed binding): credential type, URL, `whoami` check, OAuth client and, for user secrets,
-the scheme (`Bearer` or `Basic`).
+and which ones are mandatory is in mcp-docs: `docs/reference/env-broker.md`. Do not copy it here. Target systems are not configuration: see
+"Systems" below. `broker.system-sync.interval` (5 s) is how often an instance reads them again.
 
 The shortest set needed to start: `MCP_DB_URL`, `MCP_DB_USER`, `MCP_DB_PASSWORD`; `MCP_REDIS_HOST`, `MCP_REDIS_USER`,
 `MCP_REDIS_PASSWORD`; `MCP_BAO_ADDR`, `MCP_BAO_ROLE_ID`, `MCP_BAO_SECRET_ID`; `MCP_TLS_KEYSTORE`, `MCP_TLS_TRUSTSTORE`,
@@ -61,6 +60,46 @@ instance: counters and locks are rows and transactions in PostgreSQL, one-time s
 
 Relaxations meant only for a dev stack (published `test-*` signing keys, `dev-` keys, plain http) need `MCP_ALLOW_TEST_KEYS=true` and
 the Spring profile `devstack`, and are logged at start. Details: `docs/operator/dev-profile.md` in mcp-docs.
+
+## Systems
+
+The systems the broker resolves credentials for are rows of `target_system`, changed through the admin API of C4 and visible
+to every instance within `broker.system-sync.interval` (5 s by default), without a restart. Nothing in the code or in
+`application.yml` lists a system.
+
+| Operation | Meaning |
+| --- | --- |
+| `GET /v1/admin/systems`, `GET /v1/admin/systems/{system}` | configuration without secrets; the single read has an `ETag` |
+| `PUT /v1/admin/systems/{system}` | create (`If-None-Match: *`) or replace (`If-Match: <ETag>`); `412` when stale, `428` without either |
+| `DELETE /v1/admin/systems/{system}` | removes the system, the connections to it with their stored values, and the client secret |
+| `GET /v1/systems` | what readers (gateway, portal) see: types, default type, OAuth scopes |
+
+The caller is the portal BFF (client certificate `mcp-portal-bff`) with the token of a user whose `groups` claim has
+`mcp-platform-admin`; the user token goes through the same checks as for every portal call. Anything else is `403`. A fresh MFA
+is the BFF's business, the broker does not see it.
+
+The adapter is chosen per system: `atlassian-dc` (Jira or Confluence Data Center, `whoami` for user secrets), `gitlab` (user
+secrets and OAuth), `opensearch` (token exchange at the IdP) and `generic-rest` (a service-account key). The adapter has to fit
+the credential types, as it did at start-up in 1.x: `user-oauth` needs an OAuth capable adapter and an `oauth` client,
+`token-exchange` and `service-account` cannot be combined with other types, and so on; a mismatch is `422 system_rejected`.
+
+Secrets: the `clientSecret` of the OAuth client is written to OpenBao at `secret/data/mcp/oauth-clients/<system>` (field
+`client_secret`; mount and prefix are `broker.openbao.kv-mount` and `broker.openbao.oauth-clients-prefix`) and removed with
+every version when the system is deleted. It is not stored in the table, never returned and never logged. The AppRole policy
+needs `create`, `read`, `update`, `delete` on `secret/data/mcp/oauth-clients/*` and `read`, `delete` on
+`secret/metadata/mcp/oauth-clients/*`. A replace keeps the secret only while `baseUrl`, `oauth.authorizeUrl`, `oauth.tokenUrl`
+and `oauth.clientId` are unchanged; otherwise it asks for the secret again (`client_secret_required`), so a changed address never
+receives the old one. A service-account key stays where the operator put it (`mcp/service-accounts/<system>`, read only).
+
+Propagation: the table is the source of truth and every instance reads it every few seconds; the instance that handled a write
+reloads at once. Redis pub/sub was not used for this because a lost message would leave an instance on an old list for good.
+
+Deleting a system removes every user's connection to it (OAuth grants are revoked at the provider on a best effort basis),
+publishes `credential.invalidated` for each, and writes `connection_change` (`system_deleted`) per connection and one
+`admin_change`. After that `resolve` answers `422 system_not_configured`. The call is idempotent; repeat it after a failure.
+
+Moving from 1.x: keep the old `broker.systems.*` settings for the first start of 2.0.0, which imports them into an empty table
+once, then remove them. Details in the CHANGELOG.
 
 ## Security
 
@@ -88,8 +127,8 @@ Invariants of this component. The platform-wide list is in `docs/security/invari
 
 Packages under `pl.aiwcorpo.mcp.broker`: `auth` (mTLS CN, internal JWT, BFF token, operation table), `api` (controllers, error
 mapping), `credential` (resolve, PUT secret, OAuth, offboarding), `oauth` (flows, refresh lock, rate limits), `authenticator` (TOTP,
-enrollment, seed store, metadata), `secret` (OpenBao client, secret store), `system` (adapters for Jira, GitLab, OpenSearch and a
-generic REST system), `audit`, `event` and `config`.
+enrollment, seed store, metadata), `secret` (OpenBao client, secret store), `system` (the stored systems, their registry and admin
+service, adapters for Atlassian DC, GitLab, OpenSearch and a generic REST system), `audit`, `event` and `config`.
 
-New credential types go into `CredentialType` and `SystemRegistry`, new operations into `Operation`; a contract test keeps the table
+New credential types go into `CredentialType` and `SystemRules`, new operations into `Operation`; a contract test keeps the table
 equal to the OpenAPI file.
