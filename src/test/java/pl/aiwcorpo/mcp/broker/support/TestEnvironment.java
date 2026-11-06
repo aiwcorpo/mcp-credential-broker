@@ -312,6 +312,7 @@ public final class TestEnvironment {
         registry.add("MCP_ALLOW_TEST_KEYS", () -> "true");
         registry.add("broker.system-sync.interval", () -> "200ms");
         registry.add("broker.bff-token.token-url", idp::tokenUrl);
+        registry.add("broker.bff-token.mfa-acr-values", () -> "urn:test:mfa");
         registry.add("broker.oauth-flow.sweep-interval", () -> "PT1H");
         registry.add("broker.oauth-flow.refresh-lock-wait", () -> "3s");
         registry.add("MCP_PORTAL_URL", () -> "https://mcp-portal.test");

@@ -47,11 +47,12 @@ public record Connection(
     }
 
     /**
-     * A grant is used with the definition it was issued under. A connection without a revision (written by 1.x) is accepted:
-     * a change of where the system points deletes the grants of every connection of the system anyway.
+     * A grant is used with the definition it was issued under, and only with it. A connection without a revision matches
+     * nothing: the import of 1.x gives the connections of a system its revision, so a row that still has none is one that
+     * nobody vouches for.
      */
     public boolean issuedUnder(String systemClientRevision) {
-        return clientRevision == null || clientRevision.equals(systemClientRevision);
+        return clientRevision != null && clientRevision.equals(systemClientRevision);
     }
 
     public enum StoredState {

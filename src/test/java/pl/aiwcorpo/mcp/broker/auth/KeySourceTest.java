@@ -480,7 +480,7 @@ class KeySourceTest {
         try {
             BrokerProperties.BffToken config = new BrokerProperties.BffToken(TestTokens.IDP_ISSUER,
                     URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/jwks"), "mcp-credential-broker",
-                    Set.of("mcp-portal-bff"), "preferred_username", null);
+                    Set.of("mcp-portal-bff"), "preferred_username", null, Set.of(), Set.of("mfa"));
             BffTokenVerifier verifier = BffTokenVerifier.create(config, HttpClient.newHttpClient());
             String token = new TestTokens().bffUser("sub-1", "alice");
             assertThatThrownBy(() -> verifier.verify(token, "rid")).isInstanceOf(KeySourceUnavailableException.class);

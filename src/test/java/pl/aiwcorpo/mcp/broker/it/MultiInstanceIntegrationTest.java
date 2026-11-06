@@ -374,7 +374,7 @@ class MultiInstanceIntegrationTest {
                     ResultSet history = db.createStatement()
                             .executeQuery("select count(*), count(*) filter (where not success) from flyway_schema_history")) {
                 history.next();
-                assertThat(history.getInt(1)).as("each migration once").isEqualTo(8);
+                assertThat(history.getInt(1)).as("each migration once").isEqualTo(9);
                 assertThat(history.getInt(2)).isZero();
             }
             Registered user = register(started.get(0), started.get(1), "heidi");

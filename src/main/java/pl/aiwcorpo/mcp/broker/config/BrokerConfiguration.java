@@ -217,9 +217,10 @@ public class BrokerConfiguration {
     @Bean
     SystemAdminService systemAdminService(SystemRepository repository, SystemRegistry registry, OAuthClientSecrets clientSecrets,
             ConnectionRepository connections, SecretStore secrets, InvalidationPublisher invalidations, OAuthService oauth,
-            AuditLog audit, Clock clock, BrokerProperties properties) {
+            AuditLog audit, Clock clock, BrokerProperties properties, PlatformTransactionManager transactions) {
         return new SystemAdminService(repository, registry, clientSecrets, connections, secrets, invalidations, oauth, audit, clock,
-                properties.allowPlainHttp(), properties.bffToken().effectiveTokenUrl());
+                properties.allowPlainHttp(), properties.bffToken().effectiveTokenUrl(), new TransactionTemplate(transactions),
+                properties.bffToken());
     }
 
     @Bean

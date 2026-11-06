@@ -354,7 +354,7 @@ class CredentialServiceTest {
 
     private static Connection connection(Instant expiresAt, Instant lastUsedAt) {
         return new Connection("alice-sub", "jira", CredentialType.USER_SECRET, Connection.StoredState.CONNECTED, "alice",
-                expiresAt, NOW.minusSeconds(3600), lastUsedAt, "v1", null);
+                expiresAt, NOW.minusSeconds(3600), lastUsedAt, "v1", null, "revision-jira");
     }
 
     private static Caller.Gateway gateway(String sub) {

@@ -89,7 +89,18 @@ public record BrokerProperties(
             @DefaultValue("mcp-credential-broker") @NotBlank String audience,
             @DefaultValue("mcp-portal-bff") @NotEmpty Set<String> allowedAzp,
             @DefaultValue("preferred_username") @NotBlank String usernameClaim,
-            URI tokenUrl) {
+            URI tokenUrl,
+            @DefaultValue Set<String> mfaAcrValues,
+            @DefaultValue({"mfa", "otp", "hwk", "totp"}) Set<String> mfaAmrValues) {
+
+        /**
+         * What proves an MFA authentication in the token of an administrator, besides a recent {@code auth_time}: the claim
+         * {@code acr} is one of {@code mfaAcrValues}, or the claim {@code amr} has one of {@code mfaAmrValues}. A token with
+         * neither is not a proof, however fresh its {@code auth_time} is.
+         */
+        public boolean provesMfa(String acr, java.util.Collection<String> amr) {
+            return acr != null && mfaAcrValues.contains(acr) || amr != null && amr.stream().anyMatch(mfaAmrValues::contains);
+        }
 
         /**
          * The token endpoint of the identity provider the broker exchanges tokens at; the one value a token-exchange system

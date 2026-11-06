@@ -50,14 +50,15 @@ class OAuthSweepLostSecretTest {
         BrokerProperties.SystemConfig config = new BrokerProperties.SystemConfig(URI.create("http://gitlab.test"), "gitlab",
                 List.of(CredentialType.USER_OAUTH), CredentialType.USER_OAUTH, CredentialScheme.BEARER, List.of(),
                 Duration.ofSeconds(1), null, null, null, null);
-        SystemRegistry.ConfiguredSystem gitlab = new SystemRegistry.ConfiguredSystem("gitlab", config, adapter);
+        SystemRegistry.ConfiguredSystem gitlab = new SystemRegistry.ConfiguredSystem("gitlab", config, adapter, null, null, "etag-gitlab",
+                "revision-gitlab");
         SystemRegistry systems = mock(SystemRegistry.class);
         when(systems.all()).thenReturn(List.of(gitlab));
         when(systems.find("gitlab")).thenReturn(Optional.of(gitlab));
         when(lock.acquire(any(), any(), any())).thenReturn(Optional.of("owner"));
 
         Connection due = new Connection("alice-sub", "gitlab", CredentialType.USER_OAUTH, Connection.StoredState.CONNECTED,
-                "alice", null, NOW.minusSeconds(3600), null, "v1", NOW.plusSeconds(30));
+                "alice", null, NOW.minusSeconds(3600), null, "v1", NOW.plusSeconds(30), "revision-gitlab");
         when(connections.findOAuthExpiringBefore(any(), any(), org.mockito.ArgumentMatchers.anyInt())).thenReturn(List.of(due));
         when(connections.find("alice-sub", "gitlab")).thenReturn(Optional.of(due));
         when(secrets.get(any())).thenReturn(Optional.empty());

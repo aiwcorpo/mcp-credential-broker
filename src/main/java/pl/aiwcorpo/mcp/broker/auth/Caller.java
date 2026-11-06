@@ -35,6 +35,17 @@ public sealed interface Caller {
             };
         }
 
+        /** The authentication context class of the token ({@code acr}), or null. */
+        public String acr() {
+            return claims.get("acr") instanceof String value ? value : null;
+        }
+
+        /** The authentication methods of the token ({@code amr}); empty when it has none. */
+        public java.util.List<String> amr() {
+            return claims.get("amr") instanceof java.util.Collection<?> methods
+                    ? methods.stream().filter(String.class::isInstance).map(String.class::cast).toList() : java.util.List.of();
+        }
+
         /** Group of the {@code groups} claim of the IdP token. */
         public boolean hasGroup(String group) {
             return claims.get("groups") instanceof java.util.Collection<?> groups && groups.contains(group);

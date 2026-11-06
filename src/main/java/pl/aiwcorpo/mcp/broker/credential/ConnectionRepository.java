@@ -77,12 +77,18 @@ public class ConnectionRepository {
         return paths;
     }
 
-    /** Connections of the system that were not issued under {@code clientRevision} and are not yet marked. */
-    public List<Connection> findOutdatedBySystem(String system, String clientRevision, int limit) {
+    /**
+     * Connections of the system that still need the work of an invalidation: not yet marked {@code needs_reconnect} although
+     * they were not issued under {@code clientRevision} (a write of an instance that had not seen the change), or marked but
+     * with their stored value not yet deleted.
+     */
+    public List<Connection> findNeedingInvalidation(String system, String clientRevision, int limit) {
         return jdbc.sql("""
                 select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at, client_revision
                 from connection
-                where system = :system and state <> 'needs_reconnect' and client_revision is distinct from :revision
+                where system = :system
+                  and ((state <> 'needs_reconnect' and client_revision is distinct from :revision)
+                       or (state = 'needs_reconnect' and secret_version is not null))
                 order by sub limit :limit
                 """)
                 .param("system", system)
@@ -90,6 +96,22 @@ public class ConnectionRepository {
                 .param("limit", limit)
                 .query(ConnectionRepository::map)
                 .list();
+    }
+
+    /** In the transaction that changes the system: every connection stops being usable at the moment the system moves. */
+    public int markAllNeedsReconnect(String system, Instant now) {
+        return jdbc.sql("update connection set state = 'needs_reconnect', updated_at = :now where system = :system and state <> 'needs_reconnect'")
+                .param("now", timestamp(now))
+                .param("system", system)
+                .update();
+    }
+
+    /** The stored value of an invalidated connection is deleted; nothing points at it any more. */
+    public void clearSecretVersion(String sub, String system) {
+        jdbc.sql("update connection set secret_version = null where sub = :sub and system = :system and state = 'needs_reconnect'")
+                .param("sub", sub)
+                .param("system", system)
+                .update();
     }
 
     /** Gives the connections written before the system was a row the revision of the system it was imported as. */

@@ -14,11 +14,13 @@ import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import pl.aiwcorpo.mcp.broker.api.SystemAdminRequest;
 import pl.aiwcorpo.mcp.broker.api.SystemAdminView;
 import pl.aiwcorpo.mcp.broker.audit.AuditLog;
 import pl.aiwcorpo.mcp.broker.auth.Caller;
+import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
 import pl.aiwcorpo.mcp.broker.credential.Connection;
 import pl.aiwcorpo.mcp.broker.credential.ConnectionRepository;
 import pl.aiwcorpo.mcp.broker.credential.CredentialScheme;
@@ -68,10 +70,13 @@ public class SystemAdminService {
     private final Clock clock;
     private final boolean allowPlainHttp;
     private final URI idpTokenUrl;
+    private final TransactionTemplate transaction;
+    private final BrokerProperties.BffToken mfaRules;
 
     public SystemAdminService(SystemRepository repository, SystemRegistry registry, OAuthClientSecrets clientSecrets,
             ConnectionRepository connections, SecretStore secrets, InvalidationPublisher invalidations, OAuthService oauth,
-            AuditLog audit, Clock clock, boolean allowPlainHttp, URI idpTokenUrl) {
+            AuditLog audit, Clock clock, boolean allowPlainHttp, URI idpTokenUrl, TransactionTemplate transaction,
+            BrokerProperties.BffToken mfaRules) {
         this.repository = repository;
         this.registry = registry;
         this.clientSecrets = clientSecrets;
@@ -83,6 +88,8 @@ public class SystemAdminService {
         this.clock = clock;
         this.allowPlainHttp = allowPlainHttp;
         this.idpTokenUrl = idpTokenUrl;
+        this.transaction = transaction;
+        this.mfaRules = mfaRules;
     }
 
     public List<SystemAdminView> list(Caller.PortalUser caller) {
@@ -163,7 +170,16 @@ public class SystemAdminService {
                 .withClientRevision(pointsMoved ? SystemDefinition.newToken() : previous.clientRevision());
         boolean stored;
         try {
-            stored = create ? repository.insert(next, clock.instant()) : repository.update(next, previous.etag(), clock.instant());
+            // The connections stop being usable in the very transaction that moves the system; deleting their stored values
+            // follows and is repeated by every later write until it is done.
+            stored = Boolean.TRUE.equals(transaction.execute(status -> {
+                Instant now = clock.instant();
+                boolean done = create ? repository.insert(next, now) : repository.update(next, previous.etag(), now);
+                if (done && !create && pointsMoved) {
+                    connections.markAllNeedsReconnect(id, now);
+                }
+                return done;
+            }));
         } catch (RuntimeException e) {
             destroyQuietly(id, written);
             throw e;
@@ -177,7 +193,7 @@ public class SystemAdminService {
         }
         refresh();
         entry.ok(create ? "system_created" : "system_updated");
-        if (previous != null && invalidateOutdated(caller.requestId(), id, next.clientRevision()) > 0) {
+        if (previous != null && completeInvalidation(caller.requestId(), id, next.clientRevision()) > 0) {
             audit.event("admin_change", caller.requestId()).user(caller.sub(), caller.username(), caller.azp())
                     .systemBeingChanged(id).ok("connections_invalidated");
         }
@@ -241,25 +257,38 @@ public class SystemAdminService {
         }
     }
 
-    /** Marks every connection that was not issued under {@code revision} {@code needs_reconnect}, without calling anybody. */
-    private int invalidateOutdated(String requestId, String id, String revision) {
+    /**
+     * Finishes what a change of where the system points started: connections not yet marked that were not issued under
+     * {@code revision} (a write of an instance that had not seen the change) are marked, and the stored value of every marked
+     * connection is deleted. Nothing is sent to anybody. A failure fails the write, and the next write of the system takes
+     * up the rest.
+     */
+    private int completeInvalidation(String requestId, String id, String revision) {
         int done = 0;
         while (true) {
-            List<Connection> batch = connections.findOutdatedBySystem(id, revision, BATCH);
+            List<Connection> batch = connections.findNeedingInvalidation(id, revision, BATCH);
             if (batch.isEmpty()) {
                 return done;
             }
             for (Connection candidate : batch) {
                 Connection gone = oauth.underRefreshLock(candidate.sub(), id, () -> {
                     Optional<Connection> current = connections.find(candidate.sub(), id);
-                    if (current.isEmpty() || current.get().state() == Connection.StoredState.NEEDS_RECONNECT
-                            || current.get().clientRevision() != null && current.get().clientRevision().equals(revision)) {
+                    if (current.isEmpty()) {
                         return null;
                     }
-                    secrets.delete(current.get().secretKey());
-                    connections.markNeedsReconnect(candidate.sub(), id, clock.instant());
+                    Connection row = current.get();
+                    boolean unmarked = row.state() != Connection.StoredState.NEEDS_RECONNECT && !revision.equals(row.clientRevision());
+                    boolean valueLeft = row.state() == Connection.StoredState.NEEDS_RECONNECT && row.secretVersion() != null;
+                    if (!unmarked && !valueLeft) {
+                        return null;
+                    }
+                    if (unmarked) {
+                        connections.markNeedsReconnect(candidate.sub(), id, clock.instant());
+                    }
+                    secrets.delete(row.secretKey());
+                    connections.clearSecretVersion(candidate.sub(), id);
                     invalidations.invalidated(candidate.sub(), id);
-                    return current.get();
+                    return row;
                 });
                 if (gone != null) {
                     done++;
@@ -353,6 +382,9 @@ public class SystemAdminService {
                     exchange ? idpTokenUrl : client.tokenUrl() == null ? null : url(client.tokenUrl(), "tokenUrl"), revokeUrl, scopes);
         }
         CredentialScheme userScheme = request.userSecretScheme();
+        if (userScheme != null && userScheme != CredentialScheme.BEARER && userScheme != CredentialScheme.BASIC) {
+            throw SystemAdminException.invalid("userSecretScheme");
+        }
         return new SystemDefinition(id, baseUrl, request.adapter(), request.product(), types, request.defaultType(),
                 request.secretScheme(), oauth, null, request.timeout() == null ? null : Duration.parse(request.timeout()),
                 request.exchangeAudience(), userScheme, previous == null ? null : previous.deployment(), null, null);
@@ -381,11 +413,15 @@ public class SystemAdminService {
         }
     }
 
-    /** The BFF asks for a fresh MFA too; the broker does not rely on it. */
+    /**
+     * The BFF asks for a fresh MFA too; the broker does not rely on it. A recent login is not enough: the token must also say
+     * that it was an MFA (an {@code acr} or {@code amr} the configuration names), because a password login is recent too.
+     */
     private void requireFreshMfa(Caller.PortalUser caller) {
         Instant authenticated = caller.authTime();
         Instant now = clock.instant();
-        if (authenticated == null || authenticated.isBefore(now.minus(MFA_WINDOW)) || authenticated.isAfter(now.plus(MFA_WINDOW))) {
+        boolean fresh = authenticated != null && !authenticated.isBefore(now.minus(MFA_WINDOW)) && !authenticated.isAfter(now.plus(MFA_WINDOW));
+        if (!fresh || !mfaRules.provesMfa(caller.acr(), caller.amr())) {
             entry(caller).denied("step_up_required", "step_up_required");
             throw SystemAdminException.stepUpRequired();
         }

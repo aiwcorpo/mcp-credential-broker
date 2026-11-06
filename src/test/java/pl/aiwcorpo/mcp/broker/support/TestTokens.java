@@ -5,6 +5,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import com.nimbusds.jose.JOSEException;
@@ -101,8 +102,13 @@ public final class TestTokens {
 
     /** The same with the moment of the last MFA authentication chosen by the test. */
     public String bffAdmin(String sub, String username, Instant authTime) {
+        return bffAdmin(sub, username, authTime, Map.of("amr", List.of("pwd", "otp")));
+    }
+
+    /** The same with the claims that say how the user authenticated (amr, acr) chosen by the test. */
+    public String bffAdmin(String sub, String username, Instant authTime, Map<String, Object> authenticationClaims) {
         return idpToken(IDP_ISSUER, sub, username, "mcp-portal-bff", "mcp-credential-broker", Instant.now().plusSeconds(300),
-                JOSEObjectType.JWT, List.of("mcp-platform-admin", "mcp-jira-read"), authTime);
+                JOSEObjectType.JWT, List.of("mcp-platform-admin", "mcp-jira-read"), authTime, authenticationClaims);
     }
 
     /** Token the BFF gets from token exchange: aud contains the broker, azp is the BFF client. */
@@ -137,6 +143,11 @@ public final class TestTokens {
 
     public String idpToken(String issuer, String sub, String username, String azp, String audience, Instant expiresAt,
             JOSEObjectType type, List<String> groups, Instant authTime) {
+        return idpToken(issuer, sub, username, azp, audience, expiresAt, type, groups, authTime, Map.of());
+    }
+
+    public String idpToken(String issuer, String sub, String username, String azp, String audience, Instant expiresAt,
+            JOSEObjectType type, List<String> groups, Instant authTime, Map<String, Object> extraClaims) {
         Instant now = Instant.now();
         JWTClaimsSet.Builder builder = new JWTClaimsSet.Builder()
                 .issuer(issuer)
@@ -154,6 +165,7 @@ public final class TestTokens {
         if (authTime != null) {
             builder.claim("auth_time", authTime.getEpochSecond());
         }
+        extraClaims.forEach(builder::claim);
         JWTClaimsSet claims = builder.build();
         try {
             SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(idpKey.getKeyID())

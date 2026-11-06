@@ -686,6 +686,62 @@ class SystemAdminIntegrationTest {
         assertThat(bff.send("GET", "/v1/admin/systems", stale, null, null).status()).as("a read needs no fresh MFA").isEqualTo(200);
     }
 
+    @Test
+    void aRecentLoginIsNotAnMfa(CapturedOutput output) {
+        String id = newId();
+        BrokerClient.Response created = create(id, gitlabBody(SECRET));
+        String etag = created.header("ETag");
+        Instant recent = Instant.now().minusSeconds(20);
+
+        Map<String, Map<String, Object>> notProofs = new LinkedHashMap<>();
+        notProofs.put("no acr and no amr", Map.of());
+        notProofs.put("a password only", Map.of("amr", List.of("pwd")));
+        notProofs.put("an acr nobody configured", Map.of("acr", "urn:other:level"));
+        notProofs.put("an amr that is not a list of methods", Map.of("amr", "otp"));
+        for (var notProof : notProofs.entrySet()) {
+            String rid = TestTokens.newRequestId();
+            BrokerClient.Response refused = bff.send("PUT", "/v1/admin/systems/" + id,
+                    tokens.bffAdmin(adminSub, "root", recent, notProof.getValue()), rid, gitlabBody(null).toString(),
+                    Map.of("If-Match", etag));
+            assertThat(refused.status()).as(notProof.getKey()).isEqualTo(401);
+            assertThat(refused.body()).isEqualTo("{\"error\":\"step_up_required\"}");
+            assertThat(AuditLines.of(output, rid)).as(notProof.getKey()).singleElement()
+                    .satisfies(event -> assertThat(event.path("reason").stringValue()).isEqualTo("step_up_required"));
+            assertThat(bff.send("DELETE", "/v1/admin/systems/" + id, tokens.bffAdmin(adminSub, "root", recent, notProof.getValue()),
+                    null, null, Map.of("If-Match", etag)).status()).as(notProof.getKey()).isEqualTo(401);
+        }
+        assertThat(get(id).header("ETag")).as("nothing changed").isEqualTo(etag);
+
+        Map<String, Map<String, Object>> proofs = new LinkedHashMap<>();
+        proofs.put("amr otp", Map.of("amr", List.of("pwd", "otp")));
+        proofs.put("amr hwk", Map.of("amr", List.of("hwk")));
+        proofs.put("amr mfa", Map.of("amr", List.of("mfa")));
+        proofs.put("amr totp", Map.of("amr", List.of("totp")));
+        proofs.put("a configured acr", Map.of("acr", "urn:test:mfa"));
+        String current = etag;
+        for (var proof : proofs.entrySet()) {
+            BrokerClient.Response changed = put(id, gitlabBody(null), Map.of("If-Match", current),
+                    tokens.bffAdmin(adminSub, "root", recent, proof.getValue()));
+            assertThat(changed.status()).as(proof.getKey()).isEqualTo(200);
+            current = changed.header("ETag");
+        }
+        assertThat(put(id, gitlabBody(null), Map.of("If-Match", current),
+                tokens.bffAdmin(adminSub, "root", Instant.now().minusSeconds(400), Map.of("amr", List.of("otp")))).status())
+                .as("a proof that is too old").isEqualTo(401);
+    }
+
+    @Test
+    void theUserSecretSchemeOfTheContractIsBearerOrBasic() {
+        for (String scheme : List.of("Token", "ApiKey", "Nonsense")) {
+            ObjectNode body = jiraBody(env.upstreamUrl());
+            body.put("userSecretScheme", scheme);
+            assertThat(create(newId(), body).status()).as(scheme).isEqualTo(400);
+        }
+        ObjectNode basic = jiraBody(env.upstreamUrl());
+        basic.put("userSecretScheme", "Basic");
+        assertThat(create(newId(), basic).status()).isEqualTo(200);
+    }
+
     // Invalidation of connections (CC-238 C1) -------------------------------------------------------------
 
     @Test
@@ -787,6 +843,64 @@ class SystemAdminIntegrationTest {
 
         assertThat(connectionStatus(sub, id)).isEqualTo("connected");
         assertThat(resolve(sub, id).status()).isEqualTo(200);
+    }
+
+    @Test
+    void aConnectionWithoutAClientRevisionIsNeverUsedAndIsInvalidatedWithTheRest() {
+        String id = newId();
+        ObjectNode body = gitlabBody(null);
+        body.put("revokeUrl", gitlab.url() + "/oauth/revoke");
+        BrokerClient.Response created = create(id, withSecret(body, SECRET));
+        String sub = UUID.randomUUID().toString();
+        GitLabStub.Grant grant = connectOauth(id, sub, 90);
+        String version = jdbc.sql("select secret_version from connection where sub = :sub and system = :system")
+                .param("sub", sub).param("system", id).query(String.class).single();
+        jdbc.sql("update connection set client_revision = null where sub = :sub and system = :system")
+                .param("sub", sub).param("system", id).update();
+        int requests = gitlab.requestCount();
+
+        assertThat(resolve(sub, id).status()).as("a connection nobody vouches for is not refreshed, though its token is due").isEqualTo(409);
+        assertThat(gitlab.tokenRequests("refresh_token", "refresh_token", grant.refreshToken())).isEmpty();
+        assertThat(gitlab.requestCount()).isEqualTo(requests);
+
+        ObjectNode moved = body.deepCopy();
+        ((ObjectNode) moved.path("oauth")).put("tokenUrl", gitlab.url() + "/oauth/token?moved=1");
+        assertThat(replace(id, withSecret(moved, SECRET + "-2"), created.header("ETag")).status()).isEqualTo(200);
+
+        assertThat(connectionStatus(sub, id)).isEqualTo("needs_reconnect");
+        assertThat(env.bao("GET", "secret/data/mcp/connections/" + new SecretKey(sub, id, version).relativePath(), null).statusCode())
+                .as("its stored value is gone").isEqualTo(404);
+        assertThat(gitlab.requestCount()).as("and nothing was sent anywhere").isEqualTo(requests);
+    }
+
+    @Test
+    void theInvalidationOfAChangeIsFinishedByTheNextWriteWhenItWasInterrupted() throws Exception {
+        Recorder oldBackend = new Recorder();
+        Recorder newBackend = new Recorder();
+        String id = newId();
+        BrokerClient.Response created = create(id, jiraBody(oldBackend.url()));
+        String sub = UUID.randomUUID().toString();
+        String version = connectUserSecret(id, sub, "alice-pat");
+        String path = "secret/data/mcp/connections/" + new SecretKey(sub, id, version).relativePath();
+        String revisionBefore = jdbc.sql("select client_revision from target_system where id = :id").param("id", id).query(String.class).single();
+
+        BrokerClient.Response moved = replace(id, jiraBody(newBackend.url()), created.header("ETag"));
+        assertThat(moved.status()).isEqualTo(200);
+        assertThat(jdbc.sql("select client_revision from target_system where id = :id").param("id", id).query(String.class).single())
+                .isNotEqualTo(revisionBefore);
+
+        // As if the process had died after the transaction: the connection is marked, its stored value is still there.
+        jdbc.sql("update connection set secret_version = :version where sub = :sub and system = :system")
+                .param("version", version).param("sub", sub).param("system", id).update();
+        assertThat(env.bao("POST", path, "{\"data\":{\"ciphertext\":\"vault:v1:left-behind\"}}").statusCode()).isEqualTo(200);
+        ObjectNode timeout = jiraBody(newBackend.url());
+        timeout.put("timeout", "PT20S");
+        assertThat(replace(id, timeout, moved.header("ETag")).status()).isEqualTo(200);
+
+        assertThat(env.bao("GET", path, null).statusCode()).as("the next write deleted it").isEqualTo(404);
+        assertThat(jdbc.sql("select count(*) from connection where sub = :sub and system = :system and secret_version is not null")
+                .param("sub", sub).param("system", id).query(Long.class).single()).isZero();
+        assertThat(connectionStatus(sub, id)).isEqualTo("needs_reconnect");
     }
 
     @Test

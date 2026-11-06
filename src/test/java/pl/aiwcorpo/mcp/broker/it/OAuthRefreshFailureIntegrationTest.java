@@ -329,8 +329,10 @@ class OAuthRefreshFailureIntegrationTest {
         int batch = 100;
         for (int row = 0; row < batch; row++) {
             jdbc.sql("""
-                    insert into connection (sub, system, type, state, backend_user, connected_at, updated_at, secret_version, access_expires_at)
-                    values (:sub, 'gitlab', 'user-oauth', 'connected', 'ghost', now(), now(), :version, now() - interval '1 hour')
+                    insert into connection (sub, system, type, state, backend_user, connected_at, updated_at, secret_version, access_expires_at,
+                        client_revision)
+                    values (:sub, 'gitlab', 'user-oauth', 'connected', 'ghost', now(), now(), :version, now() - interval '1 hour',
+                        (select client_revision from target_system where id = 'gitlab'))
                     """)
                     .param("sub", newSub()).param("version", "lost-" + row).update();
         }
