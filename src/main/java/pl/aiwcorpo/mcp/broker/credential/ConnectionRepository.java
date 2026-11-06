@@ -76,6 +76,18 @@ public class ConnectionRepository {
         return paths;
     }
 
+    /** Connections to one system, for the removal of the system. */
+    public List<Connection> findBySystem(String system, int limit) {
+        return jdbc.sql("""
+                select sub, system, type, state, backend_user, expires_at, connected_at, last_used_at, secret_version, access_expires_at
+                from connection where system = :system order by sub limit :limit
+                """)
+                .param("system", system)
+                .param("limit", limit)
+                .query(ConnectionRepository::map)
+                .list();
+    }
+
     public void delete(String sub, String system) {
         jdbc.sql("delete from connection where sub = :sub and system = :system")
                 .param("sub", sub)

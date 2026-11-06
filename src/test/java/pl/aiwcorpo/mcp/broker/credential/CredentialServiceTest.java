@@ -10,7 +10,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -48,7 +47,6 @@ import pl.aiwcorpo.mcp.broker.system.SystemRegistry;
 import pl.aiwcorpo.mcp.broker.system.WhoamiResult;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
 
 @ExtendWith(OutputCaptureExtension.class)
 class CredentialServiceTest {
@@ -198,10 +196,7 @@ class CredentialServiceTest {
         BrokerProperties.SystemConfig config = new BrokerProperties.SystemConfig(URI.create("http://jira.test"), "atlassian-dc",
                 List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET, CredentialScheme.BEARER,
                 List.of(), Duration.ofSeconds(1), null, null, scheme, null);
-        SystemRegistry registry = new SystemRegistry(Map.of("jira", config), HttpClient.newHttpClient(), JsonMapper.builder().build(),
-                mock(pl.aiwcorpo.mcp.broker.secret.OAuthClientSecrets.class),
-                mock(pl.aiwcorpo.mcp.broker.secret.ServiceAccountKeys.class), Clock.systemUTC(),
-                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
+        SystemRegistry registry = pl.aiwcorpo.mcp.broker.support.TestRegistries.of("jira", config);
         return new CredentialService(registry, connections, secrets, invalidations, passThroughOAuth(), subjectTokens,
                 new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7), lostSecrets);
     }
@@ -340,10 +335,7 @@ class CredentialServiceTest {
     }
 
     private static SystemRegistry registry() {
-        return new SystemRegistry(Map.of("jira", config()), HttpClient.newHttpClient(), JsonMapper.builder().build(),
-                mock(pl.aiwcorpo.mcp.broker.secret.OAuthClientSecrets.class),
-                mock(pl.aiwcorpo.mcp.broker.secret.ServiceAccountKeys.class), Clock.systemUTC(),
-                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
+        return pl.aiwcorpo.mcp.broker.support.TestRegistries.of("jira", config());
     }
 
     private static BrokerProperties.SystemConfig config() {
@@ -367,7 +359,7 @@ class CredentialServiceTest {
 
     private static Caller.Gateway gateway(String sub) {
         return new Caller.Gateway(RID, new InternalJwtClaims(sub, "alice", List.of(), "claude-code", "get_issue",
-                RID, "20261026120000-a1b2c3d", "jti-1", false));
+                RID, 7L, "jti-1", false));
     }
 
     private static Caller.PortalUser portal(String sub, String username) {

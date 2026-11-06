@@ -104,10 +104,6 @@ broker:
     sweep-interval: PT1M
     refresh-lock-wait: 3s
     refresh-lock-lease: 60s
-  systems:
-    jira:
-      base-url: ${MCP_JIRA_URL}
-      adapter: atlassian-dc
-      supported-types: [user-secret]
-      default-type: user-secret
-      secret-scheme: Bearer
+  # How often an instance reads the systems table to see what another instance changed through /v1/admin/systems.
+  system-sync:
+    interval: 5s

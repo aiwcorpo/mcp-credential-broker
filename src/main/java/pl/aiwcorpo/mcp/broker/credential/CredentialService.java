@@ -33,6 +33,7 @@ import pl.aiwcorpo.mcp.broker.secret.SecretValue;
 import pl.aiwcorpo.mcp.broker.secret.StoredCredential;
 import pl.aiwcorpo.mcp.broker.system.BackendIdentity;
 import pl.aiwcorpo.mcp.broker.system.ExchangeDeniedException;
+import pl.aiwcorpo.mcp.broker.system.SystemIds;
 import pl.aiwcorpo.mcp.broker.system.SystemRegistry;
 import pl.aiwcorpo.mcp.broker.system.SystemRegistry.ConfiguredSystem;
 import pl.aiwcorpo.mcp.broker.system.TokenExchanger;
@@ -99,7 +100,7 @@ public class CredentialService {
                 .gatewayContext(user.tool(), user.prv())
                 .system(systemId);
         try {
-            ConfiguredSystem system = systems.find(systemId).orElseThrow(() -> SystemRegistry.KNOWN_SYSTEMS.contains(systemId)
+            ConfiguredSystem system = systems.find(systemId).orElseThrow(() -> SystemIds.isValid(systemId)
                     ? new SystemNotConfiguredException(systemId)
                     : new InvalidRequestException("unknown system"));
             if (scopes != null && new HashSet<>(scopes).size() != scopes.size()) {
@@ -178,6 +179,10 @@ public class CredentialService {
             throw new CredentialRequiredException(system.id());
         }
         StoredCredential stored = read.get();
+        if (!system.supports(found.type())) {
+            // The system no longer takes this kind of credential (its types were changed through the admin API).
+            throw new CredentialRequiredException(system.id());
+        }
         if (found.type() == CredentialType.USER_SECRET && stored.isBasic() != system.config().userSecretIsBasic()) {
             // The system was reconfigured after the user connected: the kept value would go out in the wrong header.
             throw new CredentialRequiredException(system.id());
@@ -316,7 +321,8 @@ public class CredentialService {
     public List<Listed> connections(Caller.PortalUser caller) {
         Instant now = clock.instant();
         return connections.findAll(caller.sub()).stream()
-                .map(c -> new Listed(c, c.status(now, expiringThreshold)))
+                .map(c -> new Listed(c, systems.find(c.system()).filter(s -> s.supports(c.type())).isPresent()
+                        ? c.status(now, expiringThreshold) : ConnectionStatus.ERROR))
                 .toList();
     }
 
@@ -334,7 +340,7 @@ public class CredentialService {
                 .user(caller.sub(), caller.username(), caller.azp())
                 .system(systemId);
         try {
-            if (!SystemRegistry.KNOWN_SYSTEMS.contains(systemId)) {
+            if (!SystemIds.isValid(systemId)) {
                 throw new InvalidRequestException("unknown system");
             }
             return oauth.underDisconnectLock(caller.sub(), systemId, () -> {

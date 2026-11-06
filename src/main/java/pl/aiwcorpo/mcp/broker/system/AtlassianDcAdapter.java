@@ -6,6 +6,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.Optional;
 
 import pl.aiwcorpo.mcp.broker.credential.CredentialScheme;
 import pl.aiwcorpo.mcp.broker.secret.SecretValue;
@@ -39,12 +40,18 @@ public class AtlassianDcAdapter implements SystemAdapter {
         }
     }
 
+    /** Fixed product, or null when the adapter finds out which one answers on the base URL (the admin API names no product). */
     private final Product product;
+    private volatile Product detected;
 
     private final URI baseUrl;
     private final Duration timeout;
     private final HttpClient http;
     private final JsonMapper json;
+
+    public AtlassianDcAdapter(URI baseUrl, Duration timeout, HttpClient http, JsonMapper json) {
+        this(null, baseUrl, timeout, http, json);
+    }
 
     public AtlassianDcAdapter(Product product, URI baseUrl, Duration timeout, HttpClient http, JsonMapper json) {
         if (http.followRedirects() != HttpClient.Redirect.NEVER) {
@@ -57,12 +64,32 @@ public class AtlassianDcAdapter implements SystemAdapter {
         this.json = json;
     }
 
+    /**
+     * Without a configured product, Jira's path is tried first and Confluence's when the host answers 404 there; the product
+     * that answered is remembered. Each product answers 404 on the other's path.
+     */
     @Override
     public WhoamiResult whoami(CredentialScheme scheme, SecretValue secret) {
         if (!secret.isHeaderToken()) {
             return new WhoamiResult.Rejected();
         }
-        HttpRequest request = HttpRequest.newBuilder(resolve(product.whoamiPath))
+        Product known = product != null ? product : detected;
+        if (known != null) {
+            return whoami(known, scheme, secret).orElseThrow(() -> new UpstreamUnavailableException("whoami answered HTTP 404"));
+        }
+        for (Product candidate : Product.values()) {
+            Optional<WhoamiResult> result = whoami(candidate, scheme, secret);
+            if (result.isPresent()) {
+                detected = candidate;
+                return result.get();
+            }
+        }
+        throw new UpstreamUnavailableException("whoami answered HTTP 404");
+    }
+
+    /** Empty when the host does not know the path of this product (404). */
+    private Optional<WhoamiResult> whoami(Product forProduct, CredentialScheme scheme, SecretValue secret) {
+        HttpRequest request = HttpRequest.newBuilder(resolve(forProduct.whoamiPath))
                 .timeout(timeout)
                 .header("Accept", "application/json")
                 .header("Authorization", scheme.wire() + " " + secret.reveal())
@@ -78,8 +105,11 @@ public class AtlassianDcAdapter implements SystemAdapter {
             throw new UpstreamUnavailableException("interrupted during whoami");
         }
         int status = response.statusCode();
+        if (status == 404) {
+            return Optional.empty();
+        }
         if (status == 401 || status == 403) {
-            return new WhoamiResult.Rejected();
+            return Optional.of(new WhoamiResult.Rejected());
         }
         if (status != 200) {
             throw new UpstreamUnavailableException("whoami answered HTTP " + status);
@@ -90,13 +120,13 @@ public class AtlassianDcAdapter implements SystemAdapter {
         } catch (JacksonException e) {
             throw new UpstreamUnavailableException("whoami answered a body that is not JSON");
         }
-        JsonNode name = body.path(product.loginField);
+        JsonNode name = body.path(forProduct.loginField);
         if (!name.isString() || name.stringValue().isBlank()) {
             throw new UpstreamUnavailableException("whoami answered without a user name");
         }
         JsonNode email = body.path("emailAddress");
-        return new WhoamiResult.Identified(
-                new BackendIdentity(name.stringValue(), email.isString() ? email.stringValue() : null));
+        return Optional.of(new WhoamiResult.Identified(
+                new BackendIdentity(name.stringValue(), email.isString() ? email.stringValue() : null)));
     }
 
     private URI resolve(String path) {

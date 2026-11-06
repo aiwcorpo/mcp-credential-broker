@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.time.Instant;
 import java.util.UUID;
 
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -36,7 +38,18 @@ class ServiceAccountIntegrationTest {
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
         env.registerProperties(registry);
-        env.registerServiceDesk(registry);
+    }
+
+    @BeforeAll
+    static void addServiceDesk() {
+        env.putSystem(env.serviceDesk());
+        env.awaitSystemSync();
+    }
+
+    @AfterAll
+    static void removeServiceDesk() {
+        env.removeSystem("servicedesk");
+        env.awaitSystemSync();
     }
 
     @LocalServerPort

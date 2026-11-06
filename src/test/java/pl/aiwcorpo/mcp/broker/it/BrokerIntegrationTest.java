@@ -556,7 +556,7 @@ class BrokerIntegrationTest {
         BrokerClient.Response notJson = putSecret(sub, "alice", "{\"secret\": alice-pat");
         assertThat(notJson.status()).isEqualTo(400);
         assertThat(notJson.body()).isEqualTo("{\"error\":\"invalid_request\"}");
-        BrokerClient.Response notConfigured = putSecret(sub, "alice", "{\"secret\":\"alice-pat\"}", "servicedesk");
+        BrokerClient.Response notConfigured = putSecret(sub, "alice", "{\"secret\":\"alice-pat\"}", "wiki");
         assertThat(notConfigured.status()).isEqualTo(400);
         String rid = TestTokens.newRequestId();
         assertThat(gateway.send("POST", "/v1/credentials/resolve", tokens.gatewayUser(sub, "alice", rid), rid,
@@ -640,9 +640,12 @@ class BrokerIntegrationTest {
 
         String unknownSystem = TestTokens.newRequestId();
         assertThat(gateway.send("POST", "/v1/credentials/resolve", tokens.gatewayUser(sub, "alice", unknownSystem), unknownSystem,
-                "{\"system\":\"jirax\"}").status()).isEqualTo(400);
+                "{\"system\":\"Jira-X\"}").status()).as("not the shape of a system id").isEqualTo(400);
         assertThat(auditEvents(output, unknownSystem)).singleElement()
                 .satisfies(e -> assertThat(e.has("server")).isFalse());
+        String unconfigured = TestTokens.newRequestId();
+        assertThat(gateway.send("POST", "/v1/credentials/resolve", tokens.gatewayUser(sub, "alice", unconfigured), unconfigured,
+                "{\"system\":\"jirax\"}").status()).as("a valid id nobody configured").isEqualTo(422);
 
         String subjectToken = TestTokens.newRequestId();
         assertThat(gateway.send("POST", "/v1/credentials/resolve", tokens.gatewayUser(sub, "alice", subjectToken), subjectToken,
@@ -654,7 +657,7 @@ class BrokerIntegrationTest {
     void aSystemOfTheContractsWithoutConfigurationIs422SystemNotConfigured(CapturedOutput output) {
         String sub = newSub();
         String rid = TestTokens.newRequestId();
-        BrokerClient.Response resolved = resolve(sub, "alice", rid, "{\"system\":\"servicedesk\"}");
+        BrokerClient.Response resolved = resolve(sub, "alice", rid, "{\"system\":\"wiki\"}");
         assertThat(resolved.status()).isEqualTo(422);
         assertThat(resolved.body()).isEqualTo("{\"error\":\"system_not_configured\"}");
         assertThat(Contracts.brokerSchemaErrors("Error", resolved.json())).isEmpty();
@@ -662,18 +665,18 @@ class BrokerIntegrationTest {
             assertThat(e.path("event").stringValue()).isEqualTo("credential_resolve");
             assertThat(e.path("reason").stringValue()).isEqualTo("system_not_configured");
             assertThat(e.path("outcome").stringValue()).isEqualTo("error");
-            assertThat(e.path("server").stringValue()).isEqualTo("mcp-servicedesk");
+            assertThat(e.path("server").stringValue()).isEqualTo("mcp-wiki");
         });
 
         String start = TestTokens.newRequestId();
-        BrokerClient.Response started = bff.send("POST", "/v1/connections/servicedesk/oauth/start", tokens.bffUser(sub, "alice"),
+        BrokerClient.Response started = bff.send("POST", "/v1/connections/wiki/oauth/start", tokens.bffUser(sub, "alice"),
                 start, "{\"returnPath\":\"/catalog\"}");
         assertThat(started.status()).isEqualTo(422);
         assertThat(started.json().path("error").stringValue()).isEqualTo("system_not_configured");
         assertThat(auditEvents(output, start)).singleElement()
                 .satisfies(e -> assertThat(e.path("reason").stringValue()).isEqualTo("system_not_configured"));
 
-        BrokerClient.Response completed = bff.send("POST", "/v1/connections/servicedesk/oauth/complete",
+        BrokerClient.Response completed = bff.send("POST", "/v1/connections/wiki/oauth/complete",
                 tokens.bffUser(sub, "alice"), null,
                 "{\"flowId\":\"flow-aaaaaaaaaaaaaaaaaaaaaa\",\"code\":\"c\",\"state\":\"s\"}");
         assertThat(completed.status()).isEqualTo(422);

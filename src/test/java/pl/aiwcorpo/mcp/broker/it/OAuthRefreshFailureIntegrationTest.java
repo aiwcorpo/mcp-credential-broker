@@ -57,7 +57,6 @@ class OAuthRefreshFailureIntegrationTest {
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
         env.registerProperties(registry);
-        registry.add("broker.systems.gitlab.oauth.client-secret", () -> "");
         registry.add("broker.lost-secret-brake.max-marks", () -> "1000");
         registry.add("broker.retention.orphan-secrets-after", () -> "PT1S");
         registry.add("broker.retention.orphan-sweep-delete", () -> "true");

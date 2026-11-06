@@ -17,7 +17,6 @@ import pl.aiwcorpo.mcp.broker.event.InvalidationPublisher;
 import pl.aiwcorpo.mcp.broker.oauth.OAuthFlowStore;
 import pl.aiwcorpo.mcp.broker.secret.SecretStore;
 import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
-import pl.aiwcorpo.mcp.broker.system.SystemRegistry;
 import pl.aiwcorpo.mcp.broker.system.UpstreamUnavailableException;
 
 /**
@@ -80,7 +79,7 @@ public class OffboardingService {
         // registration, which needs only the database and the secret store, is still removed.
         if (failures.isEmpty()) {
             // Flows first: a flow still open could create a connection after the others are gone.
-            attempt(failures, () -> flows.discardAll(sub, SystemRegistry.KNOWN_SYSTEMS));
+            attempt(failures, () -> flows.discardAll(sub, oauth.systemIdsOf(sub)));
             attempt(failures, () -> removeConnections(requestId, sub));
         }
         attempt(failures, () -> authenticator.purge(requestId, sub));

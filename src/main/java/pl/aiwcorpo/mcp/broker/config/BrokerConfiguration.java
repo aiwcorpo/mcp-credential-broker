@@ -55,7 +55,12 @@ import pl.aiwcorpo.mcp.broker.secret.OpenBaoClient;
 import pl.aiwcorpo.mcp.broker.secret.OpenBaoSecretStore;
 import pl.aiwcorpo.mcp.broker.secret.SecretStore;
 import pl.aiwcorpo.mcp.broker.secret.ServiceAccountKeys;
+import pl.aiwcorpo.mcp.broker.system.LegacySystemImport;
+import pl.aiwcorpo.mcp.broker.system.SystemAdapters;
+import pl.aiwcorpo.mcp.broker.system.SystemAdminService;
 import pl.aiwcorpo.mcp.broker.system.SystemRegistry;
+import pl.aiwcorpo.mcp.broker.system.SystemRegistryRefreshJob;
+import pl.aiwcorpo.mcp.broker.system.SystemRepository;
 import tools.jackson.databind.json.JsonMapper;
 
 @Configuration(proxyBeanMethods = false)
@@ -156,8 +161,20 @@ public class BrokerConfiguration {
     }
 
     @Bean
-    SystemRegistry systemRegistry(BrokerProperties properties, SslBundles sslBundles, JsonMapper json,
-            OAuthClientSecrets clientSecrets, ServiceAccountKeys serviceAccountKeys, Clock clock, MeterRegistry meters) {
+    SystemRepository systemRepository(JdbcClient jdbc, JsonMapper json) {
+        return new SystemRepository(jdbc, json);
+    }
+
+    @Bean
+    SystemAdapters systemAdapters(SslBundles sslBundles, JsonMapper json, OAuthClientSecrets clientSecrets,
+            ServiceAccountKeys serviceAccountKeys, Clock clock, MeterRegistry meters) {
+        return new SystemAdapters(internalClient(sslBundles), json, clientSecrets, serviceAccountKeys, clock, meters);
+    }
+
+    /** Fills an empty table from the {@code broker.systems.*} properties of a 1.x installation, then loads the table. */
+    @Bean
+    SystemRegistry systemRegistry(BrokerProperties properties, SystemRepository repository, SystemAdapters adapters,
+            OAuthClientSecrets clientSecrets, AuditLog audit, Clock clock) {
         requireTls(properties.portalBaseUrl(), "broker.portal-base-url", properties.allowPlainHttp());
         properties.systems().forEach((id, system) -> {
             requireTls(system.baseUrl(), "broker.systems." + id + ".base-url", properties.allowPlainHttp());
@@ -182,7 +199,21 @@ public class BrokerConfiguration {
                         properties.allowPlainHttp());
             }
         });
-        return new SystemRegistry(properties.systems(), internalClient(sslBundles), json, clientSecrets, serviceAccountKeys, clock, meters);
+        new LegacySystemImport(repository, clientSecrets, audit, clock).run(properties.systems());
+        return new SystemRegistry(repository, adapters);
+    }
+
+    @Bean
+    SystemRegistryRefreshJob systemRegistryRefreshJob(SystemRegistry registry) {
+        return new SystemRegistryRefreshJob(registry);
+    }
+
+    @Bean
+    SystemAdminService systemAdminService(SystemRepository repository, SystemRegistry registry, OAuthClientSecrets clientSecrets,
+            ConnectionRepository connections, SecretStore secrets, InvalidationPublisher invalidations, OAuthService oauth,
+            AuditLog audit, Clock clock, BrokerProperties properties) {
+        return new SystemAdminService(repository, registry, clientSecrets, connections, secrets, invalidations, oauth, audit, clock,
+                properties.allowPlainHttp());
     }
 
     @Bean

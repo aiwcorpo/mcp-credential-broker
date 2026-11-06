@@ -54,6 +54,12 @@ public final class BrokerClient {
                 body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body));
     }
 
+    /** With extra request headers, such as If-Match. */
+    public Response send(String method, String path, String bearer, String requestId, String body, java.util.Map<String, String> headers) {
+        return send(method, path, bearer, requestId, body,
+                body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body), headers);
+    }
+
     /** Body without Content-Length (chunked transfer encoding). */
     public Response sendChunked(String method, String path, String bearer, byte[] body) {
         return send(method, path, bearer, null, "",
@@ -62,6 +68,11 @@ public final class BrokerClient {
 
     private Response send(String method, String path, String bearer, String requestId, String body,
             HttpRequest.BodyPublisher publisher) {
+        return send(method, path, bearer, requestId, body, publisher, java.util.Map.of());
+    }
+
+    private Response send(String method, String path, String bearer, String requestId, String body,
+            HttpRequest.BodyPublisher publisher, java.util.Map<String, String> headers) {
         HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(baseUrl + path))
                 .timeout(Duration.ofSeconds(20))
                 .method(method, publisher);
@@ -74,6 +85,7 @@ public final class BrokerClient {
         if (requestId != null) {
             request.header("X-Request-Id", requestId);
         }
+        headers.forEach(request::header);
         try {
             HttpResponse<String> raw = http.send(request.build(), HttpResponse.BodyHandlers.ofString());
             Response response = new Response(raw.statusCode(), raw.body(), raw);

@@ -36,6 +36,7 @@ import pl.aiwcorpo.mcp.broker.credential.SecretRejectedException;
 import pl.aiwcorpo.mcp.broker.credential.SystemNotConfiguredException;
 import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
 import pl.aiwcorpo.mcp.broker.system.ExchangeDeniedException;
+import pl.aiwcorpo.mcp.broker.system.SystemAdminException;
 import pl.aiwcorpo.mcp.broker.system.UpstreamUnavailableException;
 
 /**
@@ -66,6 +67,18 @@ public class ApiExceptionHandler {
     @ExceptionHandler(SecretRejectedException.class)
     ResponseEntity<Map<String, String>> secretRejected(SecretRejectedException e) {
         return ResponseEntity.status(422).body(Map.of("error", e.error()));
+    }
+
+    /** Raised and audited by {@code SystemAdminService}. */
+    @ExceptionHandler(SystemAdminException.class)
+    ResponseEntity<Map<String, String>> systemAdmin(SystemAdminException e) {
+        Map<String, String> body = new java.util.LinkedHashMap<>();
+        body.put("error", e.error());
+        if (e.reason() != null) {
+            body.put("reason", e.reason());
+            body.put("message", e.getMessage());
+        }
+        return ResponseEntity.status(e.status()).body(body);
     }
 
     /** Raised and audited by the services (CC-158). */

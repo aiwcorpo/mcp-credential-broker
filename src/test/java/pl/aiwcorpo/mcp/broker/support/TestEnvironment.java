@@ -10,9 +10,14 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.flywaydb.core.Flyway;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
@@ -21,6 +26,11 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 import com.sun.net.httpserver.HttpServer;
+
+import pl.aiwcorpo.mcp.broker.credential.CredentialScheme;
+import pl.aiwcorpo.mcp.broker.credential.CredentialType;
+import pl.aiwcorpo.mcp.broker.system.SystemDefinition;
+import pl.aiwcorpo.mcp.broker.system.SystemRepository;
 
 /**
  * Dependencies of the broker for integration tests, started once per JVM: PostgreSQL, Redis with the same
@@ -51,7 +61,8 @@ public final class TestEnvironment {
     private static final String BAO_POLICY = """
             path "secret/data/mcp/connections/*"     { capabilities = ["create", "read", "update", "delete"] }
             path "secret/metadata/mcp/connections/*" { capabilities = ["read", "list", "delete"] }
-            path "secret/data/mcp/oauth-clients/*"   { capabilities = ["read"] }
+            path "secret/data/mcp/oauth-clients/*"   { capabilities = ["create", "read", "update", "delete"] }
+            path "secret/metadata/mcp/oauth-clients/*" { capabilities = ["read", "delete"] }
             path "secret/data/mcp/oauth-clients-it/*" { capabilities = ["read"] }
             path "secret/data/mcp/service-accounts/*" { capabilities = ["read"] }
             path "transit/encrypt/mcp-credential-broker" { capabilities = ["update"] }
@@ -68,6 +79,8 @@ public final class TestEnvironment {
     public final GenericContainer<?> redis;
     public final GenericContainer<?> openbao;
     public final HttpServer upstream;
+    public final HttpServer confluenceUpstream;
+    public final SystemRepository systems;
     public final AtomicInteger whoamiCalls = new AtomicInteger();
     public final AtomicInteger confluenceWhoamiCalls = new AtomicInteger();
     public final GitLabStub gitlab = new GitLabStub();
@@ -145,7 +158,16 @@ public final class TestEnvironment {
                 exchange.getResponseBody().write(bytes);
                 exchange.close();
             });
-            upstream.createContext("/rest/api/user/current", exchange -> {
+            upstream.createContext("/jwks", exchange -> {
+                byte[] bytes = tokens.idpJwks().getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().add("Content-Type", "application/json");
+                exchange.sendResponseHeaders(200, bytes.length);
+                exchange.getResponseBody().write(bytes);
+                exchange.close();
+            });
+            upstream.start();
+            confluenceUpstream = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            confluenceUpstream.createContext("/rest/api/user/current", exchange -> {
                 confluenceWhoamiCalls.incrementAndGet();
                 String auth = exchange.getRequestHeaders().getFirst("Authorization");
                 String pat = auth != null && auth.startsWith("Bearer ") ? auth.substring(7) : null;
@@ -172,14 +194,15 @@ public final class TestEnvironment {
                 exchange.getResponseBody().write(bytes);
                 exchange.close();
             });
-            upstream.createContext("/jwks", exchange -> {
-                byte[] bytes = tokens.idpJwks().getBytes(StandardCharsets.UTF_8);
-                exchange.getResponseHeaders().add("Content-Type", "application/json");
-                exchange.sendResponseHeaders(200, bytes.length);
-                exchange.getResponseBody().write(bytes);
-                exchange.close();
-            });
-            upstream.start();
+            confluenceUpstream.start();
+
+            DriverManagerDataSource dataSource = new DriverManagerDataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+            Flyway.configure().dataSource(dataSource).locations("classpath:db/migration").load().migrate();
+            systems = new SystemRepository(JdbcClient.create(dataSource), Contracts.JSON);
+            for (String id : List.of("jira", "confluence", "gitlab", "opensearch")) {
+                putSystem(standardSystem(id));
+            }
+            requireOk(bao("POST", "secret/data/mcp/oauth-clients/gitlab", "{\"data\":{\"client_secret\":\"" + GITLAB_CLIENT_SECRET + "\"}}"));
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -191,6 +214,73 @@ public final class TestEnvironment {
 
     public String openBaoUrl() {
         return "http://" + openbao.getHost() + ":" + openbao.getMappedPort(8200);
+    }
+
+    public String confluenceUrl() {
+        return "http://127.0.0.1:" + confluenceUpstream.getAddress().getPort();
+    }
+
+    /** The systems every test starts with, stored the way the admin API stores them; the secrets are in OpenBao. */
+    public SystemDefinition standardSystem(String id) {
+        List<CredentialType> userSecret = List.of(CredentialType.USER_SECRET);
+        return switch (id) {
+            case "jira" -> new SystemDefinition("jira", URI.create(upstreamUrl()), "atlassian-dc", userSecret,
+                    CredentialType.USER_SECRET, CredentialScheme.BEARER, null, false, null, null, null, null, SystemDefinition.newEtag());
+            case "confluence" -> new SystemDefinition("confluence", URI.create(confluenceUrl()), "atlassian-dc", userSecret,
+                    CredentialType.USER_SECRET, CredentialScheme.BEARER, null, false, null, null, null, null, SystemDefinition.newEtag());
+            case "gitlab" -> new SystemDefinition("gitlab", URI.create(gitlab.url()), "gitlab",
+                    List.of(CredentialType.USER_OAUTH, CredentialType.USER_SECRET), CredentialType.USER_OAUTH, CredentialScheme.BEARER,
+                    new SystemDefinition.Oauth(GITLAB_CLIENT_ID, URI.create("https://gitlab.test/oauth/authorize"),
+                            URI.create(gitlab.url() + "/oauth/token"), null, List.of("read_api", "api")),
+                    true, Duration.ofSeconds(1), null, null, null, SystemDefinition.newEtag());
+            case "opensearch" -> new SystemDefinition("opensearch", URI.create(upstreamUrl()), "opensearch",
+                    List.of(CredentialType.TOKEN_EXCHANGE), CredentialType.TOKEN_EXCHANGE, CredentialScheme.BEARER,
+                    new SystemDefinition.Oauth(EXCHANGE_CLIENT_ID, URI.create(idp.tokenUrl()), URI.create(idp.tokenUrl()), null,
+                            List.of("opensearch-audience")),
+                    true, Duration.ofSeconds(2), "opensearch", null, null, SystemDefinition.newEtag());
+            default -> throw new IllegalArgumentException(id);
+        };
+    }
+
+    /** Replaces the stored system; running brokers see it within their sync interval. */
+    public synchronized void putSystem(SystemDefinition system) {
+        SystemDefinition next = system.withEtag(SystemDefinition.newEtag());
+        var existing = systems.find(system.id());
+        if (existing.isEmpty()) {
+            systems.insert(next, java.time.Instant.now());
+        } else if (!systems.update(next, existing.get().etag(), java.time.Instant.now())) {
+            throw new IllegalStateException("system " + system.id() + " changed while a test replaced it");
+        }
+    }
+
+    public synchronized void removeSystem(String id) {
+        systems.delete(id);
+    }
+
+    /** The test brokers poll every 200 ms; waiting three polls makes a change visible to all of them. */
+    public void awaitSystemSync() {
+        try {
+            Thread.sleep(700);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        }
+    }
+
+    public SystemDefinition withTimeout(SystemDefinition system, Duration timeout) {
+        return new SystemDefinition(system.id(), system.baseUrl(), system.adapter(), system.supportedTypes(), system.defaultType(),
+                system.secretScheme(), system.oauth(), system.clientSecretSet(), timeout, system.exchangeAudience(),
+                system.userSecretScheme(), system.deployment(), system.etag());
+    }
+
+    public synchronized void resetSystem(String id) {
+        putSystem(standardSystem(id));
+    }
+
+    /** Service Desk as service-account; not among the standard systems, so that other tests have an unconfigured one. */
+    public SystemDefinition serviceDesk() {
+        return new SystemDefinition("servicedesk", URI.create(upstreamUrl()), "generic-rest", List.of(CredentialType.SERVICE_ACCOUNT),
+                CredentialType.SERVICE_ACCOUNT, CredentialScheme.BEARER, null, false, null, null, null, null, SystemDefinition.newEtag());
     }
 
     public void registerProperties(DynamicPropertyRegistry registry) {
@@ -212,42 +302,11 @@ public final class TestEnvironment {
         registry.add("MCP_OIDC_JWKS_URI", () -> upstreamUrl() + "/jwks");
         registry.add("MCP_GATEWAY_JWKS_FILE", () -> workDir.resolve("gateway-jwks.json").toString());
         registry.add("MCP_ALLOW_TEST_KEYS", () -> "true");
-        registry.add("MCP_JIRA_URL", this::upstreamUrl);
-        registry.add("broker.systems.confluence.base-url", this::upstreamUrl);
-        registry.add("broker.systems.confluence.adapter", () -> "atlassian-dc");
-        registry.add("broker.systems.confluence.supported-types", () -> "user-secret");
-        registry.add("broker.systems.confluence.default-type", () -> "user-secret");
-        registry.add("broker.systems.gitlab.base-url", gitlab::url);
-        registry.add("broker.systems.gitlab.adapter", () -> "gitlab");
-        registry.add("broker.systems.gitlab.supported-types", () -> "user-oauth,user-secret");
-        registry.add("broker.systems.gitlab.default-type", () -> "user-oauth");
-        registry.add("broker.systems.gitlab.oauth-scopes", () -> "read_api,api");
-        registry.add("broker.systems.gitlab.timeout", () -> "1s");
-        registry.add("broker.systems.gitlab.oauth.client-id", () -> GITLAB_CLIENT_ID);
-        registry.add("broker.systems.gitlab.oauth.client-secret", () -> GITLAB_CLIENT_SECRET);
-        registry.add("broker.systems.gitlab.oauth.authorize-url", () -> "https://gitlab.test/oauth/authorize");
-        registry.add("broker.systems.opensearch.base-url", this::upstreamUrl);
-        registry.add("broker.systems.opensearch.adapter", () -> "opensearch");
-        registry.add("broker.systems.opensearch.supported-types", () -> "token-exchange");
-        registry.add("broker.systems.opensearch.default-type", () -> "token-exchange");
-        registry.add("broker.systems.opensearch.timeout", () -> "2s");
-        registry.add("broker.systems.opensearch.token-exchange.client-id", () -> EXCHANGE_CLIENT_ID);
-        registry.add("broker.systems.opensearch.token-exchange.token-url", idp::tokenUrl);
-        registry.add("broker.systems.opensearch.token-exchange.audience", () -> "opensearch");
-        registry.add("broker.systems.opensearch.token-exchange.scopes", () -> "opensearch-audience");
+        registry.add("broker.system-sync.interval", () -> "200ms");
         registry.add("broker.oauth-flow.sweep-interval", () -> "PT1H");
         registry.add("broker.oauth-flow.refresh-lock-wait", () -> "3s");
         registry.add("MCP_PORTAL_URL", () -> "https://mcp-portal.test");
         registry.add("MCP_ALLOW_PLAIN_HTTP", () -> "true");
-    }
-
-    /** Service Desk as service-account; left out of {@link #registerProperties} so that other tests have an unconfigured system. */
-    public void registerServiceDesk(DynamicPropertyRegistry registry) {
-        registry.add("broker.systems.servicedesk.base-url", this::upstreamUrl);
-        registry.add("broker.systems.servicedesk.adapter", () -> "generic-rest");
-        registry.add("broker.systems.servicedesk.supported-types", () -> "service-account");
-        registry.add("broker.systems.servicedesk.default-type", () -> "service-account");
-        registry.add("broker.systems.servicedesk.secret-scheme", () -> "Bearer");
     }
 
     /** Raw OpenBao call with the root token, for setup and for checking what is stored. */

@@ -307,28 +307,35 @@ class MultiInstanceIntegrationTest {
         connect(a, gitlab, sub, "alice", first);
         gitlab.rotateOnRefresh(first, 7200, 6000);
 
-        Map<String, String> shortLease = Map.of("broker.oauth-flow.refresh-lock-lease", "PT10S",
-                "broker.systems.gitlab.timeout", "10s");
+        Map<String, String> shortLease = Map.of("broker.oauth-flow.refresh-lock-lease", "PT10S");
         String holderOutput;
-        try (BrokerProcess holder = BrokerProcess.start(env, PORT_KILLED, shortLease)) {
-            ExecutorService pool = Executors.newSingleThreadExecutor();
-            try {
-                Future<?> blocked = pool.submit(() -> {
-                    try {
-                        resolve(holder, sub, "gitlab");
-                    } catch (RuntimeException expected) {
-                        // The connection is cut when the holder is killed.
-                    }
-                });
-                awaitLock(sub);
-                // The lock is taken before the provider is asked; the provider takes 6 s, so the holder dies inside the call.
-                Thread.sleep(500);
-                holder.kill();
-                blocked.get();
-            } finally {
-                pool.shutdownNow();
+        // The provider is slow for this one call; the holder must wait for it longer than the timeout of the other tests.
+        env.putSystem(env.withTimeout(env.standardSystem("gitlab"), java.time.Duration.ofSeconds(10)));
+        env.awaitSystemSync();
+        try {
+            try (BrokerProcess holder = BrokerProcess.start(env, PORT_KILLED, shortLease)) {
+                ExecutorService pool = Executors.newSingleThreadExecutor();
+                try {
+                    Future<?> blocked = pool.submit(() -> {
+                        try {
+                            resolve(holder, sub, "gitlab");
+                        } catch (RuntimeException expected) {
+                            // The connection is cut when the holder is killed.
+                        }
+                    });
+                    awaitLock(sub);
+                    // The lock is taken before the provider is asked; the provider takes 6 s, so the holder dies inside the call.
+                    Thread.sleep(500);
+                    holder.kill();
+                    blocked.get();
+                } finally {
+                    pool.shutdownNow();
+                }
+                holderOutput = holder.output();
             }
-            holderOutput = holder.output();
+        } finally {
+            env.resetSystem("gitlab");
+            env.awaitSystemSync();
         }
 
         BrokerClient.Response during = resolve(b, sub, "gitlab");
@@ -367,7 +374,7 @@ class MultiInstanceIntegrationTest {
                     ResultSet history = db.createStatement()
                             .executeQuery("select count(*), count(*) filter (where not success) from flyway_schema_history")) {
                 history.next();
-                assertThat(history.getInt(1)).as("each migration once").isEqualTo(6);
+                assertThat(history.getInt(1)).as("each migration once").isEqualTo(7);
                 assertThat(history.getInt(2)).isZero();
             }
             Registered user = register(started.get(0), started.get(1), "heidi");

@@ -354,7 +354,9 @@ class OAuthIntegrationTest {
         assertThat(bff.send("POST", "/v1/connections/jira/oauth/start", token, null, "{\"returnPath\":\"/catalog\"}").status())
                 .as("Jira has no OAuth in this deployment").isEqualTo(400);
         assertThat(bff.send("POST", "/v1/connections/nosuch/oauth/start", token, null, "{\"returnPath\":\"/catalog\"}").status())
-                .isEqualTo(400);
+                .as("a valid id nobody configured").isEqualTo(422);
+        assertThat(bff.send("POST", "/v1/connections/No-Such/oauth/start", token, null, "{\"returnPath\":\"/catalog\"}").status())
+                .as("not the shape of a system id").isEqualTo(400);
 
         assertThat(gateway.send("POST", "/v1/connections/gitlab/oauth/start", tokens.gatewayUser(newSub(), "alice",
                 TestTokens.newRequestId(), null), null, "{\"returnPath\":\"/catalog\"}").status()).as("only the portal BFF").isEqualTo(403);

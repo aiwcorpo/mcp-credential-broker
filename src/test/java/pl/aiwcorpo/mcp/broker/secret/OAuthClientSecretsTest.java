@@ -29,24 +29,41 @@ class OAuthClientSecretsTest {
             "secret", "mcp/oauth-clients", clock);
 
     @Test
-    void theStoredSecretWinsOverTheDevelopmentFallbackAndRotationIsPickedUp() {
+    void aRotationIsPickedUpWhenTheRevisionOfTheSystemChangesOrTheCacheExpires() {
         String system = "sys-" + UUID.randomUUID();
         put(system, "first-value");
-        assertThat(secrets.clientSecret(system, "from-the-environment").reveal()).isEqualTo("first-value");
+        assertThat(secrets.clientSecret(system, "rev-1").reveal()).isEqualTo("first-value");
 
         put(system, "second-value");
-        assertThat(secrets.clientSecret(system, null).reveal()).as("cached").isEqualTo("first-value");
+        assertThat(secrets.clientSecret(system, "rev-1").reveal()).as("cached").isEqualTo("first-value");
+        assertThat(secrets.clientSecret(system, "rev-2").reveal()).as("another instance wrote: the etag moved").isEqualTo("second-value");
+
+        put(system, "third-value");
         clock.advance(Duration.ofMinutes(6));
-        assertThat(secrets.clientSecret(system, null).reveal()).isEqualTo("second-value");
+        assertThat(secrets.clientSecret(system, "rev-2").reveal()).isEqualTo("third-value");
     }
 
     @Test
-    void withoutAStoredSecretOnlyTheDevelopmentFallbackWorks() {
-        String system = "sys-" + UUID.randomUUID();
-        assertThat(secrets.clientSecret(system, "from-the-environment").reveal()).isEqualTo("from-the-environment");
+    void withoutAStoredSecretThereIsNone() {
         String other = "sys-" + UUID.randomUUID();
-        assertThatThrownBy(() -> secrets.clientSecret(other, null)).isInstanceOf(SecretStoreUnavailableException.class);
-        assertThatThrownBy(() -> secrets.clientSecret(other, " ")).isInstanceOf(SecretStoreUnavailableException.class);
+        assertThatThrownBy(() -> secrets.clientSecret(other, "rev-1")).isInstanceOf(SecretStoreUnavailableException.class);
+        assertThat(secrets.exists(other)).isFalse();
+    }
+
+    @Test
+    void writeThenDeleteRemovesEveryVersion() {
+        String system = "sys-" + UUID.randomUUID();
+        secrets.write(system, SecretValue.of("one"));
+        secrets.write(system, SecretValue.of("two"));
+        assertThat(secrets.exists(system)).isTrue();
+        assertThat(secrets.clientSecret(system, "rev-1").reveal()).isEqualTo("two");
+
+        secrets.delete(system);
+
+        assertThat(secrets.exists(system)).isFalse();
+        assertThat(env.bao("GET", "secret/metadata/mcp/oauth-clients/" + system, null).statusCode()).isEqualTo(404);
+        assertThatThrownBy(() -> secrets.clientSecret(system, "rev-1")).isInstanceOf(SecretStoreUnavailableException.class);
+        secrets.delete(system);
     }
 
     private static void put(String system, String value) {

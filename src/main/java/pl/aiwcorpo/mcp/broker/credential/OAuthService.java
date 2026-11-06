@@ -35,6 +35,7 @@ import pl.aiwcorpo.mcp.broker.secret.StoredCredential;
 import pl.aiwcorpo.mcp.broker.system.BackendIdentity;
 import pl.aiwcorpo.mcp.broker.system.OAuthGrantRejectedException;
 import pl.aiwcorpo.mcp.broker.system.OAuthProvider;
+import pl.aiwcorpo.mcp.broker.system.SystemIds;
 import pl.aiwcorpo.mcp.broker.system.SystemRegistry;
 import pl.aiwcorpo.mcp.broker.system.SystemRegistry.ConfiguredSystem;
 import pl.aiwcorpo.mcp.broker.system.TokenSet;
@@ -240,9 +241,17 @@ public class OAuthService {
      * cannot be taken fails the purge; it is repeated.
      */
     public void awaitWriters(String sub) {
-        for (String systemId : SystemRegistry.KNOWN_SYSTEMS) {
+        for (String systemId : systemIdsOf(sub)) {
             underRefreshLock(sub, systemId, () -> null);
         }
+    }
+
+    /** The configured systems and those the user still has a connection to (a system may have been removed meanwhile). */
+    public Set<String> systemIdsOf(String sub) {
+        Set<String> ids = new HashSet<>();
+        systems.all().forEach(system -> ids.add(system.id()));
+        connections.findAll(sub).forEach(connection -> ids.add(connection.system()));
+        return ids;
     }
 
     private void refuseWhilePurging(String sub) {
@@ -537,7 +546,7 @@ public class OAuthService {
     }
 
     private ConfiguredSystem oauthSystem(String systemId) {
-        if (systems.find(systemId).isEmpty() && SystemRegistry.KNOWN_SYSTEMS.contains(systemId)) {
+        if (systems.find(systemId).isEmpty() && SystemIds.isValid(systemId)) {
             throw new SystemNotConfiguredException(systemId);
         }
         return systems.find(systemId)

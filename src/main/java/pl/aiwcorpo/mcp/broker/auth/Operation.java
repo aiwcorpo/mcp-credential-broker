@@ -67,11 +67,21 @@ public record Operation(String operationId, String method, Pattern path, Set<Str
             Pattern.compile("^/v1/admin/users/[^/]+/purge$"), Set.of(OFFBOARDING), false,
             InternalJwtVerifier.ToolClaim.FORBIDDEN, "admin_change", true);
 
+    public static final Operation LIST_ADMIN_SYSTEMS = new Operation("listAdminSystems", "GET",
+            Pattern.compile("^/v1/admin/systems$"), Set.of(PORTAL_BFF), false, InternalJwtVerifier.ToolClaim.FORBIDDEN, "admin_change");
+    public static final Operation GET_ADMIN_SYSTEM = new Operation("getAdminSystem", "GET",
+            Pattern.compile("^/v1/admin/systems/[^/]+$"), Set.of(PORTAL_BFF), false, InternalJwtVerifier.ToolClaim.FORBIDDEN, "admin_change");
+    public static final Operation PUT_ADMIN_SYSTEM = new Operation("putAdminSystem", "PUT",
+            Pattern.compile("^/v1/admin/systems/[^/]+$"), Set.of(PORTAL_BFF), false, InternalJwtVerifier.ToolClaim.FORBIDDEN, "admin_change");
+    public static final Operation DELETE_ADMIN_SYSTEM = new Operation("deleteAdminSystem", "DELETE",
+            Pattern.compile("^/v1/admin/systems/[^/]+$"), Set.of(PORTAL_BFF), false, InternalJwtVerifier.ToolClaim.FORBIDDEN, "admin_change");
+
     public static final List<Operation> ALL = List.of(RESOLVE, PUT_SECRET, LIST_SYSTEMS, LIST_CONNECTIONS, DELETE_CONNECTION,
             START_OAUTH, COMPLETE_OAUTH, GET_AUTHENTICATOR, DELETE_AUTHENTICATOR, START_ENROLLMENT, CONFIRM_ENROLLMENT,
-            VERIFY_CODE, INVALIDATE_CODES, RESET_AUTHENTICATOR, PURGE_USER);
+            VERIFY_CODE, INVALIDATE_CODES, RESET_AUTHENTICATOR, PURGE_USER, LIST_ADMIN_SYSTEMS, GET_ADMIN_SYSTEM, PUT_ADMIN_SYSTEM,
+            DELETE_ADMIN_SYSTEM);
 
-    private static final Pattern SYSTEM_IN_PATH = Pattern.compile("^/v1/connections/([^/;]+)(?:/|$)");
+    private static final Pattern SYSTEM_IN_PATH = Pattern.compile("^/v1/(?:connections|admin/systems)/([^/;]+)(?:/|$)");
 
     /** System named in a connection path, or null; the audit log keeps only known system ids. */
     public static String systemOf(String path) {

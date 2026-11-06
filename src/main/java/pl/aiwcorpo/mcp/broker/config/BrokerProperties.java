@@ -40,7 +40,12 @@ public record BrokerProperties(
         @DefaultValue @Valid @NotNull Retention retention,
         @DefaultValue @Valid @NotNull RateLimits rateLimits,
         @DefaultValue @Valid @NotNull LostSecretBrake lostSecretBrake,
-        @NotEmpty Map<String, @Valid SystemConfig> systems) {
+        @DefaultValue @Valid @NotNull SystemSync systemSync,
+        @DefaultValue Map<String, @Valid SystemConfig> systems) {
+
+    /** How often an instance reads the systems table to see changes made through another instance. */
+    public record SystemSync(@DefaultValue("5s") @NotNull Duration interval) {
+    }
 
     /** Internal JWT from the gateway (C2). Exactly one of jwksUri and jwksFile is set. */
     public record GatewayJwt(
@@ -213,7 +218,11 @@ public record BrokerProperties(
         }
     }
 
-    /** One target system. */
+    /**
+     * One target system. Since 2.0.0 this is the runtime shape of a stored system ({@link pl.aiwcorpo.mcp.broker.system.SystemDefinition#toConfig()}),
+     * and the shape of the {@code broker.systems.*} properties of 1.x, which are read once to fill an empty table (see
+     * {@code LegacySystemImport}).
+     */
     public record SystemConfig(
             @NotNull URI baseUrl,
             @NotBlank String adapter,
