@@ -16,3 +16,4 @@ target/
 !deploy/systemd/mcp-credential-broker.env
 *.log
 .DS_Store
+STATUS.md

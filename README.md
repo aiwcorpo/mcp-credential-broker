@@ -9,8 +9,7 @@ It is a deployable component (container image `mcp-credential-broker`), not a li
 Installation and day-to-day operation of the whole platform are described in
 [mcp-docs](https://github.com/aiwcorpo/mcp-docs), starting from `docs/operator/index.md`.
 
-Contracts: `mcp-contracts` 7.0.0 (`openapi/credential-broker.v1.yaml`, audit events, test vectors). What works, what is missing and
-the known deviations: [STATUS.md](STATUS.md) (in Polish). License: Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)).
+Contracts: `mcp-contracts` 7.0.0 (`openapi/credential-broker.v1.yaml`, audit events, test vectors). License: Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)).
 Changes: [CHANGELOG.md](CHANGELOG.md). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Reporting vulnerabilities: [SECURITY.md](SECURITY.md).
 
 ## What it needs
