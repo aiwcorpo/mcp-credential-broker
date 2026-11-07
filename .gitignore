@@ -11,5 +11,8 @@ target/
 *.key
 *.crt
 *.env
+# Templates of deploy/, filled in after download, never in this repository.
+!deploy/broker.env
+!deploy/systemd/mcp-credential-broker.env
 *.log
 .DS_Store

@@ -1,0 +1,112 @@
+# The credential broker with its own PostgreSQL and Redis. Configuration: broker.env and the files in certs/.
+# The init service runs first on every start: it generates what is missing (passwords of PostgreSQL and Redis, the Redis ACL) and
+# checks the configuration and the connections, including the AppRole login to OpenBao; the broker starts only after it succeeds.
+# See README.md.
+#
+# Closed network: MCP_REGISTRY and MCP_THIRD_PARTY_REGISTRY in a .env file next to this one point the images to your registry.
+
+x-broker: &broker
+  image: ${MCP_REGISTRY:-ghcr.io/aiwcorpo}/mcp-credential-broker:${MCP_BROKER_VERSION:-2.0.0}
+  pull_policy: ${PULL_POLICY:-missing}
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  env_file: broker.env
+  environment: &broker-env
+    SPRING_CONFIG_IMPORT: optional:configtree:/secrets/broker/env/
+    MCP_DB_URL: jdbc:postgresql://postgres:5432/broker
+    MCP_DB_USER: broker
+    MCP_REDIS_HOST: redis
+    MCP_TLS_KEYSTORE: /certs/keystore.p12
+    MCP_TLS_TRUSTSTORE: /certs/truststore.p12
+  networks: [default, stores]
+
+x-store: &store
+  restart: unless-stopped
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  networks: [stores]
+
+services:
+  init:
+    <<: *broker
+    command: ["init", "/secrets"]
+    restart: "no"
+    tmpfs: ["/tmp"]
+    volumes:
+      - broker-secrets:/secrets/broker
+      - postgres-secrets:/secrets/postgres
+      - redis-secrets:/secrets/redis
+      - ./certs:/certs:ro
+
+  postgres:
+    <<: *store
+    image: ${MCP_THIRD_PARTY_REGISTRY:-docker.io/library}/postgres:18.6-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    environment:
+      POSTGRES_USER: broker
+      POSTGRES_DB: broker
+      POSTGRES_PASSWORD_FILE: /secrets/postgres/password
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - postgres-secrets:/secrets/postgres:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U broker -d broker"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      init: {condition: service_completed_successfully}
+
+  redis:
+    <<: *store
+    image: ${MCP_THIRD_PARTY_REGISTRY:-docker.io/library}/redis:8.8.4-alpine@sha256:be8dfdf58574d626e0abe03073ce9178509e0e9564a316e34e71d2289b8370e1
+    user: redis
+    # The group of the broker image owns the files init wrote for Redis (mode 0640).
+    group_add: ["10001"]
+    command: ["redis-server", "/secrets/redis/redis.conf"]
+    volumes:
+      - redis-data:/data
+      - redis-secrets:/secrets/redis:ro
+    # The default user is off, so an answer that asks for a login proves the server is up.
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping 2>&1 | grep -qE 'PONG|NOAUTH'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      init: {condition: service_completed_successfully}
+
+  broker:
+    <<: *broker
+    restart: unless-stopped
+    tmpfs: ["/tmp"]
+    mem_limit: ${BROKER_MEM_LIMIT:-1g}
+    volumes:
+      - broker-secrets:/secrets/broker:ro
+      - ./certs:/certs:ro
+    # 8443: TLS with the broker certificate; the gateway and the portal call it here with a client certificate.
+    ports:
+      - ${BROKER_BIND:-0.0.0.0}:${BROKER_PORT:-8443}:8443
+    healthcheck:
+      # The listener demands a client certificate, so an accepted TCP connection is the signal that the application has started.
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8443"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 15s
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+networks:
+  default: {}
+  stores:
+    internal: true
+
+volumes:
+  broker-secrets:
+  postgres-secrets:
+  redis-secrets:
+  postgres-data:
+  redis-data:
