@@ -1,0 +1,1 @@
+resetkeys ~broker:* ~jti:mcp-credential-broker:* resetchannels &credential.invalidated -@all +get +set +setnx +getdel +getex +mget +del +unlink +exists +expire +pexpire +ttl +pttl +incr +incrby +decr +hset +hget +hdel +hgetall +hexists +hincrby +multi +exec +discard +ping +auth +hello +client|setname +client|setinfo +reset +quit +publish +eval +evalsha
