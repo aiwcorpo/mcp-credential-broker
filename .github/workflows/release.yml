@@ -2,7 +2,7 @@
 # and publishing needs the decision of the owner (plan-wydanie.md).
 #
 # Three jobs, so that no job with a write permission runs a build tool on the code or its dependencies:
-#   build    contents: read. ci/run.sh verify, the jar, the SBOM and docker build; the image leaves as a
+#   build    contents: read. ./mvnw verify, the jar, the SBOM and docker build; the image leaves as a
 #            docker save tarball in an artifact. The mcp-contracts artifacts come from Maven Central.
 #   publish  packages: write. No checkout, no cache; docker load and docker push only. The token is in the environment
 #            of the push step.
@@ -37,7 +37,7 @@ jobs:
           test "$(./mvnw -q -B -N org.apache.maven.plugins:maven-help-plugin:3.5.1:evaluate -Dexpression=project.version -DforceStdout)" = "$version"
       - name: Verify, build the jar and the SBOM
         run: |
-          ci/run.sh verify
+          ./mvnw -B verify
           ./mvnw -B -Prelease package -DskipTests
       - name: Build the image and save it
         run: |

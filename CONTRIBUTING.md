@@ -1,10 +1,9 @@
 # Contributing
 
-Changes go through a pull request. Read the README sections "Budowanie i testy" and "CI" first.
+Changes go through a pull request. Read the README section "Build and test" first.
 
-- Run `make ci` (same as `ci/run.sh verify`) before pushing. It needs JDK 25, git and `./mvnw`, and a container
-  runtime for the integration tests (Testcontainers); on Windows use WSL2. `ci/run.sh unit` runs only the tests that
-  need no containers.
+- Run `./mvnw -B verify` before pushing. It needs JDK 25 and a container runtime for the integration tests (Testcontainers);
+  on Windows use WSL2. `-Dtest='!*IntegrationTest'` runs only the tests that need no containers.
 - The API and the audit events follow `mcp-contracts` (`openapi/credential-broker.v1.yaml`, `schemas/audit-event.schema.json`).
   A change of an operation, a status code or a reason is made there first (`CONTRACT_CHANGES.md`); here you bump
   `mcp-contracts.version` and follow it.

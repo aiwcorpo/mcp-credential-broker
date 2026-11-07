@@ -1,4 +1,4 @@
-# Thin wrapper: all logic is in ci/run.sh. No job needs a registry login or a secret: the mcp-contracts artifacts come from
+# No job needs a registry login or a secret: the mcp-contracts artifacts come from
 # Maven Central. A pull request runs the tests that start no container, with a read-only token; the full run (Testcontainers)
 # is for pushes to main.
 name: ci
@@ -22,7 +22,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-      - run: ci/run.sh unit
+      - run: ./mvnw -B verify '-Dtest=!*IntegrationTest'
   verify:
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
@@ -37,4 +37,4 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-      - run: ci/run.sh verify
+      - run: ./mvnw -B verify

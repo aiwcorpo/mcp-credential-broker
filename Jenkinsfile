@@ -1,6 +1,6 @@
-// Thin wrapper: all logic is in ci/run.sh. Code of a change request is not trusted with the Docker socket or with
-// credentials: it runs ci/run.sh unit, offline, in a container without the socket. The full verify (tests start
-// containers) runs only for the main branch, on the dedicated agent labelled docker-dedicated.
+// Code of a change request is not trusted with the Docker socket or with credentials: it runs the tests that start no container,
+// offline, in a container without the socket. The full verify (the integration tests start containers) runs only for the main
+// branch, on the dedicated agent labelled docker-dedicated.
 pipeline {
     agent none
     stages {
@@ -11,11 +11,8 @@ pipeline {
                     image 'maven:3.9.12-eclipse-temurin-25'
                 }
             }
-            environment {
-                MCP_MAVEN_OFFLINE = 'true'
-            }
             steps {
-                sh 'ci/run.sh unit'
+                sh "mvn -B -o verify '-Dtest=!*IntegrationTest'"
             }
             post {
                 always {
@@ -33,7 +30,7 @@ pipeline {
                 }
             }
             steps {
-                sh 'ci/run.sh verify'
+                sh './mvnw -B verify'
             }
             post {
                 always {

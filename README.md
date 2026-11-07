@@ -31,16 +31,28 @@ JDK 25 and Docker are required (Testcontainers starts PostgreSQL 18, Redis and O
 ```bash
 ./mvnw -B verify                                     # unit, contract and integration tests, jar
 docker build -t mcp-credential-broker:dev .
-make ci                                              # ci/run.sh verify: text checks, mvnw clean verify, zero-test guard
 ```
 
-`MultiInstanceIntegrationTest` starts extra broker JVMs on ports 18712-18717, so keep them free.
+`MultiInstanceIntegrationTest` starts extra broker JVMs on ports 18712-18717, so keep them free. The `mcp-contracts` artifacts come
+from Maven Central, so no registry login is needed. The GitLab, Jenkins and GitHub files call `./mvnw -B verify`; a change request
+runs it with `-Dtest='!*IntegrationTest'` (no containers, no Docker socket, no token), the full run is for the main branch. The release
+workflow (`release.yml`) has three jobs: build (read-only), publish (`packages: write`, only `docker load` and `docker push`) and
+release (`contents: write`, only `gh release create`).
 
-`ci/run.sh` has the steps `verify`, `unit` (tests that start no container), `hygiene` and `image` (image
-`mcp-credential-broker:<MCP_IMAGE_STAGE>-<sha>`, built from a clean tree). The `mcp-contracts` artifacts come from Maven Central, so
-no registry login is needed. The GitLab, Jenkins and GitHub files only call this script; a change request gets `unit` without the Docker
-socket and without a token, the full run is for the main branch. The release workflow (`release.yml`) has three jobs: build
-(read-only), publish (`packages: write`, only `docker load` and `docker push`) and release (`contents: write`, only `gh release create`).
+### Run locally
+
+The run configuration `McpCredentialBroker (dev stack)` (`.run/`, IntelliJ picks it up) starts the broker on `https://localhost:18710`
+against the dev stack: start that first (`make up` in `mcp-platform-dev`, next to this checkout; the configuration reads its
+`.secrets/dev.env` and certificates, and the test JWKS of the gateway from `mcp-contracts`, also next to this checkout). The broker
+gets its own PostgreSQL, because its migrations must not run against the stack's database:
+
+```bash
+docker run -d --rm --name mcp-broker-host-pg -e POSTGRES_DB=broker -e POSTGRES_USER=broker -e POSTGRES_PASSWORD=broker \
+  -p 127.0.0.1:18711:5432 postgres:18.6-alpine
+```
+
+Stop it with `docker stop mcp-broker-host-pg`. Edit the variables of the configuration to use other addresses or another database.
+The Jira system is created from `BROKER_SYSTEMS_JIRA_*` in an empty table; later changes go through `PUT /v1/admin/systems/jira`.
 
 ## Configuration
 
