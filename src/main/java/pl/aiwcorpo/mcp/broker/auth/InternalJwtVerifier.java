@@ -39,7 +39,7 @@ public class InternalJwtVerifier {
     private static final Pattern TOOL_NAME = Pattern.compile("^[a-z][a-z0-9]*(_[a-z0-9]+)*$");
     private static final Pattern COMPONENT_ID = Pattern.compile("^mcp-[a-z0-9]+(-[a-z0-9]+)*$");
 
-    private static final Set<String> COMMON_CLAIMS = Set.of("iss", "aud", "sub", "grp", "rid", "prv", "iat", "exp", "jti");
+    private static final Set<String> COMMON_CLAIMS = Set.of("iss", "aud", "use", "sub", "grp", "rid", "prv", "iat", "exp", "jti");
     private static final Set<String> USER_REQUIRED = union(COMMON_CLAIMS, Set.of("usr", "azp"));
     private static final Set<String> USER_ALLOWED = union(USER_REQUIRED, Set.of("tool", "mfa"));
 
@@ -119,6 +119,7 @@ public class InternalJwtVerifier {
         }
         verifySignature(jwt);
 
+        requireCallPurpose(claims);
         boolean service = InternalJwtClaims.SERVICE_SUB.equals(claims.get("sub"));
         InternalJwtClaims verified = service ? serviceClaims(claims) : userClaims(claims);
 
@@ -157,6 +158,20 @@ public class InternalJwtVerifier {
             throw new TokenRejectedException("replayed_jti");
         }
         return verified;
+    }
+
+    /**
+     * Every token the broker accepts carries {@code use: call} (C2, CC-249). A policy-data token is a valid
+     * token for another receiver, so it is {@code wrong_purpose}; a missing or unknown value is not a purpose at all.
+     */
+    private static void requireCallPurpose(Map<String, Object> claims) {
+        Object use = claims.get("use");
+        if ("policy-data".equals(use)) {
+            throw new TokenRejectedException("wrong_purpose");
+        }
+        if (!"call".equals(use)) {
+            throw new TokenRejectedException("invalid_claims");
+        }
     }
 
     private void verifySignature(SignedJWT jwt) {

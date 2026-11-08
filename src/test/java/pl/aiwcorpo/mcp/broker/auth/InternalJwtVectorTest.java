@@ -46,7 +46,7 @@ class InternalJwtVectorTest {
 
     static Stream<Arguments> vectors() {
         List<Resource> files = Contracts.vectors("jwt");
-        assertThat(files).hasSizeGreaterThanOrEqualTo(43);
+        assertThat(files).hasSizeGreaterThanOrEqualTo(75);
         return files.stream().map(file -> Arguments.of(file.getFilename(), read(file)));
     }
 
@@ -71,7 +71,14 @@ class InternalJwtVectorTest {
         if (jsonRpc) {
             serviceAllowed = PROTOCOL_METHODS.contains(method);
             toolClaim = toolsCall ? ToolClaim.REQUIRED : ToolClaim.FORBIDDEN;
-        } else if ("/mcp-manifest".equals(request.path("path").stringValue())) {
+        } else if (request.path("path").stringValue().startsWith("/.well-known/")) {
+            // Endpoints of an MCP server: the broker has none. Only tokens whose use is neither call nor policy-data
+            // say something about the broker; the rest belongs to the server receivers (policy-data is covered
+            // by onlyCallPurposeIsAccepted).
+            String use = vector.path("claims").path("use").asString(null);
+            if (use == null || "call".equals(use) || "policy-data".equals(use)) {
+                return;
+            }
             serviceAllowed = true;
             toolClaim = ToolClaim.FORBIDDEN;
         } else {
@@ -127,7 +134,7 @@ class InternalJwtVectorTest {
         Instant now = Instant.parse("2026-10-27T12:00:00Z");
         String rid = "0192d1b2-7c3a-7d4e-8f10-2a3b4c5d6e7f";
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
-                .issuer("https://mcp-gateway.internal").claim("aud", "mcp-credential-broker").subject("u-1")
+                .issuer("https://mcp-gateway.internal").claim("aud", "mcp-credential-broker").claim("use", "call").subject("u-1")
                 .claim("usr", "alice").claim("grp", List.of()).claim("azp", "claude-code").claim("tool", "get_issue")
                 .claim("rid", rid).claim("prv", 7L)
                 .claim("iat", now.getEpochSecond()).claim("exp", now.getEpochSecond() + 60).jwtID("j-1").build();
@@ -161,6 +168,26 @@ class InternalJwtVectorTest {
                 .verify(service.path("token").stringValue(), service.path("request").path("xRequestId").stringValue(),
                         true, ToolClaim.FORBIDDEN);
         assertThat(serviceClaims.service()).isTrue();
+    }
+
+    @Test
+    void onlyCallPurposeIsAccepted() {
+        JsonNode vector = Contracts.json("test-vectors/jwt/valid-broker.json");
+        InternalJwtVerifier subject = verifier(vector.path("verifier"), new InMemoryReplayGuard(), true);
+        String rid = vector.path("request").path("xRequestId").stringValue();
+        assertThat(subject.verify(vector.path("token").stringValue(), rid, false, ToolClaim.REQUIRED).service()).isFalse();
+        for (String name : List.of("purpose-missing", "purpose-unknown-value", "purpose-manifest-use-is-unknown")) {
+            JsonNode refused = Contracts.json("test-vectors/jwt/" + name + ".json");
+            assertThatThrownBy(() -> verifier(refused.path("verifier"), new InMemoryReplayGuard(), true)
+                    .verify(refused.path("token").stringValue(), refused.path("request").path("xRequestId").stringValue(),
+                            true, ToolClaim.FORBIDDEN))
+                    .as(name).extracting(e -> ((TokenRejectedException) e).reason()).isEqualTo("invalid_claims");
+        }
+        JsonNode policyData = Contracts.json("test-vectors/jwt/valid-service-policy-data.json");
+        assertThatThrownBy(() -> verifier(policyData.path("verifier"), new InMemoryReplayGuard(), true)
+                .verify(policyData.path("token").stringValue(), policyData.path("request").path("xRequestId").stringValue(),
+                        true, ToolClaim.FORBIDDEN))
+                .extracting(e -> ((TokenRejectedException) e).reason()).isEqualTo("wrong_purpose");
     }
 
     @Test
