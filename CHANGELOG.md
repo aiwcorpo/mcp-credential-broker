@@ -85,6 +85,9 @@ Built on `mcp-contracts` 7.0.0 (CC-229, CC-235, CC-237, CC-238). Breaking: the s
   `prv` of the internal JWT are integers (CC-237).
 - **Removed:** the list of known systems in the code (`SystemRegistry.KNOWN_SYSTEMS`) and the `broker.systems` block of
   `application.yml`. `MCP_JIRA_URL` and the other per system variables are no longer required.
+- `MCP_TLS_OUTBOUND_TRUSTSTORE` (optional): what the broker trusts for the connections it opens (identity provider, OpenBao,
+  gateway, target systems). `MCP_TLS_TRUSTSTORE` keeps deciding which client certificates port 8443 accepts, so a company or public
+  CA needed for a target system no longer has to be trusted for callers too. Unset, both use `MCP_TLS_TRUSTSTORE` as in 1.x.
 
 ### Moving from 1.x
 
