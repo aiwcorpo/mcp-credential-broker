@@ -26,6 +26,14 @@ spring:
             location: file:${MCP_TLS_TRUSTSTORE}
             password: ${MCP_TLS_STORE_PASSWORD}
             type: PKCS12
+        # Trust for the connections the broker opens (identity provider, OpenBao, gateway, target systems). Kept apart from the
+        # truststore above, which decides which client certificates port 8443 accepts, so that trusting a company or public CA for
+        # a target system does not let that CA issue callers of the broker. Unset: the same file as MCP_TLS_TRUSTSTORE.
+        broker-outbound:
+          truststore:
+            location: file:${MCP_TLS_OUTBOUND_TRUSTSTORE:${MCP_TLS_TRUSTSTORE}}
+            password: ${MCP_TLS_STORE_PASSWORD}
+            type: PKCS12
   datasource:
     url: ${MCP_DB_URL}
     username: ${MCP_DB_USER}

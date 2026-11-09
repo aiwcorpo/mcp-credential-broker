@@ -345,14 +345,27 @@ class BrokerSetupTest {
 
             assertThat(setup(env).run()).isEqualTo(1);
             assertThat(printed())
-                    .contains("FAIL  identity provider keys " + base + "/certs: its certificate is not signed by a CA in MCP_TLS_TRUSTSTORE")
-                    .contains("FAIL  OpenBao " + base + ": its certificate is not signed by a CA in MCP_TLS_TRUSTSTORE")
+                    .contains("FAIL  identity provider keys " + base + "/certs: its certificate is not signed by a CA in MCP_TLS_OUTBOUND_TRUSTSTORE")
+                    .contains("FAIL  OpenBao " + base + ": its certificate is not signed by a CA in MCP_TLS_OUTBOUND_TRUSTSTORE")
                     .contains("warn  gateway keys " + base + "/gateway/jwks: its certificate is not signed by");
 
             output.reset();
             env.put("MCP_TLS_TRUSTSTORE", other.writeTrustStore(dir.resolve("truststore-other.p12")).toString());
             assertThat(setup(env).run()).isZero();
             assertThat(printed()).contains("ok    identity provider keys " + base + "/certs").contains(": AppRole login works");
+
+            // The outbound store alone decides the connections; the listener's store may keep only the CA of the callers.
+            output.reset();
+            env.put("MCP_TLS_TRUSTSTORE", broker.writeTrustStore(dir.resolve("truststore.p12")).toString());
+            env.put("MCP_TLS_OUTBOUND_TRUSTSTORE", other.writeTrustStore(dir.resolve("outbound.p12")).toString());
+            assertThat(setup(env).run()).isZero();
+            assertThat(printed()).contains(", outbound truststore " + dir.resolve("outbound.p12"))
+                    .contains("ok    identity provider keys " + base + "/certs");
+
+            output.reset();
+            env.put("MCP_TLS_OUTBOUND_TRUSTSTORE", " ");
+            assertThat(setup(env).run()).isEqualTo(1);
+            assertThat(printed()).contains("FAIL  MCP_TLS_OUTBOUND_TRUSTSTORE is empty");
         } finally {
             https.stop(0);
         }

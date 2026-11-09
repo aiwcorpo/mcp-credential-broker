@@ -12,11 +12,12 @@ the broker afterwards.
 - OpenBao prepared as described in the next section.
 - The address of the identity provider, of the gateway and the public address of the portal.
 
-The broker trusts only `certs/truststore.p12` for every connection it opens: the identity provider, OpenBao and the gateway. The same
-store decides which client certificates are accepted on port 8443. So the CA that signed the certificates of those three must be in
-it, and every CA in it can issue callers of the broker (each caller is still tied to its certificate name, `mcp-gateway`,
-`mcp-portal-bff`, `mcp-offboarding`). If the identity provider has a certificate from a public or company CA, you are deciding to add
-that CA to the store.
+`certs/truststore.p12` decides which client certificates are accepted on port 8443: every CA in it can issue callers of the broker
+(each caller is still tied to its certificate name, `mcp-gateway`, `mcp-portal-bff`, `mcp-offboarding`), so keep the internal CA
+alone in it. For the connections it opens (the identity provider, OpenBao, the gateway, the target systems) the broker trusts the same
+file, unless `certs/outbound-truststore.p12` is named in `MCP_TLS_OUTBOUND_TRUSTSTORE` (see `broker.env`). When the identity provider
+or a target system has a certificate from a public or company CA, put that CA together with the internal CA in the outbound store,
+not in `truststore.p12`.
 
 ## OpenBao
 
@@ -64,13 +65,17 @@ before it ends (see Rotate the secret_id).
     | File | What |
     | --- | --- |
     | `keystore.p12` | the broker certificate and its key |
-    | `truststore.p12` | the internal CA certificate (and the CA of the identity provider and of OpenBao, when another) |
+    | `truststore.p12` | the internal CA certificate: the CA of the gateway, the portal and the offboarding job as callers |
+    | `outbound-truststore.p12` | optional: the internal CA and every other CA of the identity provider, OpenBao or the target systems |
 
     Both stores use one password. From PEM files:
 
     ```bash
     openssl pkcs12 -export -inkey broker.key -in broker.crt -certfile ca.crt -name mcp-credential-broker -out certs/keystore.p12
     keytool -importcert -noprompt -alias ca -file ca.crt -keystore certs/truststore.p12 -storetype PKCS12
+    # only with an outbound store:
+    keytool -importcert -noprompt -alias ca -file ca.crt -keystore certs/outbound-truststore.p12 -storetype PKCS12
+    keytool -importcert -noprompt -alias company-ca -file company-ca.crt -keystore certs/outbound-truststore.p12 -storetype PKCS12
     ```
 
 3. Fill in the empty values in `broker.env`.

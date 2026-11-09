@@ -111,6 +111,8 @@ public final class TestEnvironment {
             TestPki.writeKeyStore(pki.server("mcp-credential-broker", "localhost", "mcp-credential-broker.internal"),
                     workDir.resolve("keystore.p12"));
             pki.writeTrustStore(workDir.resolve("truststore.p12"));
+            // Outgoing connections also trust the foreign CA, which must still not issue callers (certificateFromAnotherCa...).
+            TestPki.writeTrustStore(workDir.resolve("outbound-truststore.p12"), pki, foreignPki);
             Files.writeString(workDir.resolve("gateway-jwks.json"), Contracts.text(TestTokens.GATEWAY_JWKS_PATH));
 
             postgres = new PostgreSQLContainer(DockerImageName.parse("postgres:18.6-alpine"))
@@ -294,6 +296,7 @@ public final class TestEnvironment {
     public void registerProperties(DynamicPropertyRegistry registry) {
         registry.add("MCP_TLS_KEYSTORE", () -> workDir.resolve("keystore.p12").toString());
         registry.add("MCP_TLS_TRUSTSTORE", () -> workDir.resolve("truststore.p12").toString());
+        registry.add("MCP_TLS_OUTBOUND_TRUSTSTORE", () -> workDir.resolve("outbound-truststore.p12").toString());
         registry.add("MCP_TLS_STORE_PASSWORD", () -> new String(TestPki.PASSWORD));
         registry.add("MCP_BROKER_PORT", () -> "0");
         registry.add("MCP_DB_URL", postgres::getJdbcUrl);

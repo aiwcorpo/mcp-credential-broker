@@ -53,8 +53,8 @@ import tools.jackson.databind.json.JsonMapper;
  *
  * <p>Then it checks what it cannot generate (addresses, certificates, the AppRole) the way the broker will use it, and stops with exit
  * code 1 and the likely cause when the broker could not work. The gateway only warns, because it may be installed after the broker.
- * The broker trusts only its own truststore for every outgoing TLS connection (identity provider, OpenBao, gateway), so the checks do
- * the same and never fall back to the JVM store.
+ * The broker trusts only its outbound truststore (MCP_TLS_OUTBOUND_TRUSTSTORE, else MCP_TLS_TRUSTSTORE) for every outgoing TLS
+ * connection (identity provider, OpenBao, gateway), so the checks do the same and never fall back to the JVM store.
  */
 public final class BrokerSetup {
 
@@ -219,11 +219,20 @@ public final class BrokerSetup {
         ok("BFF clients: " + String.join(", ", clients));
     }
 
-    /** The client the broker uses for every outgoing TLS connection: it trusts the truststore only. Null when the files are unusable. */
+    /**
+     * The client the broker uses for every outgoing TLS connection: it trusts the outbound truststore only. Null when the files are
+     * unusable.
+     */
     private HttpClient httpClient() {
         Path keystore = Path.of(env.get("MCP_TLS_KEYSTORE"));
         Path truststore = Path.of(env.get("MCP_TLS_TRUSTSTORE"));
-        for (Path file : List.of(keystore, truststore)) {
+        String outboundSetting = env.get("MCP_TLS_OUTBOUND_TRUSTSTORE");
+        Path outbound = outboundSetting == null ? truststore : Path.of(outboundSetting);
+        if (outboundSetting != null && outboundSetting.isBlank()) {
+            fail("MCP_TLS_OUTBOUND_TRUSTSTORE is empty: remove it to use MCP_TLS_TRUSTSTORE, or name a file");
+            return null;
+        }
+        for (Path file : List.of(keystore, truststore, outbound)) {
             if (!Files.isReadable(file)) {
                 fail("certificate file " + file + " does not exist or cannot be read");
                 return null;
@@ -233,6 +242,7 @@ public final class BrokerSetup {
         try {
             KeyStore keys = load(keystore, password);
             KeyStore trust = load(truststore, password);
+            KeyStore outboundTrust = outbound.equals(truststore) ? trust : load(outbound, password);
             if (Collections.list(keys.aliases()).stream().noneMatch(alias -> isKey(keys, alias))) {
                 fail("keystore " + keystore + " has no private key: it must hold the certificate of the broker and its key");
                 return null;
@@ -241,19 +251,24 @@ public final class BrokerSetup {
                 fail("truststore " + truststore + " has no certificate: it must hold the internal CA");
                 return null;
             }
+            if (outboundTrust.size() == 0) {
+                fail("outbound truststore " + outbound + " has no certificate: it must hold the internal CA");
+                return null;
+            }
             TrustManagerFactory factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-            factory.init(trust);
+            factory.init(outboundTrust);
             SSLContext context = SSLContext.getInstance("TLS");
             context.init(null, factory.getTrustManagers(), null);
-            ok("broker certificate " + keystore + " and truststore " + truststore);
+            ok("broker certificate " + keystore + " and truststore " + truststore
+                    + (outbound.equals(truststore) ? "" : ", outbound truststore " + outbound));
             return HttpClient.newBuilder().sslContext(context).connectTimeout(CONNECT_TIMEOUT)
                     .followRedirects(HttpClient.Redirect.NEVER).build();
         } catch (GeneralSecurityException | IOException e) {
             // PKCS12 reports a wrong password as a failed decryption.
             boolean wrongPassword = inChain(e, javax.crypto.BadPaddingException.class)
                     || inChain(e, java.security.UnrecoverableKeyException.class) || chainMentions(e, "password");
-            fail("cannot open " + keystore + " or " + truststore + ": "
-                    + (wrongPassword ? "wrong MCP_TLS_STORE_PASSWORD (both files use it)" : rootMessage(e)));
+            fail("cannot open " + keystore + ", " + truststore + (outbound.equals(truststore) ? "" : " or " + outbound) + ": "
+                    + (wrongPassword ? "wrong MCP_TLS_STORE_PASSWORD (every store uses it)" : rootMessage(e)));
             return null;
         }
     }
@@ -429,8 +444,8 @@ public final class BrokerSetup {
             return "no answer within " + CONNECT_TIMEOUT.toSeconds() + " s; a firewall drops the connection";
         }
         if (inChain(e, CertPathValidatorException.class) || chainMentions(e, "PKIX path")) {
-            return "its certificate is not signed by a CA in MCP_TLS_TRUSTSTORE (the broker trusts only that store, "
-                    + "also for the identity provider and OpenBao)";
+            return "its certificate is not signed by a CA in MCP_TLS_OUTBOUND_TRUSTSTORE, or MCP_TLS_TRUSTSTORE when that is not set "
+                    + "(the broker trusts only that store, also for the identity provider and OpenBao)";
         }
         if (chainMentions(e, "No subject alternative") || chainMentions(e, "No name matching")) {
             return "its certificate does not name the host of the address in subjectAltName";

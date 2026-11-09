@@ -68,8 +68,11 @@ import tools.jackson.databind.json.JsonMapper;
 @EnableConfigurationProperties(BrokerProperties.class)
 public class BrokerConfiguration {
 
-    /** SSL bundle of the broker (keystore + internal CA); its trust material is reused for outgoing TLS. */
+    /** SSL bundle of the broker's listener: its certificate and the CA of the callers it accepts. */
     public static final String SSL_BUNDLE = "broker";
+
+    /** Trust material for outgoing TLS only; never consulted for client certificates. */
+    public static final String OUTBOUND_SSL_BUNDLE = "broker-outbound";
 
     @Bean
     Clock clock() {
@@ -340,7 +343,7 @@ public class BrokerConfiguration {
     }
 
     /**
-     * Client for internal endpoints: trusts the internal CA of the SSL bundle, presents no client
+     * Client for every outgoing connection: trusts the outbound SSL bundle, presents no client
      * certificate (the broker certificate is serverAuth only) and never follows redirects, which could
      * carry a credential to another host.
      */
@@ -355,7 +358,7 @@ public class BrokerConfiguration {
     private static SSLContext trustOnly(SslBundles sslBundles) {
         try {
             SSLContext context = SSLContext.getInstance("TLS");
-            context.init(null, sslBundles.getBundle(SSL_BUNDLE).getManagers().getTrustManagers(), null);
+            context.init(null, sslBundles.getBundle(OUTBOUND_SSL_BUNDLE).getManagers().getTrustManagers(), null);
             return context;
         } catch (java.security.GeneralSecurityException e) {
             throw new IllegalStateException("cannot build TLS client context", e);

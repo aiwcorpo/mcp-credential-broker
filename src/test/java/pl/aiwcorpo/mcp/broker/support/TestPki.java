@@ -121,6 +121,21 @@ public final class TestPki {
         }
     }
 
+    /** One truststore holding the CA of every given PKI. */
+    public static Path writeTrustStore(Path file, TestPki... pkis) {
+        try {
+            KeyStore store = KeyStore.getInstance("PKCS12");
+            store.load(null, null);
+            for (TestPki pki : pkis) {
+                store.setCertificateEntry(pki.caCertificate.getSubjectX500Principal().getName(), pki.caCertificate);
+            }
+            save(store, file);
+            return file;
+        } catch (GeneralSecurityException | IOException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     /** Client TLS context presenting {@code identity} and trusting this CA. */
     public SSLContext clientContext(Identity identity) {
         try {

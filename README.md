@@ -64,6 +64,11 @@ The shortest set needed to start: `MCP_DB_URL`, `MCP_DB_USER`, `MCP_DB_PASSWORD`
 `MCP_TLS_STORE_PASSWORD`; `MCP_OIDC_ISSUER`, `MCP_OIDC_JWKS_URI`; `MCP_GATEWAY_JWKS_URI` (or `MCP_GATEWAY_JWKS_FILE`) with
 `MCP_GATEWAY_TLS_NAME`; `MCP_PORTAL_URL`.
 
+`MCP_TLS_TRUSTSTORE` decides which client certificates port 8443 accepts. `MCP_TLS_OUTBOUND_TRUSTSTORE` (optional, same password) is
+what the broker trusts for the connections it opens: the identity provider, OpenBao, the gateway and the target systems. Without it the
+broker uses `MCP_TLS_TRUSTSTORE` for both. Set it when a target system has a certificate from a company or public CA, so that this CA
+goes into the outbound store only and cannot issue callers of the broker.
+
 Several instances can run on one PostgreSQL, one Redis and one OpenBao. Nothing a verdict depends on lives in the memory of an
 instance: counters and locks are rows and transactions in PostgreSQL, one-time state is in Redis.
 
