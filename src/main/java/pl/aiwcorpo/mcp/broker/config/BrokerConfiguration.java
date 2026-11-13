@@ -61,6 +61,7 @@ import pl.aiwcorpo.mcp.broker.system.SystemAdminService;
 import pl.aiwcorpo.mcp.broker.system.SystemRegistry;
 import pl.aiwcorpo.mcp.broker.system.SystemRegistryRefreshJob;
 import pl.aiwcorpo.mcp.broker.system.SystemRepository;
+import pl.aiwcorpo.mcp.broker.system.UpstreamLimits;
 import tools.jackson.databind.json.JsonMapper;
 
 @Configuration(proxyBeanMethods = false)
@@ -171,9 +172,14 @@ public class BrokerConfiguration {
 
     @Bean
     SystemAdapters systemAdapters(BrokerProperties properties, SslBundles sslBundles, JsonMapper json, OAuthClientSecrets clientSecrets,
-            ServiceAccountKeys serviceAccountKeys, Clock clock, MeterRegistry meters) {
+            ServiceAccountKeys serviceAccountKeys, Clock clock, MeterRegistry meters, UpstreamLimits upstreamLimits) {
         return new SystemAdapters(internalClient(sslBundles), json, clientSecrets, serviceAccountKeys, clock, meters,
-                properties.tokenExchange());
+                properties.tokenExchange(), upstreamLimits);
+    }
+
+    @Bean
+    UpstreamLimits upstreamLimits(BrokerProperties properties) {
+        return new UpstreamLimits(properties.upstream().maxConcurrentCallsPerSystem(), properties.oauthFlow().refreshLockLease());
     }
 
     /** Fills an empty table from the {@code broker.systems.*} properties of a 1.x installation, then loads the table. */
@@ -221,10 +227,10 @@ public class BrokerConfiguration {
     @Bean
     SystemAdminService systemAdminService(SystemRepository repository, SystemRegistry registry, OAuthClientSecrets clientSecrets,
             ServiceAccountKeys serviceAccountKeys, ConnectionRepository connections, SecretStore secrets, InvalidationPublisher invalidations, OAuthService oauth,
-            AuditLog audit, Clock clock, BrokerProperties properties, PlatformTransactionManager transactions) {
+            AuditLog audit, Clock clock, BrokerProperties properties, PlatformTransactionManager transactions, UpstreamLimits upstreamLimits) {
         return new SystemAdminService(repository, registry, clientSecrets, serviceAccountKeys, connections, secrets, invalidations, oauth, audit, clock,
                 properties.allowPlainHttp(), properties.bffToken().effectiveTokenUrl(), new TransactionTemplate(transactions),
-                properties.bffToken(), properties.tokenExchange());
+                properties.bffToken(), properties.tokenExchange(), upstreamLimits);
     }
 
     @Bean

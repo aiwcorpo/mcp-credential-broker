@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Semaphore;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
@@ -37,12 +38,12 @@ public class GitLabAdapter implements SystemAdapter, OAuthProvider {
     private final UpstreamHttp http;
 
     public GitLabAdapter(URI baseUrl, Duration timeout, BrokerProperties.OAuth oauth, Supplier<SecretValue> clientSecret,
-            HttpClient http, JsonMapper json) {
+            HttpClient http, JsonMapper json, Semaphore inFlight) {
         this.baseUrl = baseUrl;
         this.timeout = timeout;
         this.oauth = oauth;
         this.clientSecret = clientSecret;
-        this.http = new UpstreamHttp(http, json);
+        this.http = new UpstreamHttp(http, json, inFlight);
     }
 
     @Override

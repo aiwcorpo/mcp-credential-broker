@@ -41,6 +41,7 @@ public record BrokerProperties(
         @DefaultValue @Valid @NotNull RateLimits rateLimits,
         @DefaultValue @Valid @NotNull LostSecretBrake lostSecretBrake,
         @DefaultValue @Valid @NotNull SystemSync systemSync,
+        @DefaultValue @Valid @NotNull Upstream upstream,
         @DefaultValue @Valid @NotNull TokenExchangePolicy tokenExchange,
         @DefaultValue Map<String, @Valid SystemConfig> systems) {
 
@@ -79,6 +80,14 @@ public record BrokerProperties(
             }
             return java.util.regex.Pattern.matches(regex.toString(), value);
         }
+    }
+
+    /**
+     * Calls of one instance to one target system that may be in flight at once; a call beyond it is refused at once with
+     * 503 upstream_unavailable instead of holding a request thread for the system's timeout (see
+     * {@code pl.aiwcorpo.mcp.broker.system.UpstreamLimits}).
+     */
+    public record Upstream(@DefaultValue("20") @Min(1) int maxConcurrentCallsPerSystem) {
     }
 
     /** How often an instance reads the systems table to see changes made through another instance. */

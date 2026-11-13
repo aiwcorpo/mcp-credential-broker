@@ -15,6 +15,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Semaphore;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
@@ -63,13 +64,13 @@ public class OpenSearchAdapter implements TokenExchanger {
     private final Counter denials;
 
     public OpenSearchAdapter(BrokerProperties.TokenExchange exchange, Duration timeout, Supplier<SecretValue> clientSecret,
-            HttpClient http, JsonMapper json, Clock clock, MeterRegistry meters) {
+            HttpClient http, JsonMapper json, Clock clock, MeterRegistry meters, Semaphore inFlight) {
         this.denials = Counter.builder("broker.token_exchange.denied").description("Token exchanges the IdP refused for the user")
                 .tag("audience", exchange.audience()).register(meters);
         this.exchange = exchange;
         this.timeout = timeout;
         this.clientSecret = clientSecret;
-        this.http = new UpstreamHttp(http, json);
+        this.http = new UpstreamHttp(http, json, inFlight);
         this.clock = clock;
     }
 

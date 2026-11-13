@@ -5,6 +5,7 @@ import static org.mockito.Mockito.when;
 
 import java.net.http.HttpClient;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.List;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -15,6 +16,7 @@ import pl.aiwcorpo.mcp.broker.system.SystemAdapters;
 import pl.aiwcorpo.mcp.broker.system.SystemDefinition;
 import pl.aiwcorpo.mcp.broker.system.SystemRegistry;
 import pl.aiwcorpo.mcp.broker.system.SystemRepository;
+import pl.aiwcorpo.mcp.broker.system.UpstreamLimits;
 import tools.jackson.databind.json.JsonMapper;
 
 /** A registry over one system, for unit tests that have no database. */
@@ -33,7 +35,7 @@ public final class TestRegistries {
                 config.userSecretScheme(), config.deployment(), "etag-" + id, "revision-" + id)));
         SystemAdapters adapters = new SystemAdapters(HttpClient.newHttpClient(), JsonMapper.builder().build(),
                 mock(OAuthClientSecrets.class), mock(ServiceAccountKeys.class), Clock.systemUTC(), new SimpleMeterRegistry(),
-                new BrokerProperties.TokenExchangePolicy(List.of("*")));
+                new BrokerProperties.TokenExchangePolicy(List.of("*")), new UpstreamLimits(20, Duration.ofSeconds(60)));
         return new SystemRegistry(repository, adapters);
     }
 }

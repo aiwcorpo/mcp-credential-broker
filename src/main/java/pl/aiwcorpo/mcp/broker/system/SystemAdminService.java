@@ -87,11 +87,12 @@ public class SystemAdminService {
     private final TransactionTemplate transaction;
     private final BrokerProperties.BffToken mfaRules;
     private final BrokerProperties.TokenExchangePolicy tokenExchangePolicy;
+    private final UpstreamLimits upstreamLimits;
 
     public SystemAdminService(SystemRepository repository, SystemRegistry registry, OAuthClientSecrets clientSecrets,
             ServiceAccountKeys serviceAccountKeys, ConnectionRepository connections, SecretStore secrets, InvalidationPublisher invalidations, OAuthService oauth,
             AuditLog audit, Clock clock, boolean allowPlainHttp, URI idpTokenUrl, TransactionTemplate transaction,
-            BrokerProperties.BffToken mfaRules, BrokerProperties.TokenExchangePolicy tokenExchangePolicy) {
+            BrokerProperties.BffToken mfaRules, BrokerProperties.TokenExchangePolicy tokenExchangePolicy, UpstreamLimits upstreamLimits) {
         this.repository = repository;
         this.registry = registry;
         this.clientSecrets = clientSecrets;
@@ -107,6 +108,7 @@ public class SystemAdminService {
         this.transaction = transaction;
         this.mfaRules = mfaRules;
         this.tokenExchangePolicy = tokenExchangePolicy;
+        this.upstreamLimits = upstreamLimits;
     }
 
     public List<SystemAdminView> list(Caller.PortalUser caller) {
@@ -647,12 +649,16 @@ public class SystemAdminService {
                     client.authorizeUrl() == null ? null : url(client.authorizeUrl(), "authorizeUrl"),
                     exchange ? idpTokenUrl : client.tokenUrl() == null ? null : url(client.tokenUrl(), "tokenUrl"), revokeUrl, scopes);
         }
+        Duration timeout = request.timeout() == null ? null : Duration.parse(request.timeout());
+        if (timeout != null && !upstreamLimits.allowsTimeout(timeout)) {
+            throw SystemAdminException.invalid("timeout");
+        }
         CredentialScheme userScheme = request.userSecretScheme();
         if (userScheme != null && userScheme != CredentialScheme.BEARER && userScheme != CredentialScheme.BASIC) {
             throw SystemAdminException.invalid("userSecretScheme");
         }
         return new SystemDefinition(id, baseUrl, request.adapter(), request.product(), types, request.defaultType(),
-                request.secretScheme(), oauth, null, request.timeout() == null ? null : Duration.parse(request.timeout()),
+                request.secretScheme(), oauth, null, timeout,
                 request.exchangeAudience(), userScheme, previous == null ? null : previous.deployment(), null, null,
                 request.displayName(), request.whoami() == null ? null
                         : new SystemDefinition.Whoami(request.whoami().path(), request.whoami().usernameField()));

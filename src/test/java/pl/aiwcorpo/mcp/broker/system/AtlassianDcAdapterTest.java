@@ -14,6 +14,7 @@ import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.concurrent.Semaphore;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -95,7 +96,7 @@ class AtlassianDcAdapterTest {
         URI base = URI.create("http://127.0.0.1:" + server.getLocalPort());
         HttpClient client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
         return new AtlassianDcAdapter(AtlassianDcAdapter.Product.JIRA, base, Duration.ofSeconds(1), client,
-                JsonMapper.builder().build());
+                JsonMapper.builder().build(), new Semaphore(8));
     }
 
     @Test

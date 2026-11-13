@@ -2,6 +2,8 @@ package pl.aiwcorpo.mcp.broker.system;
 
 import java.net.http.HttpClient;
 import java.time.Clock;
+import java.time.Duration;
+import java.util.concurrent.Semaphore;
 import java.util.function.Supplier;
 
 import io.micrometer.core.instrument.MeterRegistry;
@@ -23,9 +25,10 @@ public class SystemAdapters {
     private final Clock clock;
     private final MeterRegistry meters;
     private final BrokerProperties.TokenExchangePolicy tokenExchangePolicy;
+    private final UpstreamLimits limits;
 
     public SystemAdapters(HttpClient http, JsonMapper json, OAuthClientSecrets clientSecrets, ServiceAccountKeys serviceAccountKeys,
-            Clock clock, MeterRegistry meters, BrokerProperties.TokenExchangePolicy tokenExchangePolicy) {
+            Clock clock, MeterRegistry meters, BrokerProperties.TokenExchangePolicy tokenExchangePolicy, UpstreamLimits limits) {
         this.http = http;
         this.json = json;
         this.clientSecrets = clientSecrets;
@@ -33,6 +36,7 @@ public class SystemAdapters {
         this.clock = clock;
         this.meters = meters;
         this.tokenExchangePolicy = tokenExchangePolicy;
+        this.limits = limits;
     }
 
     public SystemRegistry.ConfiguredSystem build(SystemDefinition definition) {
@@ -41,13 +45,18 @@ public class SystemAdapters {
         String id = definition.id();
         Integer secretVersion = definition.secretVersion();
         Supplier<SecretValue> clientSecret = () -> clientSecrets.read(id, secretVersion);
+        Duration timeout = limits.effectiveTimeout(config.timeout());
+        if (!timeout.equals(config.timeout())) {
+            log.warn("System {} has a timeout of {}, not below the refresh lock lease: calls use {}", id, config.timeout(), timeout);
+        }
+        Semaphore inFlight = limits.inFlight(id);
         Object adapter = switch (definition.adapter()) {
-            case "gitlab" -> new GitLabAdapter(config.baseUrl(), config.timeout(), config.oauth(), clientSecret, http, json);
+            case "gitlab" -> new GitLabAdapter(config.baseUrl(), timeout, config.oauth(), clientSecret, http, json, inFlight);
             case "atlassian-dc" -> new AtlassianDcAdapter(AtlassianDcAdapter.Product.valueOf(definition.product().toUpperCase(java.util.Locale.ROOT)),
-                    config.baseUrl(), config.timeout(), http, json);
-            case "opensearch" -> new OpenSearchAdapter(config.tokenExchange(), config.timeout(), clientSecret, http, json, clock, meters);
-            case "generic-rest" -> new GenericRestAdapter(id, config.secretScheme(), serviceAccountKeys, config.baseUrl(), definition.whoami(), config.timeout(),
-                    http, json);
+                    config.baseUrl(), timeout, http, json, inFlight);
+            case "opensearch" -> new OpenSearchAdapter(config.tokenExchange(), timeout, clientSecret, http, json, clock, meters, inFlight);
+            case "generic-rest" -> new GenericRestAdapter(id, config.secretScheme(), serviceAccountKeys, config.baseUrl(), definition.whoami(), timeout,
+                    http, json, inFlight);
             default -> throw new SystemRejectedException("adapter_unknown", "unknown adapter " + definition.adapter());
         };
         TokenExchanger exchanger = adapter instanceof TokenExchanger found ? found : null;

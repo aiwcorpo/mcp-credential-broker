@@ -5,6 +5,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.concurrent.Semaphore;
 
 import pl.aiwcorpo.mcp.broker.credential.CredentialScheme;
 import pl.aiwcorpo.mcp.broker.secret.SecretValue;
@@ -43,11 +44,11 @@ public class AtlassianDcAdapter implements SystemAdapter {
     private final Duration timeout;
     private final UpstreamHttp http;
 
-    public AtlassianDcAdapter(Product product, URI baseUrl, Duration timeout, HttpClient http, JsonMapper json) {
+    public AtlassianDcAdapter(Product product, URI baseUrl, Duration timeout, HttpClient http, JsonMapper json, Semaphore inFlight) {
         this.product = product;
         this.baseUrl = baseUrl;
         this.timeout = timeout;
-        this.http = new UpstreamHttp(http, json);
+        this.http = new UpstreamHttp(http, json, inFlight);
     }
 
     @Override
