@@ -367,7 +367,13 @@ public class CredentialService {
                             .error("provider_revoke_failed", null);
                 }
                 secrets.delete(existing.get().secretKey());
-                connections.delete(caller.sub(), systemId);
+                Optional<Connection> current = existing;
+                while (current.isPresent() && !connections.deleteIfVersion(caller.sub(), systemId, current.get().secretVersion())) {
+                    // A system without OAuth is deleted without the lock, so a PUT may have switched the row to a new value
+                    // since it was read; that value goes too, or it would stay stored with no row pointing at it.
+                    current = connections.find(caller.sub(), systemId);
+                    current.ifPresent(found -> secrets.delete(found.secretKey()));
+                }
                 invalidations.invalidated(caller.sub(), systemId);
                 entry.ok("disconnected");
                 return true;
