@@ -208,7 +208,7 @@ public class BrokerConfiguration {
         requireTls(properties.bffToken().effectiveTokenUrl(), "broker.bff-token.token-url", properties.allowPlainHttp());
         new LegacySystemImport(repository, connections, clientSecrets, audit, clock, new TransactionTemplate(transactions),
                 properties.bffToken().effectiveTokenUrl()).run(properties.systems());
-        SystemRegistry registry = new SystemRegistry(repository, adapters);
+        SystemRegistry registry = new SystemRegistry(repository, adapters, clock, properties.systemSync().maxAge());
         audit.knownSystems(id -> registry.find(id).isPresent());
         return registry;
     }

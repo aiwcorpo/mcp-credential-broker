@@ -5,6 +5,7 @@ import static org.mockito.Mockito.when;
 
 import java.net.http.HttpClient;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.List;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -34,6 +35,6 @@ public final class TestRegistries {
         SystemAdapters adapters = new SystemAdapters(HttpClient.newHttpClient(), JsonMapper.builder().build(),
                 mock(OAuthClientSecrets.class), mock(ServiceAccountKeys.class), Clock.systemUTC(), new SimpleMeterRegistry(),
                 new BrokerProperties.TokenExchangePolicy(List.of("*")));
-        return new SystemRegistry(repository, adapters);
+        return new SystemRegistry(repository, adapters, Clock.systemUTC(), Duration.ofMinutes(1));
     }
 }

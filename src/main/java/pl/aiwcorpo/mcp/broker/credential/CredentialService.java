@@ -114,9 +114,11 @@ public class CredentialService {
             Resolved resolved;
             if (system.supports(CredentialType.TOKEN_EXCHANGE)) {
                 entry.credentialType(CredentialType.TOKEN_EXCHANGE.wire());
+                systems.requireRecentLoad();
                 resolved = exchange(system, user.sub(), subjectToken);
             } else if (system.supports(CredentialType.SERVICE_ACCOUNT)) {
                 entry.credentialType(CredentialType.SERVICE_ACCOUNT.wire());
+                systems.requireRecentLoad();
                 resolved = serviceAccount(system);
             } else {
                 resolved = userCredential(caller, system, entry);
