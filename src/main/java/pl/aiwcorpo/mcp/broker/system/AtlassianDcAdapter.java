@@ -1,6 +1,5 @@
 package pl.aiwcorpo.mcp.broker.system;
 
-import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -9,7 +8,6 @@ import java.time.Duration;
 
 import pl.aiwcorpo.mcp.broker.credential.CredentialScheme;
 import pl.aiwcorpo.mcp.broker.secret.SecretValue;
-import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -43,18 +41,13 @@ public class AtlassianDcAdapter implements SystemAdapter {
 
     private final URI baseUrl;
     private final Duration timeout;
-    private final HttpClient http;
-    private final JsonMapper json;
+    private final UpstreamHttp http;
 
     public AtlassianDcAdapter(Product product, URI baseUrl, Duration timeout, HttpClient http, JsonMapper json) {
-        if (http.followRedirects() != HttpClient.Redirect.NEVER) {
-            throw new IllegalArgumentException("whoami client must not follow redirects");
-        }
         this.product = product;
         this.baseUrl = baseUrl;
         this.timeout = timeout;
-        this.http = http;
-        this.json = json;
+        this.http = new UpstreamHttp(http, json);
     }
 
     @Override
@@ -68,15 +61,7 @@ public class AtlassianDcAdapter implements SystemAdapter {
                 .header("Authorization", scheme.wire() + " " + secret.reveal())
                 .GET()
                 .build();
-        HttpResponse<byte[]> response;
-        try {
-            response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
-        } catch (IOException e) {
-            throw new UpstreamUnavailableException("whoami unreachable: " + e.getClass().getSimpleName());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new UpstreamUnavailableException("interrupted during whoami");
-        }
+        HttpResponse<byte[]> response = http.send(request);
         int status = response.statusCode();
         if (status == 401 || status == 403) {
             return new WhoamiResult.Rejected();
@@ -84,12 +69,7 @@ public class AtlassianDcAdapter implements SystemAdapter {
         if (status != 200) {
             throw new UpstreamUnavailableException("whoami answered HTTP " + status);
         }
-        JsonNode body;
-        try {
-            body = json.readTree(response.body());
-        } catch (JacksonException e) {
-            throw new UpstreamUnavailableException("whoami answered a body that is not JSON");
-        }
+        JsonNode body = http.readJson(response, "whoami");
         JsonNode name = body.path(product.loginField);
         if (!name.isString() || name.stringValue().isBlank()) {
             throw new UpstreamUnavailableException("whoami answered without a user name");
