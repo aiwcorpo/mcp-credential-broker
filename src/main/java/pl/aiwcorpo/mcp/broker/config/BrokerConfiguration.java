@@ -93,7 +93,7 @@ public class BrokerConfiguration {
             throw new IllegalStateException("set exactly one of broker.gateway-jwt.jwks-uri and broker.gateway-jwt.jwks-file");
         }
         if (hasFile) {
-            return JwksGatewayKeys.fromFile(Path.of(config.jwksFile()), clock);
+            return JwksGatewayKeys.fromFile(Path.of(config.jwksFile()), clock, config.jwksRefresh());
         }
         if (config.tlsName() != null && !config.tlsName().isBlank() && "https".equals(config.jwksUri().getScheme())
                 && !config.tlsName().equalsIgnoreCase(config.jwksUri().getHost())) {

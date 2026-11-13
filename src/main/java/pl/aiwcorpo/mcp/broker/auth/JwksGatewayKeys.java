@@ -103,10 +103,14 @@ public class JwksGatewayKeys implements GatewayKeys {
         this.maxStale = maxStale;
     }
 
-    public static JwksGatewayKeys fromFile(Path file, Clock clock) {
+    /**
+     * A local file cannot go stale the way an endpoint can, so the keys never expire; it is still read again every
+     * {@code refresh}, so a key removed from it stops working without a restart.
+     */
+    public static JwksGatewayKeys fromFile(Path file, Clock clock, Duration refresh) {
         Duration forever = Duration.ofDays(3650);
         return new JwksGatewayKeys(() -> Files.readString(file, StandardCharsets.UTF_8), file.toString(), clock,
-                forever, Duration.ofSeconds(10), forever, Duration.ofSeconds(10));
+                refresh, Duration.ofSeconds(10), forever, Duration.ofSeconds(10));
     }
 
     public static JwksGatewayKeys fromUri(URI uri, HttpClient http, Duration timeout, Clock clock, Duration refresh,
