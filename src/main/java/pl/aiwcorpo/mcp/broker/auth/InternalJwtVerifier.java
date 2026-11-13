@@ -153,7 +153,9 @@ public class InternalJwtVerifier {
         if (!service && toolClaim == ToolClaim.FORBIDDEN && verified.tool() != null) {
             throw new TokenRejectedException("tool_not_allowed");
         }
-        Duration window = Duration.ofSeconds(Math.max(1, exp + skewSeconds - now));
+        // Accepted up to and including the second exp + skew, on each instance's own clock, so the jti is kept one second
+        // longer than that and one more skew for an instance whose clock is behind this one.
+        Duration window = Duration.ofSeconds(Math.max(1, exp + skewSeconds - now) + 1 + skewSeconds);
         if (!replayGuard.firstUse(verified.jti(), window)) {
             throw new TokenRejectedException("replayed_jti");
         }
