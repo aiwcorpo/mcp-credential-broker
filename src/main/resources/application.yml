@@ -14,6 +14,11 @@ server:
 spring:
   application:
     name: mcp-credential-broker
+  task:
+    scheduling:
+      pool:
+        # One thread for each of the six @Scheduled jobs, so a long token sweep cannot hold back the 5 s system reload.
+        size: 6
   ssl:
     bundle:
       jks:
