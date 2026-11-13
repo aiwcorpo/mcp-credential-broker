@@ -111,6 +111,7 @@ broker:
   rate-limits:
     oauth-starts: 10
     oauth-completions: 20
+    secret-writes: 10
     window: 1m
   oauth-flow:
     flow-ttl: 10m

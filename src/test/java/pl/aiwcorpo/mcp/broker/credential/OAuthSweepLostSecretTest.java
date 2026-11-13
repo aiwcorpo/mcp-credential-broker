@@ -65,7 +65,7 @@ class OAuthSweepLostSecretTest {
 
         BrokerProperties.OAuthFlow flow = new BrokerProperties.OAuthFlow(Duration.ofMinutes(10), Duration.ofMinutes(2),
                 Duration.ofMinutes(5), Duration.ofMinutes(1), Duration.ofSeconds(3), Duration.ofSeconds(60), "broker:oauth:");
-        BrokerProperties.RateLimits limits = new BrokerProperties.RateLimits(10, 20, Duration.ofMinutes(1), "broker:rate:");
+        BrokerProperties.RateLimits limits = new BrokerProperties.RateLimits(10, 20, 10, Duration.ofMinutes(1), "broker:rate:");
         return new OAuthService(systems, connections, secrets,
                 new ConnectionStore(connections, secrets, mock(InvalidationPublisher.class), clock), mock(OAuthFlowStore.class),
                 lock, new AuditLog("mcp-credential-broker", clock), clock, URI.create("https://portal.test/api/v1/oauth/callback"),

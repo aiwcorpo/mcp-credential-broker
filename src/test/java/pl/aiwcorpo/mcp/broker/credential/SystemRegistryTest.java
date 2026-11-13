@@ -20,6 +20,7 @@ import pl.aiwcorpo.mcp.broker.auth.InternalJwtClaims;
 import pl.aiwcorpo.mcp.broker.auth.SubjectTokenVerifier;
 import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
 import pl.aiwcorpo.mcp.broker.event.InvalidationPublisher;
+import pl.aiwcorpo.mcp.broker.oauth.RateLimiter;
 import pl.aiwcorpo.mcp.broker.secret.OAuthClientSecrets;
 import pl.aiwcorpo.mcp.broker.secret.SecretStore;
 import pl.aiwcorpo.mcp.broker.secret.SecretValue;
@@ -56,7 +57,7 @@ class SystemRegistryTest {
         CredentialService service = new CredentialService(registry, mock(ConnectionRepository.class), mock(SecretStore.class),
                 mock(InvalidationPublisher.class), mock(OAuthService.class), mock(SubjectTokenVerifier.class),
                 new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7),
-                new LostSecretSignal(clock, new SimpleMeterRegistry()));
+                new LostSecretSignal(clock, new SimpleMeterRegistry()), mock(RateLimiter.class), 10);
         assertThat(service.resolve(gateway(), "svc", null, null).value().reveal()).isEqualTo("dummy-key");
 
         when(repository.findAll()).thenThrow(new DataAccessResourceFailureException("database down"));

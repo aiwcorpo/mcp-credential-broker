@@ -300,9 +300,10 @@ public class BrokerConfiguration {
     @Bean
     CredentialService credentialService(SystemRegistry systems, ConnectionRepository connections, SecretStore secrets,
             InvalidationPublisher invalidations, OAuthService oauth, SubjectTokenVerifier subjectTokens, AuditLog audit,
-            Clock clock, BrokerProperties properties, LostSecretSignal lostSecrets) {
+            Clock clock, BrokerProperties properties, LostSecretSignal lostSecrets, RateLimiter rateLimiter) {
         return new CredentialService(systems, connections, secrets, invalidations, oauth, subjectTokens, audit, clock,
-                properties.cacheTtlSeconds(), properties.expiringThreshold(), lostSecrets);
+                properties.cacheTtlSeconds(), properties.expiringThreshold(), lostSecrets, rateLimiter,
+                properties.rateLimits().secretWrites());
     }
 
     @Bean

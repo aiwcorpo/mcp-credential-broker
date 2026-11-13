@@ -3,6 +3,12 @@
 The broker ships as a container image (`ghcr.io/aiwcorpo/mcp-credential-broker`); the version in `pom.xml` follows SemVer. Local and
 integration builds tag the image `m6-<short sha>`.
 
+## Unreleased
+
+- `PUT /v1/connections/{system}/secret` is limited per user before the target system is asked: `broker.rate-limits.secret-writes`
+  (default 10 per minute, same window and Redis prefix as the OAuth limits). Over the limit the answer is `429 rate_limited` with
+  `Retry-After`, as in `mcp-contracts` CC-256. Built on `mcp-contracts` 7.2.0.
+
 ## 2.1.0
 
 Write-only service account key operations (CC-251). Built on `mcp-contracts` 7.1.0.

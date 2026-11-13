@@ -34,6 +34,7 @@ import pl.aiwcorpo.mcp.broker.auth.InternalJwtClaims;
 import pl.aiwcorpo.mcp.broker.auth.SubjectTokenVerifier;
 import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
 import pl.aiwcorpo.mcp.broker.event.InvalidationPublisher;
+import pl.aiwcorpo.mcp.broker.oauth.RateLimiter;
 import pl.aiwcorpo.mcp.broker.secret.SecretKey;
 import pl.aiwcorpo.mcp.broker.support.AuditLines;
 import pl.aiwcorpo.mcp.broker.support.Contracts;
@@ -63,7 +64,8 @@ class CredentialServiceTest {
     private final LostSecretSignal lostSecrets = new LostSecretSignal(clock, meters);
     private final SystemRegistry systems = registry();
     private final CredentialService service = new CredentialService(systems, connections, secrets, invalidations,
-            passThroughOAuth(), subjectTokens, new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7), lostSecrets);
+            passThroughOAuth(), subjectTokens, new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7), lostSecrets,
+            mock(RateLimiter.class), 10);
 
     @Test
     void secretStoreOutageFailsClosed() {
@@ -198,7 +200,8 @@ class CredentialServiceTest {
                 List.of(), Duration.ofSeconds(1), null, null, scheme, null);
         SystemRegistry registry = pl.aiwcorpo.mcp.broker.support.TestRegistries.of("jira", config);
         return new CredentialService(registry, connections, secrets, invalidations, passThroughOAuth(), subjectTokens,
-                new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7), lostSecrets);
+                new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7), lostSecrets,
+            mock(RateLimiter.class), 10);
     }
 
     @Test
@@ -311,7 +314,8 @@ class CredentialServiceTest {
         when(registry.find("jira")).thenReturn(Optional.of(
                 new SystemRegistry.ConfiguredSystem("jira", config(), adapter)));
         return new CredentialService(registry, connections, secrets, invalidations,
-                passThroughOAuth(), subjectTokens, new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7), lostSecrets);
+                passThroughOAuth(), subjectTokens, new AuditLog("mcp-credential-broker", clock), clock, 60, Duration.ofDays(7), lostSecrets,
+            mock(RateLimiter.class), 10);
     }
 
     @Test

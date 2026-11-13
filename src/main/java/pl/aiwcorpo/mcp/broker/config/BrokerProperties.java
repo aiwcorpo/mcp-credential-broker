@@ -217,13 +217,15 @@ public record BrokerProperties(
     }
 
     /**
-     * Limits per {@code sub} on the OAuth operations of the portal (CC-156), counted in a fixed window in Redis. The
-     * contract does not fix the values. The limit of authenticator enrollment starts is
-     * {@link Authenticator#enrollmentStartsPerHour()}.
+     * Limits per {@code sub} on the OAuth operations of the portal (CC-156) and on writes of user secrets (CC-256), counted
+     * in a fixed window in Redis. The contract does not fix the values. A secret write is counted before the system's whoami
+     * is called, so the limit also bounds how many login and password pairs one user can have the broker try. The limit of
+     * authenticator enrollment starts is {@link Authenticator#enrollmentStartsPerHour()}.
      */
     public record RateLimits(
             @DefaultValue("10") @Min(1) int oauthStarts,
             @DefaultValue("20") @Min(1) int oauthCompletions,
+            @DefaultValue("10") @Min(1) int secretWrites,
             @DefaultValue("1m") @NotNull Duration window,
             @DefaultValue("broker:rate:") @NotBlank String redisPrefix) {
     }
