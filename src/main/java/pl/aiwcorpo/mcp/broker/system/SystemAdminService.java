@@ -179,6 +179,10 @@ public class SystemAdminService {
             throw SystemAdminException.preconditionRequired();
         }
         Optional<SystemDefinition> existing = repository.find(id);
+        if (create && existing.isEmpty() && repository.findWithdrawn(id).isPresent()) {
+            // The id is free only when the delete that withdrew it is finished.
+            throw SystemAdminException.preconditionFailed();
+        }
         if (create ? existing.isPresent() : existing.isEmpty() || !expectedEtag.equals(existing.get().etag())) {
             throw SystemAdminException.preconditionFailed();
         }
@@ -264,8 +268,12 @@ public class SystemAdminService {
      * Removes the system, the connections of users to it with their stored values (each removal publishes
      * credential.invalidated), the row and the version of the client secret. Nothing is sent to a provider: a grant is not
      * revoked with a definition other than the one it was issued under, and the one it was issued under may be gone. An id
-     * without a system is answered 204 and touches nothing. Repeating the call after a failure finishes the job: the row goes
-     * last.
+     * without a system is answered 204 and touches nothing.
+     *
+     * <p>The system is first withdrawn, in one transaction with marking every connection {@code needs_reconnect}, so from then
+     * on no instance serves it and no connection of it is usable, even when removing the connections fails. A withdrawn system
+     * is gone for the admin API except for a repeated DELETE, which finishes the job; its {@code If-Match} is required but not
+     * compared, since a withdrawn row can no longer change.
      */
     public void delete(Caller.PortalUser caller, String id, String ifMatch) {
         requireAdmin(caller);
@@ -278,23 +286,38 @@ public class SystemAdminService {
             }
             String expectedEtag = ifMatch == null ? null : etagOf(ifMatch);
             Optional<SystemDefinition> existing = repository.find(id);
-            if (existing.isEmpty()) {
+            Optional<SystemDefinition> withdrawn = existing.isPresent() ? Optional.empty() : repository.findWithdrawn(id);
+            if (existing.isEmpty() && withdrawn.isEmpty()) {
                 entry.ok("nothing_to_delete");
                 return;
             }
             entry.systemBeingChanged(id);
-            SystemDefinition system = existing.get();
+            SystemDefinition system = existing.orElseGet(withdrawn::get);
             if (ifMatch == null) {
                 throw SystemAdminException.preconditionRequired();
             }
-            if (!expectedEtag.equals(system.etag())) {
-                throw SystemAdminException.preconditionFailed();
+            if (existing.isPresent()) {
+                if (!expectedEtag.equals(system.etag())) {
+                    throw SystemAdminException.preconditionFailed();
+                }
+                boolean taken = Boolean.TRUE.equals(transaction.execute(status -> {
+                    Instant now = clock.instant();
+                    boolean done = repository.withdraw(id, system.etag(), now);
+                    if (done) {
+                        connections.markAllNeedsReconnect(id, now);
+                    }
+                    return done;
+                }));
+                if (!taken) {
+                    throw SystemAdminException.preconditionFailed();
+                }
+                refresh();
             }
             int removed = removeConnections(caller.requestId(), id);
             boolean deleted = false;
             for (int attempt = 1; !deleted; attempt++) {
                 try {
-                    deleted = repository.delete(id, system.etag());
+                    deleted = repository.deleteWithdrawn(id);
                     if (!deleted) {
                         throw SystemAdminException.preconditionFailed();
                     }
