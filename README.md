@@ -1,5 +1,7 @@
 # mcp-credential-broker
 
+Part of [MCP Platform](https://github.com/aiwcorpo/mcp-platform), a self-hosted MCP gateway for companies. Documentation: [mcp.aiwcorpo.pl](https://mcp.aiwcorpo.pl/).
+
 The place on the aiwcorpo MCP platform that holds each user's credential for each target system. The gateway asks it for the credential when a tool is called, the portal stores it for the signed-in user, and the broker also runs the TOTP authenticator that confirms destructive actions.
 
 ## Quick start
