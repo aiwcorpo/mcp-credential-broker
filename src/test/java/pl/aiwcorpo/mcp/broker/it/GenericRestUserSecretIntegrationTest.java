@@ -33,6 +33,7 @@ import com.sun.net.httpserver.HttpServer;
 
 import pl.aiwcorpo.mcp.broker.support.AuditLines;
 import pl.aiwcorpo.mcp.broker.support.BrokerClient;
+import pl.aiwcorpo.mcp.broker.support.BrokerProcess;
 import pl.aiwcorpo.mcp.broker.support.Contracts;
 import pl.aiwcorpo.mcp.broker.support.TestEnvironment;
 import pl.aiwcorpo.mcp.broker.support.TestTokens;
@@ -47,6 +48,7 @@ class GenericRestUserSecretIntegrationTest {
 
     private static final TestEnvironment env = TestEnvironment.get();
     private static final Set<String> STANDARD = Set.of("jira", "confluence", "gitlab", "opensearch");
+    private static final int PORT_STRICT_INSTANCE = 18710;
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
@@ -228,6 +230,31 @@ class GenericRestUserSecretIntegrationTest {
         assertThat(resolved.json().path("scheme").stringValue()).isEqualTo("Bearer");
         assertThat(resolved.json().path("value").stringValue()).isEqualTo("good-token-1");
         assertThat(resolved.json().path("type").stringValue()).isEqualTo("user-secret");
+    }
+
+    @Test
+    void aBrokerWithoutTheTestExemptionRefusesAnAddressOnItsOwnHost() throws Exception {
+        HttpServer internal = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        internal.createContext("/internal/status", exchange -> reply(exchange, 200, "{\"data\":{\"token\":\"dummy-internal-value\"}}"));
+        internal.start();
+        try (BrokerProcess strict = BrokerProcess.start(env, PORT_STRICT_INSTANCE, Map.of("broker.allow-loopback-system-urls", "false"))) {
+            BrokerClient admin = new BrokerClient(env.pki.clientContext(env.bffClient), strict.port());
+            String id = newId();
+            ObjectNode probe = body("/internal/status", "/data/token");
+            probe.put("baseUrl", "http://127.0.0.1:" + internal.getAddress().getPort());
+            BrokerClient.Response created = admin.send("PUT", "/v1/admin/systems/" + id, tokens.bffAdmin(adminSub, "root"), null,
+                    probe.toString(), Map.of("If-None-Match", "*"));
+            assertThat(created.status()).as("loopback").isEqualTo(400);
+            for (String local : List.of("https://localhost", "https://[::1]", "https://[::ffff:127.0.0.1]", "https://169.254.169.254",
+                    "https://[fe80::1]", "https://0.0.0.0")) {
+                probe.put("baseUrl", local);
+                assertThat(admin.send("PUT", "/v1/admin/systems/" + newId(), tokens.bffAdmin(adminSub, "root"), null, probe.toString(),
+                        Map.of("If-None-Match", "*")).status()).as(local).isEqualTo(400);
+            }
+            assertThat(env.systems.find(id)).isEmpty();
+        } finally {
+            internal.stop(0);
+        }
     }
 
     @Test

@@ -224,7 +224,7 @@ public class BrokerConfiguration {
             AuditLog audit, Clock clock, BrokerProperties properties, PlatformTransactionManager transactions) {
         return new SystemAdminService(repository, registry, clientSecrets, serviceAccountKeys, connections, secrets, invalidations, oauth, audit, clock,
                 properties.allowPlainHttp(), properties.bffToken().effectiveTokenUrl(), new TransactionTemplate(transactions),
-                properties.bffToken(), properties.tokenExchange());
+                properties.bffToken(), properties.tokenExchange(), properties.allowLoopbackSystemUrls());
     }
 
     @Bean

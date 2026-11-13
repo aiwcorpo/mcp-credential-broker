@@ -31,6 +31,7 @@ public record BrokerProperties(
         @DefaultValue("7d") @NotNull Duration expiringThreshold,
         @DefaultValue("16384") @Min(1024) int maxRequestBytes,
         @DefaultValue("false") boolean allowPlainHttp,
+        @DefaultValue("false") boolean allowLoopbackSystemUrls,
         @Valid @NotNull GatewayJwt gatewayJwt,
         @Valid @NotNull BffToken bffToken,
         @Valid @NotNull OpenBao openbao,

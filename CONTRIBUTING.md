@@ -73,6 +73,10 @@ PostgreSQL, one Redis and one OpenBao; counters and locks are rows and transacti
   values or patterns with `*`). Empty by default: no token-exchange system can be created (`422 audience_not_allowed`).
 - `baseUrl`, `oauth.authorizeUrl`, `oauth.tokenUrl` and `revokeUrl` are `https`; plain `http` only with `broker.allow-plain-http`
   (dev stack).
+- `baseUrl`, `oauth.tokenUrl` and `revokeUrl` must not resolve to a loopback, link-local, unspecified or multicast address
+  (IPv4, IPv6 and IPv4-mapped; every address of a name is checked, a name that does not resolve is refused): `400`. Private
+  ranges are allowed. `broker.allow-loopback-system-urls` lifts the rule for the integration tests, which run their stubs on
+  loopback. `oauth.authorizeUrl` is opened by the browser, not by the broker, and keeps only the `https` rule.
 - A change of `baseUrl`, `oauth.authorizeUrl`, `oauth.tokenUrl`, `oauth.clientId` or `revokeUrl` makes every connection of the system
   lose its grant and stored value and get `needs_reconnect`; `credential.invalidated` is published per connection. Nothing is sent
   to any provider. Every grant records the client revision it was issued under; a refresh, revoke or resolve under another revision
