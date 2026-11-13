@@ -180,6 +180,31 @@ class BrokerSetupTest {
     }
 
     @Test
+    void anAddressThatFailsTheHttpsRuleIsNotCalled() throws Exception {
+        java.util.List<String> logins = new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.List<String> keyFetches = new java.util.concurrent.CopyOnWriteArrayList<>();
+        Map<String, String> env = serverEnvironment(Map.of(
+                "/certs", exchange -> {
+                    keyFetches.add(exchange.getRequestURI().getPath());
+                    ok(jwks()).handle(exchange);
+                },
+                "/v1/auth/approle/login", exchange -> {
+                    logins.add(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+                    answer(400, "{}").handle(exchange);
+                }));
+        env.remove("MCP_ALLOW_PLAIN_HTTP");
+        env.put("MCP_BAO_ROLE_ID", "dummy-role-id");
+        env.put("MCP_BAO_SECRET_ID", "dummy-secret-id");
+
+        int exit = setup(env).run();
+
+        assertThat(exit).isEqualTo(1);
+        assertThat(printed()).contains("FAIL  MCP_BAO_ADDR http://127.0.0.1:" + server.getAddress().getPort() + " must start with https://");
+        assertThat(logins).as("no AppRole login to a rejected address").isEmpty();
+        assertThat(keyFetches).as("no key fetch from a rejected address").isEmpty();
+    }
+
+    @Test
     void theGatewayHostMustBeTheTlsName() {
         Map<String, String> env = valid("https://127.0.0.1:1");
         env.put("MCP_GATEWAY_JWKS_URI", "https://10.0.0.5:8443/.well-known/jwks.json");
