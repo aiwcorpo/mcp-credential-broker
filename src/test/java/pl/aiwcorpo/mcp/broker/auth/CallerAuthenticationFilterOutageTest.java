@@ -15,6 +15,8 @@ import java.util.List;
 
 import javax.security.auth.x500.X500Principal;
 
+import org.bouncycastle.asn1.x500.X500NameBuilder;
+import org.bouncycastle.asn1.x500.style.BCStyle;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.test.system.CapturedOutput;
@@ -92,5 +94,23 @@ class CallerAuthenticationFilterOutageTest {
     @Test
     void aReplayedTokenIsAuthenticationDenied(CapturedOutput output) throws Exception {
         authenticationEvent(new TokenRejectedException("replayed_jti"), "broker-authentication-denied-replayed-jti.json", output, 401);
+    }
+
+    @Test
+    void aCommonNameWithALineBreakIsNotACallerAndIsNotLogged(CapturedOutput output) throws Exception {
+        String forged = "{\"component\":\"broker\",\"event\":\"resolve\",\"requestId\":\"r\"}";
+        byte[] subject = new X500NameBuilder(BCStyle.INSTANCE).addRDN(BCStyle.CN, "x\n" + forged + "\ny").build().getEncoded();
+        CallerAuthenticationFilter filter = new CallerAuthenticationFilter(gatewayTokens, mock(BffTokenVerifier.class),
+                new AuditLog("mcp-credential-broker", CLOCK), JsonMapper.builder().build(), CLOCK, 65536);
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/v1/credentials/resolve");
+        X509Certificate certificate = mock(X509Certificate.class);
+        when(certificate.getSubjectX500Principal()).thenReturn(new X500Principal(subject));
+        request.setAttribute("jakarta.servlet.request.X509Certificate", new X509Certificate[] {certificate});
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        assertThat(response.getStatus()).isEqualTo(401);
+        assertThat(output.getOut().lines()).noneMatch(forged::equals);
     }
 }

@@ -14,6 +14,7 @@ import jakarta.servlet.http.HttpServletRequest;
 public final class ClientCertificates {
 
     private static final String ATTRIBUTE = "jakarta.servlet.request.X509Certificate";
+    private static final int MAX_CN_LENGTH = 64;
 
     private ClientCertificates() {
     }
@@ -32,6 +33,11 @@ public final class ClientCertificates {
                     .filter(rdn -> "CN".equalsIgnoreCase(rdn.getType()))
                     .toList();
             if (cns.size() != 1 || !(cns.getFirst().getValue() instanceof String cn)) {
+                return Optional.empty();
+            }
+            // A CN that is not allowed is logged, on the stdout the audit stream shares; a line break in it could start a line
+            // that reads as an audit event. The allowed CNs are short ASCII names, 64 is the X.509 upper bound.
+            if (cn.length() > MAX_CN_LENGTH || cn.chars().anyMatch(Character::isISOControl)) {
                 return Optional.empty();
             }
             return Optional.of(cn);
