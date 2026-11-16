@@ -97,8 +97,9 @@ PostgreSQL, one Redis and one OpenBao; counters and locks are rows and transacti
   `kvVersion` (and `expiresAt` on a set), never the key. The policy needs `create`, `read` and `update` on the data path, `delete` on the metadata path and `update` on the destroy path;
   without it `PUT` and `DELETE` of the key, and the creation and removal of any system, answer `503`, and `init` warns about the
   missing rights. A write is checked against the row again afterwards (deleted, re-created or changed system: the entry is removed
-  and the call is `404` or `422`), the previous version is destroyed, creating a system removes what is stored under its id, and an
-  update that drops `service-account` removes the key.
+  and the call is `404` or `422`), the previous version is destroyed, creating a system, or adding `service-account` to one, removes what is stored under its id first, and an
+  update that drops `service-account` removes the key. A key left behind by a failed removal is not in `SystemAdminView` for a
+  system without `service-account` (the field is absent there); `GET` of the key shows it.
 - Moving from 1.x: keep the old `broker.systems.*` settings for the first start of 2.0.0. It imports them into an empty table once
   and copies the client secrets from `mcp/oauth-clients/<system>`. Then remove them. Details in the CHANGELOG.
 

@@ -455,4 +455,62 @@ class ServiceAccountKeyRaceIntegrationTest {
         assertThat(keyEntryStatus(id)).isEqualTo(404);
         assertThat(output.getAll()).doesNotContain(KEY);
     }
+
+    private String keyStatusPath(String id) {
+        return "/v1/admin/systems/" + id + "/service-account-key";
+    }
+
+    @Test
+    void aLeftoverKeyIsVisibleOnlyThroughTheKeyEndpointAndNotInTheViewOfASystemWithoutServiceAccount() {
+        String id = createSystem();
+        assertThat(putKey(id).status()).isEqualTo(200);
+        doThrow(new SecretStoreUnavailableException("secret store unreachable: test")).when(keys).remove(eq(id));
+        assertThat(replace(id, userSecretBody()).status()).isEqualTo(503);
+        reset(keys);
+
+        assertThat(bff.send("GET", "/v1/admin/systems/" + id, admin(), null, null).json().has("serviceAccountKey")).isFalse();
+        assertThat(bff.send("GET", keyStatusPath(id), admin(), null, null).json().path("set").booleanValue()).isTrue();
+    }
+
+    @Test
+    void addingServiceAccountAgainNeverBringsAnOldKeyBack(CapturedOutput output) {
+        String id = createSystem();
+        assertThat(putKey(id).status()).isEqualTo(200);
+        doThrow(new SecretStoreUnavailableException("secret store unreachable: test")).when(keys).remove(eq(id));
+        assertThat(replace(id, userSecretBody()).status()).as("the key stays behind").isEqualTo(503);
+        reset(keys);
+        assertThat(keyEntryStatus(id)).isEqualTo(200);
+        String etag = bff.send("GET", "/v1/admin/systems/" + id, admin(), null, null).header("ETag");
+        String rid = TestTokens.newRequestId();
+
+        BrokerClient.Response readded = bff.send("PUT", "/v1/admin/systems/" + id, admin(), rid, BODY_TEMPLATE.formatted(env.upstreamUrl()),
+                Map.of("If-Match", etag));
+
+        assertThat(readded.status()).isEqualTo(200);
+        assertThat(readded.json().path("serviceAccountKey").path("state").stringValue()).isEqualTo("missing");
+        assertThat(keyEntryStatus(id)).isEqualTo(404);
+        assertThat(reasons(AuditLines.of(output, rid))).contains("service_account_key_deleted:ok", "system_updated:ok");
+        assertThat(output.getAll()).doesNotContain(KEY);
+    }
+
+    @Test
+    void aSystemDoesNotTakeServiceAccountOnTopOfAKeyThatCannotBeRemoved(CapturedOutput output) {
+        String id = createSystem();
+        assertThat(putKey(id).status()).isEqualTo(200);
+        doThrow(new SecretStoreUnavailableException("secret store unreachable: test")).when(keys).remove(eq(id));
+        assertThat(replace(id, userSecretBody()).status()).isEqualTo(503);
+        String etag = bff.send("GET", "/v1/admin/systems/" + id, admin(), null, null).header("ETag");
+        String rid = TestTokens.newRequestId();
+
+        BrokerClient.Response readded = bff.send("PUT", "/v1/admin/systems/" + id, admin(), rid, BODY_TEMPLATE.formatted(env.upstreamUrl()),
+                Map.of("If-Match", etag));
+
+        assertThat(readded.status()).isEqualTo(503);
+        assertThat(repository.find(id).orElseThrow().supportedTypes()).as("not applied").extracting(Enum::name).containsExactly("USER_SECRET");
+        assertThat(bff.send("GET", "/v1/admin/systems/" + id, admin(), null, null).header("ETag")).isEqualTo(etag);
+        assertThat(reasons(AuditLines.of(output, rid))).containsExactly("secret_store_unavailable:error");
+        reset(keys);
+        assertThat(keyEntryStatus(id)).isEqualTo(200);
+        assertThat(output.getAll()).doesNotContain(KEY);
+    }
 }

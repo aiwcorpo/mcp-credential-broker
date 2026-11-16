@@ -24,8 +24,9 @@ is not bumped here yet.
   `expiresAt`, never the key.
 - Key lifecycle: the write of a key is bound to the row it was validated against (re-read after the write; a deleted, re-created or
   changed system gets the entry removed again and `404` or `422`). The previous version is destroyed after a replace (a failed destroy
-  is audited as `service_account_key_destroy_failed` and does not fail the call). Creating a system removes anything stored under its
-  id first (inside the insert transaction, `503` when it fails), an update that drops `service-account` removes the key after the
+  is audited as `service_account_key_destroy_failed` and does not fail the call). Creating a system, or updating one so that it starts to list
+  `service-account`, removes anything stored under its id first (inside the same transaction as the change, `503` and nothing applied
+  when it fails), an update that drops `service-account` removes the key after the
   commit (a failure is audited and answered `503`, the update stays), and the removal of a system or a key always issues the metadata
   delete. `DELETE` of the key for an id with no system removes an orphan (`204`) or is `404`. The key writes are audited at once, also
   when a later step fails.

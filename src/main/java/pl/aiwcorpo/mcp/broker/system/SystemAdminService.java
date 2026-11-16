@@ -223,9 +223,12 @@ public class SystemAdminService {
             stored = Boolean.TRUE.equals(transaction.execute(status -> {
                 Instant now = clock.instant();
                 boolean done = create ? repository.insert(next, now) : repository.update(next, previous.etag(), now);
-                if (done && create) {
-                    // Only the create that won the insert gets here, and nobody can write a key for the row before it commits,
-                    // so this can neither take a key of the winner nor leave a stale one to the new system. A failure rolls the insert back.
+                boolean addsServiceAccount = previous != null && !previous.supportedTypes().contains(CredentialType.SERVICE_ACCOUNT)
+                        && next.supportedTypes().contains(CredentialType.SERVICE_ACCOUNT);
+                if (done && (create || addsServiceAccount)) {
+                    // A create that won the insert, or an update that makes the system take a key, starts without one: nobody can
+                    // write a key for the row in this state before the commit (a key write needs service-account in the committed
+                    // row), so this can neither take a key of the winner nor leave a stale one to it. A failure rolls the change back.
                     removeStaleKey(caller, id);
                 }
                 if (done && !create && pointsMoved) {
