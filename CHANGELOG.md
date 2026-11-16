@@ -22,9 +22,17 @@ is not bumped here yet.
   `unknown` in the view, `503` for the key operations.
 - Audit: `admin_change` with the reasons `service_account_key_set` and `service_account_key_deleted`, carrying `kvVersion` and
   `expiresAt`, never the key.
-- Upgrade: the AppRole policy needs `create` and `update` on `secret/data/mcp/service-accounts/*` and `read` and `delete` on
-  `secret/metadata/mcp/service-accounts/*` (`deploy/README.md`). Apply it before the new image takes over: without it `PUT` and
-  `DELETE` of a key answer `503`, and so does the removal of a system that has a key. `init` warns about the missing rights.
+- Key lifecycle: the write of a key is bound to the row it was validated against (re-read after the write; a deleted, re-created or
+  changed system gets the entry removed again and `404` or `422`). The previous version is destroyed after a replace (a failed destroy
+  is audited as `service_account_key_destroy_failed` and does not fail the call). Creating a system removes anything stored under its
+  id first (inside the insert transaction, `503` when it fails), an update that drops `service-account` removes the key after the
+  commit (a failure is audited and answered `503`, the update stays), and the removal of a system or a key always issues the metadata
+  delete. `DELETE` of the key for an id with no system removes an orphan (`204`) or is `404`. The key writes are audited at once, also
+  when a later step fails.
+- Upgrade: the AppRole policy needs `create`, `read` and `update` on `secret/data/mcp/service-accounts/*`, `delete` on
+  `secret/metadata/mcp/service-accounts/*` and `update` on `secret/destroy/mcp/service-accounts/*` (`deploy/README.md`). Apply it
+  before the new image takes over: without it `PUT` and `DELETE` of a key answer `503`, and so does the creation and the removal of any
+  system. `init` warns about the missing rights.
 
 ## 2.0.0
 

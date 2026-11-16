@@ -133,7 +133,9 @@ public class SystemAdminService {
             entry.denied(e.reason() != null ? e.reason() : e.error(), "invalid_argument");
             throw e;
         } catch (RuntimeException e) {
-            entry.error(e instanceof StaleKeyNotRemovedException ? "secret_store_unavailable" : "system_change_failed", "upstream_unavailable");
+            if (!(e instanceof KeyRemovalAuditedException)) {
+                entry.error(e instanceof StaleKeyNotRemovedException ? "secret_store_unavailable" : "system_change_failed", "upstream_unavailable");
+            }
             throw e;
         }
     }
@@ -149,7 +151,7 @@ public class SystemAdminService {
     private void removeStaleKey(Caller.PortalUser caller, String id) {
         Integer version;
         try {
-            version = serviceAccountKeys.remove(id, true);
+            version = serviceAccountKeys.remove(id);
         } catch (SecretStoreUnavailableException e) {
             log.warn("Stale service account key of {} not removed, the system is not created ({})", id, e.getClass().getSimpleName());
             throw new StaleKeyNotRemovedException();
@@ -203,10 +205,6 @@ public class SystemAdminService {
                     .systemBeingChanged(id).ok("connections_invalidated");
         }
 
-        if (create) {
-            removeStaleKey(caller, id);
-        }
-
         Integer written = null;
         if (secret != null) {
             try {
@@ -225,6 +223,11 @@ public class SystemAdminService {
             stored = Boolean.TRUE.equals(transaction.execute(status -> {
                 Instant now = clock.instant();
                 boolean done = create ? repository.insert(next, now) : repository.update(next, previous.etag(), now);
+                if (done && create) {
+                    // Only the create that won the insert gets here, and nobody can write a key for the row before it commits,
+                    // so this can neither take a key of the winner nor leave a stale one to the new system. A failure rolls the insert back.
+                    removeStaleKey(caller, id);
+                }
                 if (done && !create && pointsMoved) {
                     connections.markAllNeedsReconnect(id, now);
                 }
@@ -243,6 +246,10 @@ public class SystemAdminService {
         }
         refresh();
         entry.ok(create ? "system_created" : "system_updated");
+        if (previous != null && previous.supportedTypes().contains(CredentialType.SERVICE_ACCOUNT)
+                && !next.supportedTypes().contains(CredentialType.SERVICE_ACCOUNT)) {
+            removeKeyWithSystem(caller, next);
+        }
         if (previous != null && completeInvalidation(caller.requestId(), id, next.clientRevision()) > 0) {
             audit.event("admin_change", caller.requestId()).user(caller.sub(), caller.username(), caller.azp())
                     .systemBeingChanged(id).ok("connections_invalidated");
@@ -316,23 +323,31 @@ public class SystemAdminService {
         }
     }
 
+    /** The removal of a key failed after the row had been changed; already audited, so the caller must not audit it again. */
+    private static final class KeyRemovalAuditedException extends SecretStoreUnavailableException {
+        KeyRemovalAuditedException() {
+            super("the service account key could not be removed");
+        }
+    }
+
     /**
-     * Removes the service account key after the row is gone, so that it neither outlives the system nor comes back when the id
-     * is reused. Taking it first would let a write of the key that arrives before the row delete leave an entry for a system
-     * that no longer exists; {@link #putKey} covers the write that arrives after. The delete call is made only when an entry
-     * is there, so a system that never had a key needs no right the installation may not have granted yet. One event when an
-     * entry existed. A failure leaves the system deleted: it is audited as a failure of the key removal, without the key, and
-     * passed on, and the system is not brought back.
+     * Removes the service account key after the row is gone (or no longer lists service-account), so that it neither outlives
+     * the system nor comes back when the id is reused. Taking it first would let a write of the key that arrives before the
+     * row change leave an entry behind; {@link #putKey} covers the write that arrives after, by re-reading the row. The delete
+     * call is unconditional, so an unreadable current version does not keep older ones. One event when a readable entry
+     * existed. A failure leaves the change applied (a delete of the system is not undone, an update stays): it is audited as a
+     * failure of the key removal, without the key, and answered 503. The key stays visible and can be removed with
+     * {@code deleteServiceAccountKey}. It is not done inside the update transaction, which would hold it open on OpenBao.
      */
     private void removeKeyWithSystem(Caller.PortalUser caller, SystemDefinition system) {
         AuditLog.Entry keyEntry = entry(caller).systemBeingChanged(system.id());
         Integer version;
         try {
-            version = serviceAccountKeys.remove(system.id(), true);
+            version = serviceAccountKeys.remove(system.id());
         } catch (RuntimeException e) {
-            log.warn("Service account key of the deleted system {} was not removed ({})", system.id(), e.getClass().getSimpleName());
+            log.warn("Service account key of {} was not removed with the change of the system ({})", system.id(), e.getClass().getSimpleName());
             keyFailed(keyEntry, e);
-            throw e;
+            throw new KeyRemovalAuditedException();
         }
         if (version != null) {
             keyEntry.keyVersion(version).ok("service_account_key_deleted");
@@ -349,23 +364,27 @@ public class SystemAdminService {
     /**
      * C4 putServiceAccountKey: sets or replaces the key, last write wins. Refused before anything is written when the system
      * takes no service-account key or the key does not fit its scheme; an unanswering secret store writes nothing (503).
+     *
+     * <p>The write is bound to the row it was validated against: after it the row is read again, and when it is gone, is
+     * another incarnation of the id (deleted and created again) or no longer takes this key (service-account dropped, scheme
+     * changed), the entry just written is removed and the call is 404 or 422. The event of the write is emitted at once, so a
+     * key that is live is never unaudited, and so is the one of a compensating removal. After a replace the previous version is
+     * destroyed; a failure of that is audited and does not fail the call.
      */
     public ServiceAccountKeyStatus putKey(Caller.PortalUser caller, String id, ServiceAccountKeyRequest request) {
         requireAdmin(caller);
         requireFreshMfa(caller);
         AuditLog.Entry entry = entry(caller);
         try {
-            SystemDefinition system = requireConfigured(id);
+            SystemRepository.Incarnation loaded = requireConfigured(id);
             entry.systemBeingChanged(id);
-            Instant expiresAt = checkKey(system, request);
+            Instant expiresAt = checkKey(loaded.system(), request);
             ServiceAccountKeys.Status written = serviceAccountKeys.write(id, new ServiceAccountKeys.Entry(request.value(),
                     request.username(), request.password(), expiresAt, caller.username()));
-            if (repository.find(id).isEmpty()) {
-                // The system was deleted while the key was being written; its removal of the key may have run before the write.
-                serviceAccountKeys.remove(id, false);
-                throw SystemAdminException.notFound();
-            }
-            entry.keyVersion(written.kvVersion()).keyExpiresAt(written.expiresAt()).ok("service_account_key_set");
+            entry(caller).systemBeingChanged(id).keyVersion(written.kvVersion()).keyExpiresAt(written.expiresAt())
+                    .ok("service_account_key_set");
+            bindToRow(caller, id, loaded, request);
+            destroyPrevious(caller, id, written.kvVersion());
             return statusOf(id, written);
         } catch (SystemAdminException e) {
             entry.denied(e.reason() != null ? e.reason() : e.error(), "invalid_argument");
@@ -373,6 +392,41 @@ public class SystemAdminService {
         } catch (RuntimeException e) {
             keyFailed(entry, e);
             throw e;
+        }
+    }
+
+    private void bindToRow(Caller.PortalUser caller, String id, SystemRepository.Incarnation loaded, ServiceAccountKeyRequest request) {
+        Optional<SystemRepository.Incarnation> current = repository.findIncarnation(id);
+        SystemAdminException refusal = null;
+        if (current.isEmpty() || !current.get().createdAt().equals(loaded.createdAt())) {
+            refusal = SystemAdminException.notFound();
+        } else {
+            try {
+                checkKey(current.get().system(), request);
+            } catch (SystemAdminException e) {
+                refusal = e;
+            }
+        }
+        if (refusal != null) {
+            Integer removed = serviceAccountKeys.remove(id);
+            AuditLog.Entry compensation = entry(caller).systemBeingChanged(id);
+            if (removed != null) {
+                compensation.keyVersion(removed);
+            }
+            compensation.ok("service_account_key_deleted");
+            throw refusal;
+        }
+    }
+
+    private void destroyPrevious(Caller.PortalUser caller, String id, Integer version) {
+        if (version == null || version < 2) {
+            return;
+        }
+        try {
+            serviceAccountKeys.destroy(id, version - 1);
+        } catch (RuntimeException e) {
+            log.warn("Version {} of the service account key of {} was not destroyed ({})", version - 1, id, e.getClass().getSimpleName());
+            entry(caller).systemBeingChanged(id).error("service_account_key_destroy_failed", "upstream_unavailable");
         }
     }
 
@@ -391,14 +445,13 @@ public class SystemAdminService {
             entry.systemBeingChanged(id);
             if (repository.find(id).isEmpty()) {
                 // No system: only an orphan of a removal that failed can be here, and this is how an operator cleans it up.
-                Integer orphan = serviceAccountKeys.remove(id, true);
-                if (orphan == null) {
+                if (!serviceAccountKeys.exists(id)) {
                     throw SystemAdminException.notFound();
                 }
-                entry.keyVersion(orphan).ok("service_account_key_deleted");
+                entry.keyVersion(serviceAccountKeys.remove(id)).ok("service_account_key_deleted");
                 return;
             }
-            entry.keyVersion(serviceAccountKeys.remove(id, false)).ok("service_account_key_deleted");
+            entry.keyVersion(serviceAccountKeys.remove(id)).ok("service_account_key_deleted");
         } catch (SystemAdminException e) {
             entry.denied(e.reason() != null ? e.reason() : e.error(), "invalid_argument");
             throw e;
@@ -408,11 +461,11 @@ public class SystemAdminService {
         }
     }
 
-    private SystemDefinition requireConfigured(String id) {
+    private SystemRepository.Incarnation requireConfigured(String id) {
         if (!SystemIds.isValid(id)) {
             throw SystemAdminException.invalid("system id");
         }
-        return repository.find(id).orElseThrow(SystemAdminException::notFound);
+        return repository.findIncarnation(id).orElseThrow(SystemAdminException::notFound);
     }
 
     private static void keyFailed(AuditLog.Entry entry, RuntimeException e) {

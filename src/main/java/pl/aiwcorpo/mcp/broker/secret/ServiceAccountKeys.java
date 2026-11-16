@@ -154,17 +154,25 @@ public class ServiceAccountKeys {
     }
 
     /**
-     * Removes the entry with every version (the metadata, not only the current version) and returns the version that was
-     * current, or null when there was nothing. With {@code onlyIfPresent} the delete call is skipped when no readable entry
-     * exists: the removal of a system must not need the {@code delete} right for a system that never had a key.
+     * Removes the entry with every version (the metadata, not only the current version). The delete is always issued, so a
+     * soft-deleted or unreadable current version does not keep older versions alive; the version read first is only for the
+     * audit event and is null when no readable entry was there.
      */
-    public Integer remove(String system, boolean onlyIfPresent) {
-        Status current = status(system);
-        if (onlyIfPresent && !current.set()) {
-            return null;
-        }
+    public Integer remove(String system) {
+        Integer version = status(system).kvVersion();
         client.delete(kvMount + "/metadata/" + prefix + "/" + system);
-        return current.kvVersion();
+        return version;
+    }
+
+    /** Whether the id has an entry, also one whose current version is soft-deleted. */
+    public boolean exists(String system) {
+        return client.present(dataPath(system));
+    }
+
+    /** Destroys one version (its data is gone, the history stays); an absent or already destroyed one is fine. */
+    public void destroy(String system, int version) {
+        client.write(kvMount + "/destroy/" + prefix + "/" + system, client.object()
+                .set("versions", client.object().arrayNode().add(version)));
     }
 
     private String dataPath(String system) {

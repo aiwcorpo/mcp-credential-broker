@@ -122,12 +122,38 @@ class ServiceAccountKeysTest {
         keys.write(system, new ServiceAccountKeys.Entry("one", null, null, null, null));
         keys.write(system, new ServiceAccountKeys.Entry("two", null, null, null, null));
 
-        assertThat(keys.remove(system, false)).isEqualTo(2);
+        assertThat(keys.remove(system)).isEqualTo(2);
 
         assertThat(keys.status(system).set()).isFalse();
         assertThat(env.bao("GET", "secret/metadata/mcp/service-accounts/" + system, null).statusCode()).as("no version is recoverable").isEqualTo(404);
-        assertThat(keys.remove(system, false)).as("nothing left is not an error").isNull();
-        assertThat(keys.remove(system, true)).isNull();
+        assertThat(keys.remove(system)).as("nothing left is not an error").isNull();
+    }
+
+    @Test
+    void aSoftDeletedCurrentVersionStillCountsAsAnEntryAndRemoveDropsTheHistory() {
+        String system = "sys-" + UUID.randomUUID();
+        keys.write(system, new ServiceAccountKeys.Entry("one", null, null, null, null));
+        keys.write(system, new ServiceAccountKeys.Entry("two", null, null, null, null));
+        assertThat(env.bao("DELETE", "secret/data/mcp/service-accounts/" + system, null).statusCode()).isEqualTo(204);
+
+        assertThat(keys.status(system).set()).as("nothing is readable").isFalse();
+        assertThat(keys.exists(system)).as("but the entry is there").isTrue();
+        assertThat(keys.remove(system)).isNull();
+        assertThat(env.bao("GET", "secret/metadata/mcp/service-accounts/" + system, null).statusCode()).as("the older version went too").isEqualTo(404);
+        assertThat(keys.exists(system)).isFalse();
+    }
+
+    @Test
+    void aDestroyedVersionIsGoneAndTheCurrentOneStays() {
+        String system = "sys-" + UUID.randomUUID();
+        keys.write(system, new ServiceAccountKeys.Entry("one", null, null, null, null));
+        keys.write(system, new ServiceAccountKeys.Entry("two", null, null, null, null));
+
+        keys.destroy(system, 1);
+        keys.destroy(system, 1);
+
+        assertThat(env.bao("GET", "secret/data/mcp/service-accounts/" + system + "?version=1", null).statusCode()).isEqualTo(404);
+        assertThat(keys.read(system, CredentialScheme.BEARER).value().reveal()).isEqualTo("two");
     }
 
     private static void put(String system, String data) {

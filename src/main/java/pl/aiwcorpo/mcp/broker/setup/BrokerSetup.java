@@ -63,14 +63,15 @@ public final class BrokerSetup {
             "MCP_DB_USER", "MCP_DB_PASSWORD", "MCP_REDIS_HOST", "MCP_REDIS_PASSWORD");
 
     /** What the AppRole policy of the README grants, as paths of OpenBao with the capability the broker needs on each. */
-    static final Map<String, String> POLICY_PROBES = Map.of(
-            "secret/data/mcp/connections/probe", "create",
-            "secret/data/mcp/system-clients/probe", "create",
-            "secret/data/mcp/authenticators/probe", "create",
-            "secret/data/mcp/service-accounts/probe", "create",
-            "secret/metadata/mcp/service-accounts/probe", "delete",
-            "transit/encrypt/mcp-credential-broker", "update",
-            "transit/decrypt/mcp-authenticators", "update");
+    static final Map<String, List<String>> POLICY_PROBES = Map.of(
+            "secret/data/mcp/connections/probe", List.of("create"),
+            "secret/data/mcp/system-clients/probe", List.of("create"),
+            "secret/data/mcp/authenticators/probe", List.of("create"),
+            "secret/data/mcp/service-accounts/probe", List.of("create", "read", "update"),
+            "secret/metadata/mcp/service-accounts/probe", List.of("delete"),
+            "secret/destroy/mcp/service-accounts/probe", List.of("update"),
+            "transit/encrypt/mcp-credential-broker", List.of("update"),
+            "transit/decrypt/mcp-authenticators", List.of("update"));
 
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
     private static final JsonMapper JSON = JsonMapper.builder().build();
@@ -345,10 +346,12 @@ public final class BrokerSetup {
             JsonNode body = answer.has("data") ? answer.path("data") : answer;
             POLICY_PROBES.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(probe -> {
                 JsonNode capabilities = body.path(probe.getKey());
-                boolean granted = capabilities.isArray() && capabilities.valueStream()
-                        .anyMatch(c -> "root".equals(c.asString("")) || probe.getValue().equals(c.asString("")));
-                if (!granted) {
-                    lacking.add(probe.getValue() + " on " + probe.getKey());
+                for (String needed : probe.getValue()) {
+                    boolean granted = capabilities.isArray() && capabilities.valueStream()
+                            .anyMatch(c -> "root".equals(c.asString("")) || needed.equals(c.asString("")));
+                    if (!granted) {
+                        lacking.add(needed + " on " + probe.getKey());
+                    }
                 }
             });
         } catch (JacksonException e) {

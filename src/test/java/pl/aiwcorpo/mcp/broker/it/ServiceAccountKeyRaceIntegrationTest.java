@@ -1,11 +1,11 @@
 package pl.aiwcorpo.mcp.broker.it;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.reset;
+import static org.mockito.ArgumentMatchers.any;
 
 import java.util.List;
 import java.util.Map;
@@ -16,7 +16,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
@@ -54,7 +53,7 @@ class ServiceAccountKeyRaceIntegrationTest {
     @LocalServerPort
     int port;
 
-    @Autowired
+    @MockitoSpyBean
     SystemRepository repository;
 
     @MockitoSpyBean
@@ -71,7 +70,7 @@ class ServiceAccountKeyRaceIntegrationTest {
 
     @AfterEach
     void restore() {
-        reset(keys);
+        reset(keys, repository);
     }
 
     private String admin() {
@@ -135,7 +134,7 @@ class ServiceAccountKeyRaceIntegrationTest {
         doAnswer(invocation -> {
             rowGoneWhenTheKeyWasRemoved.set(repository.find(id).isEmpty());
             return invocation.callRealMethod();
-        }).when(keys).remove(eq(id), anyBoolean());
+        }).when(keys).remove(eq(id));
 
         assertThat(deleteSystem(id, null).status()).isEqualTo(204);
 
@@ -149,7 +148,7 @@ class ServiceAccountKeyRaceIntegrationTest {
         doAnswer(invocation -> {
             env.bao("POST", "secret/data/mcp/service-accounts/" + id, "{\"data\":{\"value\":\"" + KEY + "\"}}");
             return invocation.callRealMethod();
-        }).when(keys).remove(eq(id), anyBoolean());
+        }).when(keys).remove(eq(id));
 
         assertThat(deleteSystem(id, null).status()).isEqualTo(204);
 
@@ -160,7 +159,7 @@ class ServiceAccountKeyRaceIntegrationTest {
     void aFailedKeyRemovalAfterTheRowDeleteIsAuditedAndTheSystemStaysDeleted(CapturedOutput output) {
         String id = createSystem();
         assertThat(putKey(id).status()).isEqualTo(200);
-        doThrow(new SecretStoreUnavailableException("secret store unreachable: test")).when(keys).remove(eq(id), anyBoolean());
+        doThrow(new SecretStoreUnavailableException("secret store unreachable: test")).when(keys).remove(eq(id));
         String rid = TestTokens.newRequestId();
 
         BrokerClient.Response deleted = deleteSystem(id, rid);
@@ -207,7 +206,7 @@ class ServiceAccountKeyRaceIntegrationTest {
     void aSystemIsNotCreatedOnTopOfAKeyThatCannotBeRemoved(CapturedOutput output) {
         String id = newId();
         leaveOrphan(id);
-        doThrow(new SecretStoreUnavailableException("secret store unreachable: test")).when(keys).remove(eq(id), anyBoolean());
+        doThrow(new SecretStoreUnavailableException("secret store unreachable: test")).when(keys).remove(eq(id));
         String rid = TestTokens.newRequestId();
 
         BrokerClient.Response created = create(id, rid);
@@ -245,5 +244,215 @@ class ServiceAccountKeyRaceIntegrationTest {
 
     private BrokerClient.Response deleteKey(String id, String rid) {
         return bff.send("DELETE", "/v1/admin/systems/" + id + "/service-account-key", admin(), rid, null);
+    }
+
+    private BrokerClient.Response replace(String id, String body) {
+        String etag = bff.send("GET", "/v1/admin/systems/" + id, admin(), null, null).header("ETag");
+        return bff.send("PUT", "/v1/admin/systems/" + id, admin(), TestTokens.newRequestId(), body, Map.of("If-Match", etag));
+    }
+
+    private String userSecretBody() {
+        return "{\"baseUrl\":\"" + env.upstreamUrl() + "\",\"adapter\":\"generic-rest\",\"supportedTypes\":[\"user-secret\"],"
+                + "\"defaultType\":\"user-secret\",\"secretScheme\":\"Bearer\"}";
+    }
+
+    private static List<String> reasons(List<tools.jackson.databind.JsonNode> events) {
+        return events.stream().map(event -> event.path("reason").stringValue() + ":" + event.path("outcome").stringValue()).toList();
+    }
+
+    // The write of a key is bound to the row it was validated against ------------------------------------
+
+    @Test
+    void aKeyWrittenWhileTheIdIsDeletedAndCreatedAgainIsRemoved(CapturedOutput output) {
+        String id = createSystem();
+        String rid = TestTokens.newRequestId();
+        doAnswer(invocation -> {
+            Object written = invocation.callRealMethod();
+            assertThat(repository.delete(id)).isTrue();
+            assertThat(create(id, TestTokens.newRequestId()).status()).isEqualTo(200);
+            return written;
+        }).when(keys).write(eq(id), any());
+
+        BrokerClient.Response put = bff.send("PUT", "/v1/admin/systems/" + id + "/service-account-key", admin(), rid,
+                "{\"value\":\"" + KEY + "\"}");
+
+        assertThat(put.status()).as("another incarnation of the id").isEqualTo(404);
+        assertThat(keyEntryStatus(id)).isEqualTo(404);
+        assertThat(reasons(AuditLines.of(output, rid))).contains("service_account_key_set:ok", "service_account_key_deleted:ok", "not_found:denied");
+        reset(keys);
+        assertThat(bff.send("GET", "/v1/admin/systems/" + id + "/service-account-key", admin(), null, null).json().path("set").booleanValue()).isFalse();
+    }
+
+    @Test
+    void aKeyWrittenWhileTheSystemDropsServiceAccountIsRemovedAnd422(CapturedOutput output) {
+        String id = createSystem();
+        String rid = TestTokens.newRequestId();
+        doAnswer(invocation -> {
+            Object written = invocation.callRealMethod();
+            assertThat(replace(id, userSecretBody()).status()).isEqualTo(200);
+            return written;
+        }).when(keys).write(eq(id), any());
+
+        BrokerClient.Response put = bff.send("PUT", "/v1/admin/systems/" + id + "/service-account-key", admin(), rid,
+                "{\"value\":\"" + KEY + "\"}");
+
+        assertThat(put.status()).isEqualTo(422);
+        assertThat(put.json().path("reason").stringValue()).isEqualTo("system_not_service_account");
+        assertThat(keyEntryStatus(id)).isEqualTo(404);
+        assertThat(put.body()).doesNotContain(KEY);
+        assertThat(reasons(AuditLines.of(output, rid))).contains("service_account_key_set:ok", "service_account_key_deleted:ok",
+                "system_not_service_account:denied");
+    }
+
+    @Test
+    void aKeyWrittenWhileTheSchemeChangesToBasicMustFitItOrIsRemoved() {
+        String id = createSystem();
+        doAnswer(invocation -> {
+            Object written = invocation.callRealMethod();
+            assertThat(replace(id, BODY_TEMPLATE.formatted(env.upstreamUrl()).replace("\"Bearer\"", "\"Basic\"")).status()).isEqualTo(200);
+            return written;
+        }).when(keys).write(eq(id), any());
+
+        BrokerClient.Response put = bff.send("PUT", "/v1/admin/systems/" + id + "/service-account-key", admin(), TestTokens.newRequestId(),
+                "{\"value\":\"" + KEY + "\"}");
+
+        assertThat(put.status()).isEqualTo(422);
+        assertThat(put.json().path("reason").stringValue()).isEqualTo("value_not_basic_credential");
+        assertThat(keyEntryStatus(id)).isEqualTo(404);
+    }
+
+    @Test
+    void theLosingOfTwoCreatesNeverTouchesTheKeyOfTheWinner() {
+        String id = createSystem();
+        assertThat(putKey(id).status()).isEqualTo(200);
+
+        assertThat(create(id, TestTokens.newRequestId()).status()).isEqualTo(412);
+
+        assertThat(keyEntryStatus(id)).as("the key of the existing system is still there").isEqualTo(200);
+    }
+
+    // Every live key is audited ------------------------------------------------------------------------------
+
+    @Test
+    void aFailureAfterTheWriteLeavesTheKeyAuditedAsSet(CapturedOutput output) {
+        String id = createSystem();
+        AtomicReference<Integer> calls = new AtomicReference<>(0);
+        doAnswer(invocation -> {
+            if (calls.updateAndGet(n -> n + 1) > 1) {
+                throw new org.springframework.dao.DataAccessResourceFailureException("test: database gone");
+            }
+            return invocation.callRealMethod();
+        }).when(repository).findIncarnation(eq(id));
+        String rid = TestTokens.newRequestId();
+
+        BrokerClient.Response put = bff.send("PUT", "/v1/admin/systems/" + id + "/service-account-key", admin(), rid,
+                "{\"value\":\"" + KEY + "\"}");
+
+        assertThat(put.status()).isEqualTo(503);
+        assertThat(keyEntryStatus(id)).as("the key is live").isEqualTo(200);
+        assertThat(AuditLines.of(output, rid)).anySatisfy(event -> {
+            assertThat(event.path("reason").stringValue()).isEqualTo("service_account_key_set");
+            assertThat(event.path("kvVersion").intValue()).isEqualTo(1);
+        });
+        assertThat(output.getAll()).doesNotContain(KEY);
+    }
+
+    // Older versions ---------------------------------------------------------------------------------------
+
+    @Test
+    void aReplaceDestroysThePreviousVersion() {
+        String id = createSystem();
+        assertThat(putKey(id).status()).isEqualTo(200);
+        assertThat(putKey(id).json().path("kvVersion").intValue()).isEqualTo(2);
+
+        assertThat(env.bao("GET", "secret/data/mcp/service-accounts/" + id + "?version=1", null).statusCode()).isEqualTo(404);
+        assertThat(env.bao("GET", "secret/data/mcp/service-accounts/" + id + "?version=2", null).statusCode()).isEqualTo(200);
+    }
+
+    @Test
+    void aFailedDestroyIsAuditedAndDoesNotFailTheWrite(CapturedOutput output) {
+        String id = createSystem();
+        assertThat(putKey(id).status()).isEqualTo(200);
+        doThrow(new SecretStoreUnavailableException("secret store unreachable: test")).when(keys).destroy(eq(id), org.mockito.ArgumentMatchers.anyInt());
+        String rid = TestTokens.newRequestId();
+
+        BrokerClient.Response put = bff.send("PUT", "/v1/admin/systems/" + id + "/service-account-key", admin(), rid,
+                "{\"value\":\"" + KEY + "\"}");
+
+        assertThat(put.status()).isEqualTo(200);
+        assertThat(reasons(AuditLines.of(output, rid))).containsExactly("service_account_key_set:ok", "service_account_key_destroy_failed:error");
+        assertThat(output.getAll()).doesNotContain(KEY);
+    }
+
+    // Orphans and unconditional removal ----------------------------------------------------------------------
+
+    @Test
+    void anOrphanWhoseCurrentVersionWasSoftDeletedIsStillCleanedUp() {
+        String id = newId();
+        leaveOrphan(id);
+        assertThat(env.bao("DELETE", "secret/data/mcp/service-accounts/" + id, null).statusCode()).isEqualTo(204);
+
+        assertThat(deleteKey(id, TestTokens.newRequestId()).status()).isEqualTo(204);
+
+        assertThat(keyEntryStatus(id)).isEqualTo(404);
+    }
+
+    @Test
+    void removingASystemDropsEveryVersionEvenWhenTheCurrentOneIsNotReadable() {
+        String id = createSystem();
+        assertThat(putKey(id).status()).isEqualTo(200);
+        assertThat(env.bao("DELETE", "secret/data/mcp/service-accounts/" + id, null).statusCode()).isEqualTo(204);
+
+        assertThat(deleteSystem(id, null).status()).isEqualTo(204);
+
+        assertThat(keyEntryStatus(id)).isEqualTo(404);
+    }
+
+    // A system that stops being a service-account system ------------------------------------------------------
+
+    @Test
+    void droppingServiceAccountRemovesTheKey(CapturedOutput output) {
+        String id = createSystem();
+        assertThat(putKey(id).status()).isEqualTo(200);
+        String etag = bff.send("GET", "/v1/admin/systems/" + id, admin(), null, null).header("ETag");
+        String rid = TestTokens.newRequestId();
+
+        BrokerClient.Response updated = bff.send("PUT", "/v1/admin/systems/" + id, admin(), rid, userSecretBody(), Map.of("If-Match", etag));
+
+        assertThat(updated.status()).isEqualTo(200);
+        assertThat(updated.json().has("serviceAccountKey")).isFalse();
+        assertThat(keyEntryStatus(id)).isEqualTo(404);
+        assertThat(AuditLines.of(output, rid)).filteredOn(event -> "service_account_key_deleted".equals(event.path("reason").stringValue()))
+                .singleElement().satisfies(event -> assertThat(event.path("kvVersion").intValue()).isEqualTo(1));
+    }
+
+    @Test
+    void anUpdateThatKeepsServiceAccountLeavesTheKeyAlone() {
+        String id = createSystem();
+        assertThat(putKey(id).status()).isEqualTo(200);
+
+        assertThat(replace(id, BODY_TEMPLATE.formatted(env.upstreamUrl())).status()).isEqualTo(200);
+
+        assertThat(keyEntryStatus(id)).isEqualTo(200);
+    }
+
+    @Test
+    void aFailedKeyRemovalAfterDroppingServiceAccountIsAuditedAndTheUpdateStays(CapturedOutput output) {
+        String id = createSystem();
+        assertThat(putKey(id).status()).isEqualTo(200);
+        String etag = bff.send("GET", "/v1/admin/systems/" + id, admin(), null, null).header("ETag");
+        doThrow(new SecretStoreUnavailableException("secret store unreachable: test")).when(keys).remove(eq(id));
+        String rid = TestTokens.newRequestId();
+
+        BrokerClient.Response updated = bff.send("PUT", "/v1/admin/systems/" + id, admin(), rid, userSecretBody(), Map.of("If-Match", etag));
+
+        assertThat(updated.status()).isEqualTo(503);
+        assertThat(reasons(AuditLines.of(output, rid))).containsExactly("system_updated:ok", "secret_store_unavailable:error");
+        assertThat(repository.find(id).orElseThrow().supportedTypes()).extracting(Enum::name).containsExactly("USER_SECRET");
+        reset(keys);
+        assertThat(keyEntryStatus(id)).as("still there, and visible to the operator").isEqualTo(200);
+        assertThat(deleteKey(id, TestTokens.newRequestId()).status()).as("which can remove it").isEqualTo(204);
+        assertThat(keyEntryStatus(id)).isEqualTo(404);
+        assertThat(output.getAll()).doesNotContain(KEY);
     }
 }
