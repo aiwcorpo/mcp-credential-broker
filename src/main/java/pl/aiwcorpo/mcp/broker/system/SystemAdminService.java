@@ -236,6 +236,7 @@ public class SystemAdminService {
         requireAdmin(caller);
         requireFreshMfa(caller);
         AuditLog.Entry entry = entry(caller);
+        boolean rowDeleted = false;
         try {
             if (!SystemIds.isValid(id)) {
                 throw SystemAdminException.invalid("system id");
@@ -255,7 +256,6 @@ public class SystemAdminService {
                 throw SystemAdminException.preconditionFailed();
             }
             int removed = removeConnections(caller.requestId(), id);
-            removeKeyWithSystem(caller, system);
             boolean deleted = false;
             for (int attempt = 1; !deleted; attempt++) {
                 try {
@@ -278,25 +278,39 @@ public class SystemAdminService {
                         .systemBeingChanged(id).ok("connections_invalidated");
             }
             entry.ok("system_deleted");
+            rowDeleted = true;
+            removeKeyWithSystem(caller, system);
         } catch (SystemAdminException e) {
             entry.denied(e.reason() != null ? e.reason() : e.error(), "invalid_argument");
             throw e;
         } catch (RuntimeException e) {
-            entry.error("system_change_failed", "upstream_unavailable");
+            if (!rowDeleted) {
+                entry.error("system_change_failed", "upstream_unavailable");
+            }
             throw e;
         }
     }
 
     /**
-     * Removes the service account key together with the system, so that it neither outlives the system nor comes back when the
-     * id is reused. The delete call is made only when an entry is there, so a system that never had a key needs no right the
-     * installation may not have granted yet. One event when an entry existed.
+     * Removes the service account key after the row is gone, so that it neither outlives the system nor comes back when the id
+     * is reused. Taking it first would let a write of the key that arrives before the row delete leave an entry for a system
+     * that no longer exists; {@link #putKey} covers the write that arrives after. The delete call is made only when an entry
+     * is there, so a system that never had a key needs no right the installation may not have granted yet. One event when an
+     * entry existed. A failure leaves the system deleted: it is audited as a failure of the key removal, without the key, and
+     * passed on, and the system is not brought back.
      */
     private void removeKeyWithSystem(Caller.PortalUser caller, SystemDefinition system) {
-        Integer version = serviceAccountKeys.remove(system.id(), true);
+        AuditLog.Entry keyEntry = entry(caller).systemBeingChanged(system.id());
+        Integer version;
+        try {
+            version = serviceAccountKeys.remove(system.id(), true);
+        } catch (RuntimeException e) {
+            log.warn("Service account key of the deleted system {} was not removed ({})", system.id(), e.getClass().getSimpleName());
+            keyFailed(keyEntry, e);
+            throw e;
+        }
         if (version != null) {
-            audit.event("admin_change", caller.requestId()).user(caller.sub(), caller.username(), caller.azp())
-                    .systemBeingChanged(system.id()).keyVersion(version).ok("service_account_key_deleted");
+            keyEntry.keyVersion(version).ok("service_account_key_deleted");
         }
     }
 
@@ -321,6 +335,11 @@ public class SystemAdminService {
             Instant expiresAt = checkKey(system, request);
             ServiceAccountKeys.Status written = serviceAccountKeys.write(id, new ServiceAccountKeys.Entry(request.value(),
                     request.username(), request.password(), expiresAt, caller.username()));
+            if (repository.find(id).isEmpty()) {
+                // The system was deleted while the key was being written; its removal of the key may have run before the write.
+                serviceAccountKeys.remove(id, false);
+                throw SystemAdminException.notFound();
+            }
             entry.keyVersion(written.kvVersion()).keyExpiresAt(written.expiresAt()).ok("service_account_key_set");
             return statusOf(id, written);
         } catch (SystemAdminException e) {
