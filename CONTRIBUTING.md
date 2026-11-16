@@ -55,6 +55,7 @@ PostgreSQL, one Redis and one OpenBao; counters and locks are rows and transacti
 | `GET /v1/admin/systems`, `GET /v1/admin/systems/{system}` | configuration without secrets; the single read has an `ETag` |
 | `PUT /v1/admin/systems/{system}` | create (`If-None-Match: *`) or replace (`If-Match: <ETag>`); `412` when stale, `428` without either |
 | `DELETE /v1/admin/systems/{system}` | `If-Match` required; removes the system, the connections to it with their stored values, and the client secret version |
+| `GET`, `PUT`, `DELETE /v1/admin/systems/{system}/service-account-key` | the key of a `service-account` system, write-only (below) |
 | `GET /v1/systems` | what the gateway and the portal see: types, default type, OAuth scopes |
 
 - Malformed input (an `If-Match` value, a path id that does not match `SystemId`) is `400`. A well-formed id with no system is `404`
@@ -81,9 +82,19 @@ PostgreSQL, one Redis and one OpenBao; counters and locks are rows and transacti
 - Client secrets live in OpenBao KV v2 at `secret/data/mcp/system-clients/<system>`, field `client_secret`
   (`broker.openbao.system-clients-prefix`). A write is a check-and-set to a new version, written before the row; the row stores that
   version and a new etag in one conditional update. A change that loses the race destroys the version it wrote. A replace keeps the
-  secret only while the five addresses and the client stay as they are, otherwise `client_secret_required`. A service-account key
-  stays where the operator put it (`mcp/service-accounts/<system>`, read only). The AppRole policy for all of this is in
+  secret only while the five addresses and the client stay as they are, otherwise `client_secret_required`. The AppRole policy for all of this is in
   `deploy/README.md`.
+- The service-account key (CC-251) is at `secret/data/mcp/service-accounts/<system>` (`broker.openbao.service-accounts-prefix`):
+  `value`, or `username` and `password` for a `Basic` system, optionally `expires_at`, plus `updated_by` which the reader of the
+  key ignores. `PUT` replaces the whole entry with a new KV version (last write wins, no `If-Match`), needs `service-account` in
+  `supportedTypes` and a fresh MFA, and answers the status only: no operation returns the key. `GET` shows `set`, `kvVersion`,
+  `expiresAt`, `expired`, `updatedAt` and `updatedBy`. `DELETE` removes the entry with all its versions (metadata delete) and
+  accepts any configured system, so a leftover key can go. Deleting a system removes its key too when one is there, and
+  `SystemAdminView.serviceAccountKey` says `set`, `missing` or `unknown`; a secret store that does not answer gives `unknown`
+  there but `503` for the key operations. Audit reasons `service_account_key_set` and `service_account_key_deleted` carry
+  `kvVersion` (and `expiresAt` on a set), never the key. With a policy that lacks `create` and `update` on the data path or
+  `delete` on the metadata path, `PUT` and `DELETE` of the key answer `503`, and so does the removal of a system that has a key;
+  `init` warns about the missing rights.
 - Moving from 1.x: keep the old `broker.systems.*` settings for the first start of 2.0.0. It imports them into an empty table once
   and copies the client secrets from `mcp/oauth-clients/<system>`. Then remove them. Details in the CHANGELOG.
 

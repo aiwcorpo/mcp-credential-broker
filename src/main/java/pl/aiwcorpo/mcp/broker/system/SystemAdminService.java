@@ -1,9 +1,15 @@
 package pl.aiwcorpo.mcp.broker.system;
 
 import java.net.URI;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.time.DateTimeException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Base64;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
@@ -16,6 +22,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import pl.aiwcorpo.mcp.broker.api.ServiceAccountKeyRequest;
+import pl.aiwcorpo.mcp.broker.api.ServiceAccountKeyStatus;
 import pl.aiwcorpo.mcp.broker.api.SystemAdminRequest;
 import pl.aiwcorpo.mcp.broker.api.SystemAdminView;
 import pl.aiwcorpo.mcp.broker.audit.AuditLog;
@@ -30,7 +38,9 @@ import pl.aiwcorpo.mcp.broker.event.InvalidationPublisher;
 import pl.aiwcorpo.mcp.broker.secret.ClientSecretConflictException;
 import pl.aiwcorpo.mcp.broker.secret.OAuthClientSecrets;
 import pl.aiwcorpo.mcp.broker.secret.SecretStore;
+import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
 import pl.aiwcorpo.mcp.broker.secret.SecretValue;
+import pl.aiwcorpo.mcp.broker.secret.ServiceAccountKeys;
 
 /**
  * The admin API of the systems (C4 {@code /v1/admin/systems}): validation, storage in PostgreSQL, the OAuth client secret in
@@ -45,6 +55,9 @@ import pl.aiwcorpo.mcp.broker.secret.SecretValue;
  * <p>When a change moves where the system points, every connection of the system loses its grant and its stored value and is
  * marked {@code needs_reconnect}. Nothing is sent to a provider: the old and the new address may both be ones the
  * administrator no longer controls. A delete likewise never calls a provider.
+ *
+ * <p>The key of a service-account system (CC-251) is write-only: it goes to OpenBao and no operation returns it, only whether
+ * it is there, until when it is valid and who wrote it. A delete of the system removes the key with all its versions.
  */
 public class SystemAdminService {
 
@@ -62,6 +75,7 @@ public class SystemAdminService {
     private final SystemRepository repository;
     private final SystemRegistry registry;
     private final OAuthClientSecrets clientSecrets;
+    private final ServiceAccountKeys serviceAccountKeys;
     private final ConnectionRepository connections;
     private final SecretStore secrets;
     private final InvalidationPublisher invalidations;
@@ -75,12 +89,13 @@ public class SystemAdminService {
     private final BrokerProperties.TokenExchangePolicy tokenExchangePolicy;
 
     public SystemAdminService(SystemRepository repository, SystemRegistry registry, OAuthClientSecrets clientSecrets,
-            ConnectionRepository connections, SecretStore secrets, InvalidationPublisher invalidations, OAuthService oauth,
+            ServiceAccountKeys serviceAccountKeys, ConnectionRepository connections, SecretStore secrets, InvalidationPublisher invalidations, OAuthService oauth,
             AuditLog audit, Clock clock, boolean allowPlainHttp, URI idpTokenUrl, TransactionTemplate transaction,
             BrokerProperties.BffToken mfaRules, BrokerProperties.TokenExchangePolicy tokenExchangePolicy) {
         this.repository = repository;
         this.registry = registry;
         this.clientSecrets = clientSecrets;
+        this.serviceAccountKeys = serviceAccountKeys;
         this.connections = connections;
         this.secrets = secrets;
         this.invalidations = invalidations;
@@ -96,7 +111,7 @@ public class SystemAdminService {
 
     public List<SystemAdminView> list(Caller.PortalUser caller) {
         requireAdmin(caller);
-        return repository.findAll().stream().map(SystemAdminService::view).toList();
+        return repository.findAll().stream().map(this::view).toList();
     }
 
     public Stored get(Caller.PortalUser caller, String id) {
@@ -240,6 +255,7 @@ public class SystemAdminService {
                 throw SystemAdminException.preconditionFailed();
             }
             int removed = removeConnections(caller.requestId(), id);
+            removeKeyWithSystem(caller, system);
             boolean deleted = false;
             for (int attempt = 1; !deleted; attempt++) {
                 try {
@@ -269,6 +285,125 @@ public class SystemAdminService {
             entry.error("system_change_failed", "upstream_unavailable");
             throw e;
         }
+    }
+
+    /**
+     * Removes the service account key together with the system, so that it neither outlives the system nor comes back when the
+     * id is reused. The delete call is made only when an entry is there, so a system that never had a key needs no right the
+     * installation may not have granted yet. One event when an entry existed.
+     */
+    private void removeKeyWithSystem(Caller.PortalUser caller, SystemDefinition system) {
+        Integer version = serviceAccountKeys.remove(system.id(), true);
+        if (version != null) {
+            audit.event("admin_change", caller.requestId()).user(caller.sub(), caller.username(), caller.azp())
+                    .systemBeingChanged(system.id()).keyVersion(version).ok("service_account_key_deleted");
+        }
+    }
+
+    /** C4 getServiceAccountKey: the status of the entry, never the key. A secret store that does not answer is 503. */
+    public ServiceAccountKeyStatus getKey(Caller.PortalUser caller, String id) {
+        requireAdmin(caller);
+        requireConfigured(id);
+        return statusOf(id, serviceAccountKeys.status(id));
+    }
+
+    /**
+     * C4 putServiceAccountKey: sets or replaces the key, last write wins. Refused before anything is written when the system
+     * takes no service-account key or the key does not fit its scheme; an unanswering secret store writes nothing (503).
+     */
+    public ServiceAccountKeyStatus putKey(Caller.PortalUser caller, String id, ServiceAccountKeyRequest request) {
+        requireAdmin(caller);
+        requireFreshMfa(caller);
+        AuditLog.Entry entry = entry(caller);
+        try {
+            SystemDefinition system = requireConfigured(id);
+            entry.systemBeingChanged(id);
+            Instant expiresAt = checkKey(system, request);
+            ServiceAccountKeys.Status written = serviceAccountKeys.write(id, new ServiceAccountKeys.Entry(request.value(),
+                    request.username(), request.password(), expiresAt, caller.username()));
+            entry.keyVersion(written.kvVersion()).keyExpiresAt(written.expiresAt()).ok("service_account_key_set");
+            return statusOf(id, written);
+        } catch (SystemAdminException e) {
+            entry.denied(e.reason() != null ? e.reason() : e.error(), "invalid_argument");
+            throw e;
+        } catch (RuntimeException e) {
+            keyFailed(entry, e);
+            throw e;
+        }
+    }
+
+    /** C4 deleteServiceAccountKey: removes the entry with all its versions; 204 also when there was none. */
+    public void deleteKey(Caller.PortalUser caller, String id) {
+        requireAdmin(caller);
+        requireFreshMfa(caller);
+        AuditLog.Entry entry = entry(caller);
+        try {
+            requireConfigured(id);
+            entry.systemBeingChanged(id);
+            entry.keyVersion(serviceAccountKeys.remove(id, false)).ok("service_account_key_deleted");
+        } catch (SystemAdminException e) {
+            entry.denied(e.reason() != null ? e.reason() : e.error(), "invalid_argument");
+            throw e;
+        } catch (RuntimeException e) {
+            keyFailed(entry, e);
+            throw e;
+        }
+    }
+
+    private SystemDefinition requireConfigured(String id) {
+        if (!SystemIds.isValid(id)) {
+            throw SystemAdminException.invalid("system id");
+        }
+        return repository.find(id).orElseThrow(SystemAdminException::notFound);
+    }
+
+    private static void keyFailed(AuditLog.Entry entry, RuntimeException e) {
+        entry.error(e instanceof SecretStoreUnavailableException ? "secret_store_unavailable" : "system_change_failed", "upstream_unavailable");
+    }
+
+    /** The checks that depend on the configuration and the clock (the shape is the schema's); returns the expiry. */
+    private Instant checkKey(SystemDefinition system, ServiceAccountKeyRequest request) {
+        if (!system.supportedTypes().contains(CredentialType.SERVICE_ACCOUNT)) {
+            throw keyRejected("system_not_service_account", "the system does not take the service-account credential type");
+        }
+        boolean basic = system.secretScheme() == CredentialScheme.BASIC;
+        if (request.username() != null && !basic) {
+            throw keyRejected("basic_scheme_required", "username and password are for a system whose secretScheme is Basic");
+        }
+        if (request.value() != null && basic && !isBasicCredential(request.value())) {
+            throw keyRejected("value_not_basic_credential", "value of a Basic system must be the base64 of login:password");
+        }
+        Instant expiresAt = null;
+        if (request.expiresAt() != null) {
+            try {
+                expiresAt = Instant.parse(request.expiresAt());
+            } catch (DateTimeException e) {
+                throw SystemAdminException.invalid("expiresAt");
+            }
+            if (!expiresAt.isAfter(clock.instant())) {
+                throw keyRejected("expires_at_in_past", "expiresAt must be in the future");
+            }
+        }
+        return expiresAt;
+    }
+
+    private static SystemAdminException keyRejected(String reason, String message) {
+        return new SystemAdminException(422, "service_account_key_rejected", reason, message);
+    }
+
+    private static boolean isBasicCredential(String value) {
+        try {
+            byte[] decoded = Base64.getDecoder().decode(value);
+            return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(decoded)).toString().indexOf(':') > 0;
+        } catch (IllegalArgumentException | CharacterCodingException e) {
+            return false;
+        }
+    }
+
+    private static ServiceAccountKeyStatus statusOf(String id, ServiceAccountKeys.Status status) {
+        return new ServiceAccountKeyStatus(id, status.set(), status.kvVersion(), status.expiresAt() == null ? null : status.expiresAt().toString(),
+                status.expired(), status.updatedAt() == null ? null : status.updatedAt().toString(), status.updatedBy());
     }
 
     /**
@@ -450,7 +585,29 @@ public class SystemAdminService {
         return audit.event("admin_change", caller.requestId()).user(caller.sub(), caller.username(), caller.azp());
     }
 
-    static SystemAdminView view(SystemDefinition system) {
+    /**
+     * Informational only: a secret store that does not answer must not take down the list of systems or a write of one, so
+     * its failure is {@code unknown}, which is neither {@code missing} nor the absence of the field. Present only for a
+     * system that takes a service-account key.
+     */
+    private SystemAdminView.ServiceAccountKeySummary keySummary(SystemDefinition system) {
+        if (!system.supportedTypes().contains(CredentialType.SERVICE_ACCOUNT)) {
+            return null;
+        }
+        try {
+            ServiceAccountKeys.Status status = serviceAccountKeys.status(system.id());
+            if (!status.set()) {
+                return new SystemAdminView.ServiceAccountKeySummary("missing", null, null);
+            }
+            return new SystemAdminView.ServiceAccountKeySummary("set", status.expiresAt() == null ? null : status.expiresAt().toString(),
+                    status.expired());
+        } catch (SecretStoreUnavailableException e) {
+            log.warn("Service account key of {} not read for the system view ({})", system.id(), e.getClass().getSimpleName());
+            return new SystemAdminView.ServiceAccountKeySummary("unknown", null, null);
+        }
+    }
+
+    SystemAdminView view(SystemDefinition system) {
         SystemDefinition.Oauth client = system.oauth();
         return new SystemAdminView(system.id(), system.displayName() == null ? system.id() : system.displayName(),
                 system.baseUrl().toString(), system.adapter(), system.product(),
@@ -461,6 +618,7 @@ public class SystemAdminService {
                 client == null ? null : new SystemAdminView.Oauth(client.clientId(),
                         client.authorizeUrl() == null ? null : client.authorizeUrl().toString(),
                         client.tokenUrl() == null ? null : client.tokenUrl().toString(), client.scopes(), system.clientSecretSet()),
-                system.whoami() == null ? null : new SystemAdminView.Whoami(system.whoami().path(), system.whoami().usernameField()));
+                system.whoami() == null ? null : new SystemAdminView.Whoami(system.whoami().path(), system.whoami().usernameField()),
+                keySummary(system));
     }
 }

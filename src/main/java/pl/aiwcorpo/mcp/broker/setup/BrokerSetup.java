@@ -67,7 +67,8 @@ public final class BrokerSetup {
             "secret/data/mcp/connections/probe", "create",
             "secret/data/mcp/system-clients/probe", "create",
             "secret/data/mcp/authenticators/probe", "create",
-            "secret/data/mcp/service-accounts/probe", "read",
+            "secret/data/mcp/service-accounts/probe", "create",
+            "secret/metadata/mcp/service-accounts/probe", "delete",
             "transit/encrypt/mcp-credential-broker", "update",
             "transit/decrypt/mcp-authenticators", "update");
 

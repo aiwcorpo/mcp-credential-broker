@@ -64,6 +64,72 @@ class ServiceAccountKeysTest {
         assertThatThrownBy(() -> keys.read(system, CredentialScheme.BEARER)).isInstanceOf(SecretStoreUnavailableException.class);
     }
 
+    @Test
+    void theStatusSaysWhatIsStoredAndNothingOfTheKey() {
+        String system = "sys-" + UUID.randomUUID();
+        assertThat(keys.status(system)).isEqualTo(ServiceAccountKeys.Status.MISSING);
+
+        Instant expiry = clock.instant().plusSeconds(3600).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        ServiceAccountKeys.Status written = keys.write(system,
+                new ServiceAccountKeys.Entry("test-only-key-0001", null, null, expiry, "a.admin"));
+        assertThat(written.set()).isTrue();
+        assertThat(written.kvVersion()).isEqualTo(1);
+        assertThat(written.expiresAt()).isEqualTo(expiry);
+        assertThat(written.expired()).isFalse();
+        assertThat(written.updatedBy()).isEqualTo("a.admin");
+
+        ServiceAccountKeys.Status read = keys.status(system);
+        assertThat(read.kvVersion()).isEqualTo(1);
+        assertThat(read.expiresAt()).isEqualTo(expiry);
+        assertThat(read.updatedBy()).isEqualTo("a.admin");
+        assertThat(read.updatedAt()).isNotNull().isCloseTo(Instant.now(), org.assertj.core.api.Assertions.within(60, java.time.temporal.ChronoUnit.SECONDS));
+        assertThat(read.toString()).doesNotContain("test-only-key-0001");
+        assertThat(keys.read(system, CredentialScheme.BEARER).value().reveal()).as("what resolve reads").isEqualTo("test-only-key-0001");
+    }
+
+    @Test
+    void anEntryOfAnOperatorHasNoWriterAndAnExpiredOneIsMarked() {
+        String system = "sys-" + UUID.randomUUID();
+        put(system, "{\"value\":\"k\",\"expires_at\":\"" + clock.instant().minusSeconds(5) + "\"}");
+        ServiceAccountKeys.Status status = keys.status(system);
+        assertThat(status.set()).isTrue();
+        assertThat(status.updatedBy()).isNull();
+        assertThat(status.expired()).isTrue();
+
+        put(system, "{\"value\":\"k\",\"expires_at\":\"tomorrow\"}");
+        assertThat(keys.status(system).expiresAt()).as("a status never fails on a malformed field").isNull();
+    }
+
+    @Test
+    void aWriteReplacesTheWholeEntryAndTheLastWriteWins() {
+        String system = "sys-" + UUID.randomUUID();
+        keys.write(system, new ServiceAccountKeys.Entry("first", null, null, clock.instant().plusSeconds(600), "a.admin"));
+        ServiceAccountKeys.Status second = keys.write(system, new ServiceAccountKeys.Entry(null, "svc-mcp", "p4ss", null, "b.admin"));
+
+        assertThat(second.kvVersion()).isEqualTo(2);
+        ServiceAccountKeys.Status read = keys.status(system);
+        assertThat(read.expiresAt()).as("the old expires_at is not merged in").isNull();
+        assertThat(read.updatedBy()).isEqualTo("b.admin");
+        assertThat(new String(Base64.getDecoder().decode(keys.read(system, CredentialScheme.BASIC).value().reveal()), StandardCharsets.UTF_8))
+                .isEqualTo("svc-mcp:p4ss");
+        assertThatThrownBy(() -> keys.read(system, CredentialScheme.BEARER)).as("no value field is left over")
+                .isInstanceOf(SecretStoreUnavailableException.class);
+    }
+
+    @Test
+    void removeDeletesEveryVersionAndReportsTheCurrentOne() {
+        String system = "sys-" + UUID.randomUUID();
+        keys.write(system, new ServiceAccountKeys.Entry("one", null, null, null, null));
+        keys.write(system, new ServiceAccountKeys.Entry("two", null, null, null, null));
+
+        assertThat(keys.remove(system, false)).isEqualTo(2);
+
+        assertThat(keys.status(system).set()).isFalse();
+        assertThat(env.bao("GET", "secret/metadata/mcp/service-accounts/" + system, null).statusCode()).as("no version is recoverable").isEqualTo(404);
+        assertThat(keys.remove(system, false)).as("nothing left is not an error").isNull();
+        assertThat(keys.remove(system, true)).isNull();
+    }
+
     private static void put(String system, String data) {
         assertThat(env.bao("POST", "secret/data/mcp/service-accounts/" + system, "{\"data\":" + data + "}").statusCode()).isEqualTo(200);
     }

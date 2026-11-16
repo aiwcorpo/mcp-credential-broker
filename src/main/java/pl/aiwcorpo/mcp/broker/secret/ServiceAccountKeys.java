@@ -10,10 +10,11 @@ import java.util.Objects;
 
 import pl.aiwcorpo.mcp.broker.credential.CredentialScheme;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ObjectNode;
 
 /**
  * Keys of the platform's own accounts in target systems, read from OpenBao KV
- * ({@code <kvMount>/data/<prefix>/<system>}, written by the operator, read-only for the broker). Fields: {@code value}
+ * ({@code <kvMount>/data/<prefix>/<system>}, written by an administrator through the admin API or by the operator). Fields: {@code value}
  * (the credential as it goes after the scheme in the header: for Basic already base64 of login:password), or
  * {@code username} (no colon) and {@code password} for a system that takes Basic, from which the broker builds that value; {@code expires_at} (RFC 3339) when the key is rotated on a schedule. Not cached: a rotation in
  * OpenBao takes effect on the next resolve, and the gateway's own cache is at most 60 seconds.
@@ -29,6 +30,25 @@ public class ServiceAccountKeys {
         @Override
         public String toString() {
             return "Key[expiresAt=" + expiresAt + "]";
+        }
+    }
+
+    /**
+     * What the entry says about itself and nothing of the key. {@code kvVersion}, {@code updatedAt} come from the version
+     * metadata of KV v2, {@code expiresAt} from the entry, {@code updatedBy} from the field the admin API adds. Only
+     * {@code set} is meaningful when there is no entry.
+     */
+    public record Status(boolean set, Integer kvVersion, Instant expiresAt, Boolean expired, Instant updatedAt, String updatedBy) {
+
+        public static final Status MISSING = new Status(false, null, null, null, null, null);
+    }
+
+    /** The key as an administrator gives it: exactly one of {@code value} and the pair, never both. */
+    public record Entry(String value, String username, String password, Instant expiresAt, String updatedBy) {
+
+        @Override
+        public String toString() {
+            return "Entry[expiresAt=" + expiresAt + "]";
         }
     }
 
@@ -49,7 +69,7 @@ public class ServiceAccountKeys {
      * can repair it from the user's side and an expired key would only be refused by the system.
      */
     public Key read(String system, CredentialScheme scheme) {
-        JsonNode stored = client.read(kvMount + "/data/" + prefix + "/" + system);
+        JsonNode stored = client.read(dataPath(system));
         JsonNode data = stored == null ? null : stored.path("data").path("data");
         if (data == null || !data.isObject()) {
             throw new SecretStoreUnavailableException("no service account key for " + system + " in the secret store");
@@ -88,6 +108,74 @@ public class ServiceAccountKeys {
             return Instant.parse(node.asString("")).truncatedTo(ChronoUnit.SECONDS);
         } catch (DateTimeException e) {
             throw new SecretStoreUnavailableException("service account expires_at for " + system + " is not a timestamp");
+        }
+    }
+
+    /** Never throws for a missing or unusable entry: this is what the portal shows, not what resolve accepts. */
+    public Status status(String system) {
+        JsonNode stored = client.read(dataPath(system));
+        JsonNode data = stored == null ? null : stored.path("data").path("data");
+        if (data == null || !data.isObject()) {
+            return Status.MISSING;
+        }
+        JsonNode metadata = stored.path("data").path("metadata");
+        Instant expiresAt = lenientInstant(data.path("expires_at"));
+        String updatedBy = data.path("updated_by").asString(null);
+        return new Status(true, metadata.path("version").asInt(0) > 0 ? metadata.path("version").asInt() : null, expiresAt,
+                expiresAt != null && !expiresAt.isAfter(clock.instant()), lenientInstant(metadata.path("created_time")),
+                updatedBy == null || updatedBy.isEmpty() ? null : updatedBy);
+    }
+
+    /**
+     * Replaces the whole entry with a new version: nothing of the previous one is merged and there is no check-and-set, the
+     * last write wins. The status of the version written is returned.
+     */
+    public Status write(String system, Entry entry) {
+        ObjectNode data = client.object();
+        if (entry.value() != null) {
+            data.put("value", entry.value());
+        } else {
+            data.put("username", entry.username()).put("password", entry.password());
+        }
+        Instant expiresAt = entry.expiresAt() == null ? null : entry.expiresAt().truncatedTo(ChronoUnit.SECONDS);
+        if (expiresAt != null) {
+            data.put("expires_at", expiresAt.toString());
+        }
+        if (entry.updatedBy() != null) {
+            data.put("updated_by", entry.updatedBy());
+        }
+        JsonNode written = client.write(dataPath(system), client.object().set("data", data)).path("data");
+        int version = written.path("version").asInt(0);
+        if (version < 1) {
+            throw new SecretStoreUnavailableException("secret store did not report the version of the service account key");
+        }
+        return new Status(true, version, expiresAt, false, lenientInstant(written.path("created_time")),
+                entry.updatedBy());
+    }
+
+    /**
+     * Removes the entry with every version (the metadata, not only the current version) and returns the version that was
+     * current, or null when there was nothing. With {@code onlyIfPresent} the delete call is skipped when no readable entry
+     * exists: the removal of a system must not need the {@code delete} right for a system that never had a key.
+     */
+    public Integer remove(String system, boolean onlyIfPresent) {
+        Status current = status(system);
+        if (onlyIfPresent && !current.set()) {
+            return null;
+        }
+        client.delete(kvMount + "/metadata/" + prefix + "/" + system);
+        return current.kvVersion();
+    }
+
+    private String dataPath(String system) {
+        return kvMount + "/data/" + prefix + "/" + system;
+    }
+
+    private static Instant lenientInstant(JsonNode node) {
+        try {
+            return node.isString() && !node.stringValue().isBlank() ? Instant.parse(node.stringValue()).truncatedTo(ChronoUnit.SECONDS) : null;
+        } catch (DateTimeException e) {
+            return null;
         }
     }
 }

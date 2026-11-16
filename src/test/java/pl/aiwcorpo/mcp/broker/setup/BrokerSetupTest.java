@@ -44,8 +44,8 @@ class BrokerSetupTest {
     private static final String STORE_PASSWORD = new String(TestPki.PASSWORD);
     private static final String CAPABILITIES_ALL = """
             {"data":{"secret/data/mcp/connections/probe":["create"],"secret/data/mcp/system-clients/probe":["create"],
-            "secret/data/mcp/authenticators/probe":["create"],"secret/data/mcp/service-accounts/probe":["read"],
-            "transit/encrypt/mcp-credential-broker":["update"],"transit/decrypt/mcp-authenticators":["update"]}}""";
+            "secret/data/mcp/authenticators/probe":["create"],"secret/data/mcp/service-accounts/probe":["create"],
+            "secret/metadata/mcp/service-accounts/probe":["delete"],"transit/encrypt/mcp-credential-broker":["update"],"transit/decrypt/mcp-authenticators":["update"]}}""";
 
     @TempDir
     Path dir;
@@ -315,7 +315,7 @@ class BrokerSetupTest {
                 "/v1/auth/approle/login", ok("{\"auth\":{\"client_token\":\"s.token\"}}"),
                 "/v1/sys/capabilities-self", ok("{\"secret/data/mcp/connections/probe\":[\"root\"],"
                         + "\"secret/data/mcp/system-clients/probe\":[\"root\"],\"secret/data/mcp/authenticators/probe\":[\"root\"],"
-                        + "\"secret/data/mcp/service-accounts/probe\":[\"root\"],\"transit/encrypt/mcp-credential-broker\":[\"root\"],"
+                        + "\"secret/data/mcp/service-accounts/probe\":[\"root\"],\"secret/metadata/mcp/service-accounts/probe\":[\"root\"],\"transit/encrypt/mcp-credential-broker\":[\"root\"],"
                         + "\"transit/decrypt/mcp-authenticators\":[\"root\"]}")));
 
         setup(env).run();

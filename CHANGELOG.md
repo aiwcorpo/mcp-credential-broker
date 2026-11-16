@@ -3,6 +3,26 @@
 The broker ships as a container image (`ghcr.io/aiwcorpo/mcp-credential-broker`); the version in `pom.xml` follows SemVer. Local and
 integration builds tag the image `m6-<short sha>`.
 
+## Unreleased
+
+Write-only service account key operations (CC-251). Needs the `mcp-contracts` release that contains CC-251; `mcp-contracts.version`
+is not bumped here yet.
+
+- `GET`, `PUT` and `DELETE /v1/admin/systems/{system}/service-account-key`: an administrator sets, replaces and removes the key of a
+  `service-account` system instead of writing it into OpenBao by hand. No operation returns the key; `GET` and the `PUT` response
+  carry `set`, `kvVersion`, `expiresAt`, `expired`, `updatedAt` and `updatedBy`. `PUT` and `DELETE` need a fresh MFA (`401
+  step_up_required`), the system must list `service-account` (`422 service_account_key_rejected`, reasons
+  `system_not_service_account`, `basic_scheme_required`, `value_not_basic_credential`, `expires_at_in_past`), and the last write
+  wins. `DELETE` removes the entry with every version and also accepts a system that is no longer `service-account`.
+- `DELETE /v1/admin/systems/{system}` removes the key of the system too, and `SystemAdminView` has `serviceAccountKey` (`state` `set`,
+  `missing` or `unknown`, with `expiresAt` and `expired` when set) for systems with `service-account`. An unreachable OpenBao gives
+  `unknown` in the view, `503` for the key operations.
+- Audit: `admin_change` with the reasons `service_account_key_set` and `service_account_key_deleted`, carrying `kvVersion` and
+  `expiresAt`, never the key.
+- Upgrade: the AppRole policy needs `create` and `update` on `secret/data/mcp/service-accounts/*` and `read` and `delete` on
+  `secret/metadata/mcp/service-accounts/*` (`deploy/README.md`). Apply it before the new image takes over: without it `PUT` and
+  `DELETE` of a key answer `503`, and so does the removal of a system that has a key. `init` warns about the missing rights.
+
 ## 2.0.0
 
 Built on `mcp-contracts` 7.0.0 (CC-229, CC-235, CC-237, CC-238). Breaking: the systems are no longer configuration.
