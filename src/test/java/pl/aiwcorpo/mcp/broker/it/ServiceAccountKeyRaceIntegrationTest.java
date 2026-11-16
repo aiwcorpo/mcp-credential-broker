@@ -173,4 +173,77 @@ class ServiceAccountKeyRaceIntegrationTest {
         assertThat(outcomes).containsExactly("system_deleted:ok", "secret_store_unavailable:error");
         assertThat(output.getAll()).doesNotContain(KEY);
     }
+
+    private static String newId() {
+        return "n" + UUID.randomUUID().toString().replace("-", "").substring(0, 10);
+    }
+
+    private static void leaveOrphan(String id) {
+        assertThat(env.bao("POST", "secret/data/mcp/service-accounts/" + id, "{\"data\":{\"value\":\"" + KEY + "\"}}").statusCode()).isEqualTo(200);
+    }
+
+    private BrokerClient.Response create(String id, String rid) {
+        return bff.send("PUT", "/v1/admin/systems/" + id, admin(), rid, BODY_TEMPLATE.formatted(env.upstreamUrl()),
+                Map.of("If-None-Match", "*"));
+    }
+
+    @Test
+    void aNewSystemNeverInheritsAKeyLeftUnderItsId(CapturedOutput output) {
+        String id = newId();
+        leaveOrphan(id);
+        String rid = TestTokens.newRequestId();
+
+        BrokerClient.Response created = create(id, rid);
+
+        assertThat(created.status()).isEqualTo(200);
+        assertThat(created.json().path("serviceAccountKey").path("state").stringValue()).isEqualTo("missing");
+        assertThat(keyEntryStatus(id)).as("every version of the orphan is gone").isEqualTo(404);
+        assertThat(AuditLines.of(output, rid)).extracting(event -> event.path("reason").stringValue())
+                .contains("service_account_key_deleted", "system_created");
+        assertThat(output.getAll()).doesNotContain(KEY);
+    }
+
+    @Test
+    void aSystemIsNotCreatedOnTopOfAKeyThatCannotBeRemoved(CapturedOutput output) {
+        String id = newId();
+        leaveOrphan(id);
+        doThrow(new SecretStoreUnavailableException("secret store unreachable: test")).when(keys).remove(eq(id), anyBoolean());
+        String rid = TestTokens.newRequestId();
+
+        BrokerClient.Response created = create(id, rid);
+
+        assertThat(created.status()).isEqualTo(503);
+        assertThat(created.body()).isEqualTo("{\"error\":\"upstream_unavailable\"}");
+        assertThat(repository.find(id)).as("no system was created").isEmpty();
+        assertThat(keyEntryStatus(id)).as("the orphan is still there").isEqualTo(200);
+        assertThat(AuditLines.of(output, rid)).singleElement().satisfies(event -> {
+            assertThat(event.path("outcome").stringValue()).isEqualTo("error");
+            assertThat(event.path("reason").stringValue()).isEqualTo("secret_store_unavailable");
+        });
+        assertThat(output.getAll()).doesNotContain(KEY);
+        reset(keys);
+        env.bao("DELETE", "secret/metadata/mcp/service-accounts/" + id, null);
+    }
+
+    @Test
+    void anOperatorCleansUpAnOrphanThroughTheKeyEndpointOfAnUnconfiguredSystem(CapturedOutput output) {
+        String id = newId();
+        assertThat(deleteKey(id, TestTokens.newRequestId()).status()).as("nothing there").isEqualTo(404);
+        leaveOrphan(id);
+        String rid = TestTokens.newRequestId();
+
+        assertThat(deleteKey(id, rid).status()).isEqualTo(204);
+
+        assertThat(keyEntryStatus(id)).isEqualTo(404);
+        assertThat(AuditLines.of(output, rid)).singleElement().satisfies(event -> {
+            assertThat(event.path("reason").stringValue()).isEqualTo("service_account_key_deleted");
+            assertThat(event.path("kvVersion").intValue()).isEqualTo(1);
+        });
+        assertThat(deleteKey(id, TestTokens.newRequestId()).status()).isEqualTo(404);
+        assertThat(output.getAll()).doesNotContain(KEY);
+    }
+
+    private BrokerClient.Response deleteKey(String id, String rid) {
+        return bff.send("DELETE", "/v1/admin/systems/" + id + "/service-account-key", admin(), rid, null);
+    }
 }

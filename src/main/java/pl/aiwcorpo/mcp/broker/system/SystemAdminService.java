@@ -133,8 +133,29 @@ public class SystemAdminService {
             entry.denied(e.reason() != null ? e.reason() : e.error(), "invalid_argument");
             throw e;
         } catch (RuntimeException e) {
-            entry.error("system_change_failed", "upstream_unavailable");
+            entry.error(e instanceof StaleKeyNotRemovedException ? "secret_store_unavailable" : "system_change_failed", "upstream_unavailable");
             throw e;
+        }
+    }
+
+    /** A key left behind by a removal that failed must never be inherited by a new system with the same id. */
+    private static final class StaleKeyNotRemovedException extends SecretStoreUnavailableException {
+        StaleKeyNotRemovedException() {
+            super("a service account key left for the id could not be removed");
+        }
+    }
+
+    /** The create of a system on an id removes what is stored under it, and fails (503) when that cannot be done. */
+    private void removeStaleKey(Caller.PortalUser caller, String id) {
+        Integer version;
+        try {
+            version = serviceAccountKeys.remove(id, true);
+        } catch (SecretStoreUnavailableException e) {
+            log.warn("Stale service account key of {} not removed, the system is not created ({})", id, e.getClass().getSimpleName());
+            throw new StaleKeyNotRemovedException();
+        }
+        if (version != null) {
+            entry(caller).systemBeingChanged(id).keyVersion(version).ok("service_account_key_deleted");
         }
     }
 
@@ -180,6 +201,10 @@ public class SystemAdminService {
         if (create && removeConnections(caller.requestId(), id) > 0) {
             audit.event("admin_change", caller.requestId()).user(caller.sub(), caller.username(), caller.azp())
                     .systemBeingChanged(id).ok("connections_invalidated");
+        }
+
+        if (create) {
+            removeStaleKey(caller, id);
         }
 
         Integer written = null;
@@ -351,14 +376,28 @@ public class SystemAdminService {
         }
     }
 
-    /** C4 deleteServiceAccountKey: removes the entry with all its versions; 204 also when there was none. */
+    /**
+     * C4 deleteServiceAccountKey: removes the entry with all its versions; 204 also when there was none. For an id with no
+     * system it removes a leftover entry (204) and is 404 when nothing is there.
+     */
     public void deleteKey(Caller.PortalUser caller, String id) {
         requireAdmin(caller);
         requireFreshMfa(caller);
         AuditLog.Entry entry = entry(caller);
         try {
-            requireConfigured(id);
+            if (!SystemIds.isValid(id)) {
+                throw SystemAdminException.invalid("system id");
+            }
             entry.systemBeingChanged(id);
+            if (repository.find(id).isEmpty()) {
+                // No system: only an orphan of a removal that failed can be here, and this is how an operator cleans it up.
+                Integer orphan = serviceAccountKeys.remove(id, true);
+                if (orphan == null) {
+                    throw SystemAdminException.notFound();
+                }
+                entry.keyVersion(orphan).ok("service_account_key_deleted");
+                return;
+            }
             entry.keyVersion(serviceAccountKeys.remove(id, false)).ok("service_account_key_deleted");
         } catch (SystemAdminException e) {
             entry.denied(e.reason() != null ? e.reason() : e.error(), "invalid_argument");

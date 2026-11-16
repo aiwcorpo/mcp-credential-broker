@@ -14,6 +14,9 @@ is not bumped here yet.
   step_up_required`), the system must list `service-account` (`422 service_account_key_rejected`, reasons
   `system_not_service_account`, `basic_scheme_required`, `value_not_basic_credential`, `expires_at_in_past`), and the last write
   wins. `DELETE` removes the entry with every version and also accepts a system that is no longer `service-account`.
+  Deviation from the contract text: `DELETE` for an id with no system removes a leftover entry (`204`) instead of always answering `404`, and
+  `PUT /v1/admin/systems/{system}` on the create path removes a stale entry under the id first (`503` when that fails), so a key left by a
+  failed removal is never inherited by a new system.
 - `DELETE /v1/admin/systems/{system}` removes the key of the system too, and `SystemAdminView` has `serviceAccountKey` (`state` `set`,
   `missing` or `unknown`, with `expiresAt` and `expired` when set) for systems with `service-account`. An unreachable OpenBao gives
   `unknown` in the view, `503` for the key operations.

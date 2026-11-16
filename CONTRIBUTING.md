@@ -89,7 +89,9 @@ PostgreSQL, one Redis and one OpenBao; counters and locks are rows and transacti
   key ignores. `PUT` replaces the whole entry with a new KV version (last write wins, no `If-Match`), needs `service-account` in
   `supportedTypes` and a fresh MFA, and answers the status only: no operation returns the key. `GET` shows `set`, `kvVersion`,
   `expiresAt`, `expired`, `updatedAt` and `updatedBy`. `DELETE` removes the entry with all its versions (metadata delete) and
-  accepts any configured system, so a leftover key can go. Deleting a system removes its key too when one is there, and
+  accepts any configured system, so a leftover key can go; for an id with no system it removes an orphan left by a failed removal
+  (`204`) and is `404` when nothing is there. Creating a system removes whatever is stored under its id first and answers `503`
+  when that fails. Deleting a system removes its key too when one is there, and
   `SystemAdminView.serviceAccountKey` says `set`, `missing` or `unknown`; a secret store that does not answer gives `unknown`
   there but `503` for the key operations. Audit reasons `service_account_key_set` and `service_account_key_deleted` carry
   `kvVersion` (and `expiresAt` on a set), never the key. With a policy that lacks `create` and `update` on the data path or
