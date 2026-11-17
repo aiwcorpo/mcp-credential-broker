@@ -3,6 +3,38 @@
 The broker ships as a container image (`ghcr.io/aiwcorpo/mcp-credential-broker`); the version in `pom.xml` follows SemVer. Local and
 integration builds tag the image `m6-<short sha>`.
 
+## Unreleased
+
+Write-only service account key operations (CC-251). Needs the `mcp-contracts` release that contains CC-251; `mcp-contracts.version`
+is not bumped here yet.
+
+- `GET`, `PUT` and `DELETE /v1/admin/systems/{system}/service-account-key`: an administrator sets, replaces and removes the key of a
+  `service-account` system instead of writing it into OpenBao by hand. No operation returns the key; `GET` and the `PUT` response
+  carry `set`, `kvVersion`, `expiresAt`, `expired`, `updatedAt` and `updatedBy`. `PUT` and `DELETE` need a fresh MFA (`401
+  step_up_required`), the system must list `service-account` (`422 service_account_key_rejected`, reasons
+  `system_not_service_account`, `basic_scheme_required`, `value_not_basic_credential`, `expires_at_in_past`), and the last write
+  wins. `DELETE` removes the entry with every version and also accepts a system that is no longer `service-account`.
+  Deviation from the contract text: `DELETE` for an id with no system removes a leftover entry (`204`) instead of always answering `404`, and
+  `PUT /v1/admin/systems/{system}` on the create path removes a stale entry under the id first (`503` when that fails), so a key left by a
+  failed removal is never inherited by a new system.
+- `DELETE /v1/admin/systems/{system}` removes the key of the system too, and `SystemAdminView` has `serviceAccountKey` (`state` `set`,
+  `missing` or `unknown`, with `expiresAt` and `expired` when set) for systems with `service-account`. An unreachable OpenBao gives
+  `unknown` in the view, `503` for the key operations.
+- Audit: `admin_change` with the reasons `service_account_key_set` and `service_account_key_deleted`, carrying `kvVersion` and
+  `expiresAt`, never the key.
+- Key lifecycle: the write of a key is bound to the row it was validated against (re-read after the write; a deleted, re-created or
+  changed system gets the entry removed again and `404` or `422`). The previous version is destroyed after a replace (a failed destroy
+  is audited as `service_account_key_destroy_failed` and does not fail the call). Creating a system, or updating one so that it starts to list
+  `service-account`, removes anything stored under its id first (inside the same transaction as the change, `503` and nothing applied
+  when it fails), an update that drops `service-account` removes the key after the
+  commit (a failure is audited and answered `503`, the update stays), and the removal of a system or a key always issues the metadata
+  delete. `DELETE` of the key for an id with no system removes an orphan (`204`) or is `404`. The key writes are audited at once, also
+  when a later step fails.
+- Upgrade: the AppRole policy needs `create`, `read` and `update` on `secret/data/mcp/service-accounts/*`, `delete` on
+  `secret/metadata/mcp/service-accounts/*` and `update` on `secret/destroy/mcp/service-accounts/*` (`deploy/README.md`). Apply it
+  before the new image takes over: without it `PUT` and `DELETE` of a key answer `503`, and so does the creation and the removal of any
+  system. `init` warns about the missing rights.
+
 ## 2.0.0
 
 Built on `mcp-contracts` 7.0.0 (CC-229, CC-235, CC-237, CC-238). Breaking: the systems are no longer configuration.

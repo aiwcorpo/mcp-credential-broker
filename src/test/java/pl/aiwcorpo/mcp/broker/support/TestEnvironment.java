@@ -66,7 +66,9 @@ public final class TestEnvironment {
             path "secret/destroy/mcp/system-clients/*"  { capabilities = ["update"] }
             path "secret/data/mcp/system-clients-it/*"  { capabilities = ["read"] }
             path "secret/data/mcp/oauth-clients/*"      { capabilities = ["read"] }
-            path "secret/data/mcp/service-accounts/*" { capabilities = ["read"] }
+            path "secret/data/mcp/service-accounts/*"     { capabilities = ["create", "read", "update"] }
+            path "secret/metadata/mcp/service-accounts/*" { capabilities = ["delete"] }
+            path "secret/destroy/mcp/service-accounts/*"  { capabilities = ["update"] }
             path "transit/encrypt/mcp-credential-broker" { capabilities = ["update"] }
             path "transit/decrypt/mcp-credential-broker" { capabilities = ["update"] }
             path "secret/data/mcp/authenticators/*"     { capabilities = ["create", "read", "update", "delete"] }

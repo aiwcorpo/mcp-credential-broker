@@ -76,10 +76,20 @@ public record Operation(String operationId, String method, Pattern path, Set<Str
     public static final Operation DELETE_ADMIN_SYSTEM = new Operation("deleteAdminSystem", "DELETE",
             Pattern.compile("^/v1/admin/systems/[^/]+$"), Set.of(PORTAL_BFF), false, InternalJwtVerifier.ToolClaim.FORBIDDEN, "admin_change");
 
+    public static final Operation GET_SERVICE_ACCOUNT_KEY = new Operation("getServiceAccountKey", "GET",
+            Pattern.compile("^/v1/admin/systems/[^/]+/service-account-key$"), Set.of(PORTAL_BFF), false,
+            InternalJwtVerifier.ToolClaim.FORBIDDEN, "admin_change");
+    public static final Operation PUT_SERVICE_ACCOUNT_KEY = new Operation("putServiceAccountKey", "PUT",
+            Pattern.compile("^/v1/admin/systems/[^/]+/service-account-key$"), Set.of(PORTAL_BFF), false,
+            InternalJwtVerifier.ToolClaim.FORBIDDEN, "admin_change");
+    public static final Operation DELETE_SERVICE_ACCOUNT_KEY = new Operation("deleteServiceAccountKey", "DELETE",
+            Pattern.compile("^/v1/admin/systems/[^/]+/service-account-key$"), Set.of(PORTAL_BFF), false,
+            InternalJwtVerifier.ToolClaim.FORBIDDEN, "admin_change");
+
     public static final List<Operation> ALL = List.of(RESOLVE, PUT_SECRET, LIST_SYSTEMS, LIST_CONNECTIONS, DELETE_CONNECTION,
             START_OAUTH, COMPLETE_OAUTH, GET_AUTHENTICATOR, DELETE_AUTHENTICATOR, START_ENROLLMENT, CONFIRM_ENROLLMENT,
             VERIFY_CODE, INVALIDATE_CODES, RESET_AUTHENTICATOR, PURGE_USER, LIST_ADMIN_SYSTEMS, GET_ADMIN_SYSTEM, PUT_ADMIN_SYSTEM,
-            DELETE_ADMIN_SYSTEM);
+            DELETE_ADMIN_SYSTEM, GET_SERVICE_ACCOUNT_KEY, PUT_SERVICE_ACCOUNT_KEY, DELETE_SERVICE_ACCOUNT_KEY);
 
     private static final Pattern SYSTEM_IN_PATH = Pattern.compile("^/v1/(?:connections|admin/systems)/([^/;]+)(?:/|$)");
 

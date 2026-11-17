@@ -18,7 +18,10 @@ import pl.aiwcorpo.mcp.broker.auth.Caller;
 import pl.aiwcorpo.mcp.broker.auth.CallerAuthenticationFilter;
 import pl.aiwcorpo.mcp.broker.system.SystemAdminService;
 
-/** C4 listAdminSystems, getAdminSystem, putAdminSystem and deleteAdminSystem: the portal BFF with the token of an administrator. */
+/**
+ * C4 listAdminSystems, getAdminSystem, putAdminSystem, deleteAdminSystem and the service account key operations (CC-251): the
+ * portal BFF with the token of an administrator.
+ */
 @RestController
 public class SystemAdminController {
 
@@ -51,6 +54,25 @@ public class SystemAdminController {
     public ResponseEntity<Void> delete(@RequestAttribute(CallerAuthenticationFilter.CALLER) Caller caller,
             @PathVariable("system") String system, @RequestHeader(value = "If-Match", required = false) String ifMatch) {
         systems.delete(portalUser(caller), system, ifMatch);
+        return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping(path = "/v1/admin/systems/{system}/service-account-key", produces = "application/json")
+    public ResponseEntity<ServiceAccountKeyStatus> getKey(@RequestAttribute(CallerAuthenticationFilter.CALLER) Caller caller,
+            @PathVariable("system") String system) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(systems.getKey(portalUser(caller), system));
+    }
+
+    @PutMapping(path = "/v1/admin/systems/{system}/service-account-key", consumes = "application/json", produces = "application/json")
+    public ResponseEntity<ServiceAccountKeyStatus> putKey(@RequestAttribute(CallerAuthenticationFilter.CALLER) Caller caller,
+            @PathVariable("system") String system, @Valid @RequestBody ServiceAccountKeyRequest request) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(systems.putKey(portalUser(caller), system, request));
+    }
+
+    @DeleteMapping(path = "/v1/admin/systems/{system}/service-account-key")
+    public ResponseEntity<Void> deleteKey(@RequestAttribute(CallerAuthenticationFilter.CALLER) Caller caller,
+            @PathVariable("system") String system) {
+        systems.deleteKey(portalUser(caller), system);
         return ResponseEntity.noContent().build();
     }
 

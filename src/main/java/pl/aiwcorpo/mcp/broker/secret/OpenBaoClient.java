@@ -78,6 +78,22 @@ public class OpenBaoClient {
         return response.body();
     }
 
+    /**
+     * Whether a KV v2 data path has an entry, a soft-deleted current version included (OpenBao answers 404 with the version
+     * metadata for it). The body is not returned: this is for the decision, not for the value.
+     */
+    public boolean present(String path) {
+        Response response = call("GET", path, null);
+        if (response.status() == 404 && response.body().isObject() && response.body().path("data").isObject()) {
+            return true;
+        }
+        if (absent(response)) {
+            return false;
+        }
+        requireOk(response, "read");
+        return true;
+    }
+
     /** Keys below a KV v2 metadata path (LIST); null when there are none. */
     public JsonNode list(String path) {
         Response response = call("GET", path + "?list=true", null);

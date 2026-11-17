@@ -83,6 +83,8 @@ public class AuditLog {
         private String decision;
         private String reason;
         private String errorCode;
+        private Integer kvVersion;
+        private String expiresAt;
 
         private Entry(String event, String requestId, Instant start) {
             this.event = event;
@@ -144,6 +146,17 @@ public class AuditLog {
             return this;
         }
 
+        /** Version of the service account key entry that was written or removed (CC-251); never the key itself. */
+        public Entry keyVersion(Integer kvVersion) {
+            this.kvVersion = kvVersion;
+            return this;
+        }
+
+        public Entry keyExpiresAt(Instant expiresAt) {
+            this.expiresAt = expiresAt == null ? null : expiresAt.toString();
+            return this;
+        }
+
         public void ok(String reason) {
             this.reason = reason;
             emit("ok");
@@ -165,7 +178,7 @@ public class AuditLog {
             Instant now = clock.instant();
             AuditEvent line = new AuditEvent(TS.format(now.truncatedTo(ChronoUnit.MILLIS)), requestId, "broker",
                     componentId, event, sub, username, backendUser, client, server, tool, policyRevision,
-                    credentialType, decision, reason, outcome, errorCode,
+                    credentialType, decision, reason, outcome, errorCode, kvVersion, expiresAt,
                     Math.max(0, now.toEpochMilli() - start.toEpochMilli()));
             audit.info(serialize(line));
         }
