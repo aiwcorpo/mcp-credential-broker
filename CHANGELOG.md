@@ -3,10 +3,9 @@
 The broker ships as a container image (`ghcr.io/aiwcorpo/mcp-credential-broker`); the version in `pom.xml` follows SemVer. Local and
 integration builds tag the image `m6-<short sha>`.
 
-## Unreleased
+## 2.1.0
 
-Write-only service account key operations (CC-251). Needs the `mcp-contracts` release that contains CC-251; `mcp-contracts.version`
-is not bumped here yet.
+Write-only service account key operations (CC-251). Built on `mcp-contracts` 7.1.0.
 
 - `GET`, `PUT` and `DELETE /v1/admin/systems/{system}/service-account-key`: an administrator sets, replaces and removes the key of a
   `service-account` system instead of writing it into OpenBao by hand. No operation returns the key; `GET` and the `PUT` response
@@ -14,7 +13,7 @@ is not bumped here yet.
   step_up_required`), the system must list `service-account` (`422 service_account_key_rejected`, reasons
   `system_not_service_account`, `basic_scheme_required`, `value_not_basic_credential`, `expires_at_in_past`), and the last write
   wins. `DELETE` removes the entry with every version and also accepts a system that is no longer `service-account`.
-  Deviation from the contract text: `DELETE` for an id with no system removes a leftover entry (`204`) instead of always answering `404`, and
+  As in the 2026-11-16 amendment of CC-251: `DELETE` for an id with no system removes a leftover entry (`204`) instead of always answering `404`, and
   `PUT /v1/admin/systems/{system}` on the create path removes a stale entry under the id first (`503` when that fails), so a key left by a
   failed removal is never inherited by a new system.
 - `DELETE /v1/admin/systems/{system}` removes the key of the system too, and `SystemAdminView` has `serviceAccountKey` (`state` `set`,
