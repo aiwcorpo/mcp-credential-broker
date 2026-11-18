@@ -10,8 +10,10 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -32,6 +34,7 @@ import com.nimbusds.jwt.SignedJWT;
 
 import pl.aiwcorpo.mcp.broker.auth.InternalJwtVerifier.ToolClaim;
 import pl.aiwcorpo.mcp.broker.support.Contracts;
+import pl.aiwcorpo.mcp.broker.support.MutableClock;
 import tools.jackson.databind.JsonNode;
 
 /**
@@ -199,6 +202,63 @@ class InternalJwtVectorTest {
         subject.verify(token, rid, false, ToolClaim.REQUIRED);
         assertThatThrownBy(() -> subject.verify(token, rid, false, ToolClaim.REQUIRED))
                 .extracting(e -> ((TokenRejectedException) e).reason()).isEqualTo("replayed_jti");
+    }
+
+    @Test
+    void theJtiOutlivesTheLastAcceptedSecondOnThisAndOnALaggingInstance() throws Exception {
+        ECKey key = ECKey.parse(Contracts.text("test-vectors/keys/test-gateway-jwt-a.NOT-FOR-PRODUCTION.private.jwk.json"));
+        Instant issued = Instant.parse("2026-10-27T12:00:00Z");
+        String rid = "0192d1b2-7c3a-7d4e-8f10-2a3b4c5d6e7f";
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issuer("https://mcp-gateway.internal").claim("aud", "mcp-credential-broker").claim("use", "call").subject("u-1")
+                .claim("usr", "alice").claim("grp", List.of()).claim("azp", "claude-code").claim("tool", "get_issue")
+                .claim("rid", rid).claim("prv", 7L)
+                .claim("iat", issued.getEpochSecond()).claim("exp", issued.getEpochSecond() + 60).jwtID("j-ttl").build();
+        SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.ES256).keyID(key.getKeyID()).build(), claims);
+        jwt.sign(new ECDSASigner(key));
+        String token = jwt.serialize();
+        String jwks = new JWKSet(key.toPublicJWK()).toString();
+
+        MutableClock clock = new MutableClock(issued.plusMillis(10_100));
+        ExpiringReplayGuard replay = new ExpiringReplayGuard(clock);
+        InternalJwtVerifier first = new InternalJwtVerifier("https://mcp-gateway.internal", "mcp-credential-broker",
+                new JwksGatewayKeys(() -> jwks, "ttl", clock, Duration.ofDays(1), Duration.ZERO, Duration.ofDays(1)), replay, clock,
+                Duration.ofSeconds(30), Duration.ofSeconds(60), true);
+        first.verify(token, rid, false, ToolClaim.REQUIRED);
+
+        clock.set(issued.plusMillis(90_500));
+        assertThatThrownBy(() -> first.verify(token, rid, false, ToolClaim.REQUIRED))
+                .as("inside the last accepted second").extracting(e -> ((TokenRejectedException) e).reason()).isEqualTo("replayed_jti");
+
+        clock.set(issued.plusSeconds(92));
+        Clock lagging = Clock.offset(clock, Duration.ofSeconds(-5));
+        InternalJwtVerifier second = new InternalJwtVerifier("https://mcp-gateway.internal", "mcp-credential-broker",
+                new JwksGatewayKeys(() -> jwks, "ttl", lagging, Duration.ofDays(1), Duration.ZERO, Duration.ofDays(1)), replay, lagging,
+                Duration.ofSeconds(30), Duration.ofSeconds(60), true);
+        assertThatThrownBy(() -> second.verify(token, rid, false, ToolClaim.REQUIRED))
+                .as("an instance whose clock is behind").extracting(e -> ((TokenRejectedException) e).reason()).isEqualTo("replayed_jti");
+    }
+
+    /** Keeps a jti until its ttl ends on the shared clock, as Redis does. */
+    static final class ExpiringReplayGuard implements ReplayGuard {
+
+        private final Clock clock;
+        private final Map<String, Instant> until = new HashMap<>();
+
+        ExpiringReplayGuard(Clock clock) {
+            this.clock = clock;
+        }
+
+        @Override
+        public boolean firstUse(String jti, Duration ttl) {
+            Instant now = clock.instant();
+            Instant kept = until.get(jti);
+            if (kept != null && now.isBefore(kept)) {
+                return false;
+            }
+            until.put(jti, now.plus(ttl));
+            return true;
+        }
     }
 
     private static InternalJwtVerifier verifier(JsonNode verifier, ReplayGuard replay, boolean allowTestKeys) {
