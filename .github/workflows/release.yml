@@ -1,5 +1,5 @@
-# Release of the image to ghcr.io with its SBOM, on a version tag. Not run yet: the repository on GitHub does not exist
-# and publishing needs the decision of the owner (plan-wydanie.md).
+# Release of the image to ghcr.io with its SBOM, on a version tag (run for v1.0.0 and v2.0.0). The GitHub Release is created as a
+# draft; publishing it is a decision of the owner.
 #
 # Three jobs, so that no job with a write permission runs a build tool on the code or its dependencies:
 #   build    contents: read. ./mvnw verify, the jar, the SBOM and docker build; the image leaves as a

@@ -11,7 +11,7 @@ import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder({"ts", "requestId", "component", "componentId", "event", "sub", "username", "backendUser", "client",
         "server", "tool", "policyRevision", "credentialType", "decision", "reason", "outcome",
-        "errorCode", "latencyMs"})
+        "errorCode", "kvVersion", "expiresAt", "latencyMs"})
 public record AuditEvent(
         String ts,
         String requestId,
@@ -30,5 +30,7 @@ public record AuditEvent(
         String reason,
         String outcome,
         String errorCode,
+        Integer kvVersion,
+        String expiresAt,
         Long latencyMs) {
 }

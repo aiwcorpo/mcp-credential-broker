@@ -43,6 +43,15 @@ public class SystemRepository {
         return jdbc.sql("select " + COLUMNS + " from target_system where id = :id").param("id", id).query(this::map).optional();
     }
 
+    /** A row with the moment it was created: a deleted and re-created id is another incarnation with another {@code createdAt}. */
+    public record Incarnation(SystemDefinition system, Instant createdAt) {
+    }
+
+    public Optional<Incarnation> findIncarnation(String id) {
+        return jdbc.sql("select " + COLUMNS + ", created_at from target_system where id = :id").param("id", id)
+                .query((rs, row) -> new Incarnation(map(rs, row), rs.getTimestamp("created_at").toInstant())).optional();
+    }
+
     /** @return false when a system with this id exists */
     public boolean insert(SystemDefinition system, Instant now) {
         return write("""

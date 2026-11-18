@@ -6,7 +6,7 @@
 # Closed network: MCP_REGISTRY and MCP_THIRD_PARTY_REGISTRY in a .env file next to this one point the images to your registry.
 
 x-broker: &broker
-  image: ${MCP_REGISTRY:-ghcr.io/aiwcorpo}/mcp-credential-broker:${MCP_BROKER_VERSION:-2.0.0}
+  image: ${MCP_REGISTRY:-ghcr.io/aiwcorpo}/mcp-credential-broker:${MCP_BROKER_VERSION:-2.1.0}
   pull_policy: ${PULL_POLICY:-missing}
   read_only: true
   cap_drop: [ALL]
