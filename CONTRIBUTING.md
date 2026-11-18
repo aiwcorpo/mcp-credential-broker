@@ -82,7 +82,9 @@ PostgreSQL, one Redis and one OpenBao; counters and locks are rows and transacti
   to any provider. Every grant records the client revision it was issued under; a refresh, revoke or resolve under another revision
   is refused. Other changes (scopes, timeout, default type, the secret) leave connections alone.
 - Deleting a system removes every connection to it with its stored value and publishes `credential.invalidated` for each. After that
-  `resolve` answers `422 system_not_configured`. The call is idempotent.
+  `resolve` answers `422 system_not_configured`. The call is idempotent. The system is withdrawn first (`withdrawn_at`), together
+  with marking its connections `needs_reconnect`, so a delete that fails halfway leaves it out of service and hidden from the
+  admin reads; repeating the `DELETE` (its `If-Match` is not compared then) finishes it, and the id cannot be created again before.
 - Client secrets live in OpenBao KV v2 at `secret/data/mcp/system-clients/<system>`, field `client_secret`
   (`broker.openbao.system-clients-prefix`). A write is a check-and-set to a new version, written before the row; the row stores that
   version and a new etag in one conditional update. A change that loses the race destroys the version it wrote. A replace keeps the
