@@ -174,11 +174,17 @@ public final class BrokerSetup {
             return;
         }
         boolean plainHttp = "true".equalsIgnoreCase(env.get("MCP_ALLOW_PLAIN_HTTP"));
+        // An address that fails the rule is not called: the OpenBao login would send the AppRole secret_id to it.
+        List<String> rejected = new ArrayList<>();
         for (String name : List.of("MCP_PORTAL_URL", "MCP_OIDC_JWKS_URI", "MCP_BAO_ADDR")) {
-            requireHttps(name, plainHttp);
+            if (!requireHttps(name, plainHttp)) {
+                rejected.add(name);
+            }
         }
         if (!blank(env.get("MCP_GATEWAY_JWKS_URI"))) {
-            requireHttps("MCP_GATEWAY_JWKS_URI", plainHttp);
+            if (!requireHttps("MCP_GATEWAY_JWKS_URI", plainHttp)) {
+                rejected.add("MCP_GATEWAY_JWKS_URI");
+            }
             checkGatewayName();
         }
         checkAllowedAzp();
@@ -186,16 +192,24 @@ public final class BrokerSetup {
         if (http == null) {
             return;
         }
-        checkIdentityProvider(http);
-        checkOpenBao(http);
-        checkGateway(http);
+        if (!rejected.contains("MCP_OIDC_JWKS_URI")) {
+            checkIdentityProvider(http);
+        }
+        if (!rejected.contains("MCP_BAO_ADDR")) {
+            checkOpenBao(http);
+        }
+        if (!rejected.contains("MCP_GATEWAY_JWKS_URI")) {
+            checkGateway(http);
+        }
     }
 
-    private void requireHttps(String name, boolean plainHttp) {
+    private boolean requireHttps(String name, boolean plainHttp) {
         String value = env.get(name);
         if (!value.startsWith("https://") && !(plainHttp && value.startsWith("http://"))) {
             fail(name + " " + value + " must start with https://");
+            return false;
         }
+        return true;
     }
 
     /** The broker verifies the gateway certificate against the host of the URL, so a different name could not be enforced. */

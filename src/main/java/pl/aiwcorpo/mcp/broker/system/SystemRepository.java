@@ -18,7 +18,10 @@ import pl.aiwcorpo.mcp.broker.credential.CredentialType;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-/** Rows of {@code target_system}; the one source of the systems of every broker instance. */
+/**
+ * Rows of {@code target_system}; the one source of the systems of every broker instance. A withdrawn row (a delete that has
+ * started) is left out of every read but {@link #findWithdrawn(String)}, and no update changes it.
+ */
 public class SystemRepository {
 
     private static final String COLUMNS = """
@@ -36,11 +39,29 @@ public class SystemRepository {
     }
 
     public List<SystemDefinition> findAll() {
-        return jdbc.sql("select " + COLUMNS + " from target_system order by id").query(this::map).list();
+        return jdbc.sql("select " + COLUMNS + " from target_system where withdrawn_at is null order by id").query(this::map).list();
     }
 
     public Optional<SystemDefinition> find(String id) {
-        return jdbc.sql("select " + COLUMNS + " from target_system where id = :id").param("id", id).query(this::map).optional();
+        return jdbc.sql("select " + COLUMNS + " from target_system where id = :id and withdrawn_at is null").param("id", id)
+                .query(this::map).optional();
+    }
+
+    /** A system whose delete started and did not finish. */
+    public Optional<SystemDefinition> findWithdrawn(String id) {
+        return jdbc.sql("select " + COLUMNS + " from target_system where id = :id and withdrawn_at is not null").param("id", id)
+                .query(this::map).optional();
+    }
+
+    /** @return false when the row is gone, already withdrawn or changed since {@code etag} */
+    public boolean withdraw(String id, String etag, Instant now) {
+        return jdbc.sql("update target_system set withdrawn_at = :now where id = :id and etag = :etag and withdrawn_at is null")
+                .param("id", id).param("etag", etag).param("now", Timestamp.from(now)).update() == 1;
+    }
+
+    /** Removes a withdrawn row; @return false when there is none. */
+    public boolean deleteWithdrawn(String id) {
+        return jdbc.sql("delete from target_system where id = :id and withdrawn_at is not null").param("id", id).update() == 1;
     }
 
     /** A row with the moment it was created: a deleted and re-created id is another incarnation with another {@code createdAt}. */
@@ -76,7 +97,7 @@ public class SystemRepository {
                     user_secret_scheme = :userScheme, deployment = :deployment, timeout_ms = :timeoutMs, etag = :etag,
                     client_revision = :revision, display_name = :displayName, whoami_path = :whoamiPath,
                     whoami_username_field = :whoamiField, updated_at = :now
-                where id = :id and etag = :expected
+                where id = :id and etag = :expected and withdrawn_at is null
                 """, system, now, expectedEtag) == 1;
     }
 

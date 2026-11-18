@@ -323,6 +323,7 @@ public final class TestEnvironment {
         registry.add("broker.oauth-flow.refresh-lock-wait", () -> "3s");
         registry.add("MCP_PORTAL_URL", () -> "https://mcp-portal.test");
         registry.add("MCP_ALLOW_PLAIN_HTTP", () -> "true");
+        registry.add("broker.allow-loopback-system-urls", () -> "true");
     }
 
     /** Raw OpenBao call with the root token, for setup and for checking what is stored. */

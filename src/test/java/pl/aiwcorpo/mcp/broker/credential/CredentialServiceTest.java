@@ -334,6 +334,19 @@ class CredentialServiceTest {
         assertThat(output.getAll()).contains("\"outcome\":\"error\"", "\"backendUser\":\"mallory\"");
     }
 
+    @Test
+    void aDisconnectThatRacesAStoreRemovesTheValueTheRowWasSwitchedTo() {
+        when(connections.find("alice-sub", "jira"))
+                .thenReturn(Optional.of(connection(null)), Optional.of(connectionAt("v2")));
+        when(connections.deleteIfVersion("alice-sub", "jira", "v1")).thenReturn(false);
+        when(connections.deleteIfVersion("alice-sub", "jira", "v2")).thenReturn(true);
+
+        assertThat(service.disconnect(portal("alice-sub", "alice"), "jira")).isTrue();
+
+        verify(secrets).delete(new SecretKey("alice-sub", "jira", "v1"));
+        verify(secrets).delete(new SecretKey("alice-sub", "jira", "v2"));
+    }
+
     private static SystemRegistry registry() {
         return pl.aiwcorpo.mcp.broker.support.TestRegistries.of("jira", config());
     }

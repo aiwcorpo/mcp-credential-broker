@@ -7,6 +7,8 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -25,9 +27,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import com.nimbusds.jose.jwk.Curve;
+import com.nimbusds.jose.jwk.ECKey;
 import com.nimbusds.jose.jwk.JWK;
 import com.nimbusds.jose.jwk.JWKSet;
+import com.nimbusds.jose.jwk.gen.ECKeyGenerator;
 import com.sun.net.httpserver.HttpServer;
 
 import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
@@ -487,5 +493,23 @@ class KeySourceTest {
         } finally {
             server.stop(0);
         }
+    }
+
+    @Test
+    void aKeyRemovedFromTheFileStopsWorkingAfterTheRefreshInterval(@TempDir Path dir) throws Exception {
+        ECKey k1 = new ECKeyGenerator(Curve.P_256).keyID("k1").generate().toPublicJWK();
+        ECKey k2 = new ECKeyGenerator(Curve.P_256).keyID("k2").generate().toPublicJWK();
+        Path file = dir.resolve("gateway-jwks.json");
+        Files.writeString(file, new JWKSet(List.of(k1, k2)).toString());
+        MutableClock clock = new MutableClock(T0);
+        JwksGatewayKeys keys = JwksGatewayKeys.fromFile(file, clock, Duration.ofMinutes(5));
+        assertThat(keys.find("k1")).isPresent();
+        assertThat(keys.find("k2")).isPresent();
+
+        Files.writeString(file, new JWKSet(k2).toString());
+        clock.advance(Duration.ofHours(2));
+
+        assertThat(keys.find("k1")).as("removed from the file, without an unknown kid forcing a read").isEmpty();
+        assertThat(keys.find("k2")).isPresent();
     }
 }

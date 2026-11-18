@@ -87,12 +87,14 @@ public class SystemAdminService {
     private final TransactionTemplate transaction;
     private final BrokerProperties.BffToken mfaRules;
     private final BrokerProperties.TokenExchangePolicy tokenExchangePolicy;
+    private final boolean allowLoopbackUrls;
     private final UpstreamLimits upstreamLimits;
 
     public SystemAdminService(SystemRepository repository, SystemRegistry registry, OAuthClientSecrets clientSecrets,
             ServiceAccountKeys serviceAccountKeys, ConnectionRepository connections, SecretStore secrets, InvalidationPublisher invalidations, OAuthService oauth,
             AuditLog audit, Clock clock, boolean allowPlainHttp, URI idpTokenUrl, TransactionTemplate transaction,
-            BrokerProperties.BffToken mfaRules, BrokerProperties.TokenExchangePolicy tokenExchangePolicy, UpstreamLimits upstreamLimits) {
+            BrokerProperties.BffToken mfaRules, BrokerProperties.TokenExchangePolicy tokenExchangePolicy, boolean allowLoopbackUrls,
+            UpstreamLimits upstreamLimits) {
         this.repository = repository;
         this.registry = registry;
         this.clientSecrets = clientSecrets;
@@ -108,6 +110,7 @@ public class SystemAdminService {
         this.transaction = transaction;
         this.mfaRules = mfaRules;
         this.tokenExchangePolicy = tokenExchangePolicy;
+        this.allowLoopbackUrls = allowLoopbackUrls;
         this.upstreamLimits = upstreamLimits;
     }
 
@@ -181,6 +184,10 @@ public class SystemAdminService {
             throw SystemAdminException.preconditionRequired();
         }
         Optional<SystemDefinition> existing = repository.find(id);
+        if (create && existing.isEmpty() && repository.findWithdrawn(id).isPresent()) {
+            // The id is free only when the delete that withdrew it is finished.
+            throw SystemAdminException.preconditionFailed();
+        }
         if (create ? existing.isPresent() : existing.isEmpty() || !expectedEtag.equals(existing.get().etag())) {
             throw SystemAdminException.preconditionFailed();
         }
@@ -266,8 +273,12 @@ public class SystemAdminService {
      * Removes the system, the connections of users to it with their stored values (each removal publishes
      * credential.invalidated), the row and the version of the client secret. Nothing is sent to a provider: a grant is not
      * revoked with a definition other than the one it was issued under, and the one it was issued under may be gone. An id
-     * without a system is answered 204 and touches nothing. Repeating the call after a failure finishes the job: the row goes
-     * last.
+     * without a system is answered 204 and touches nothing.
+     *
+     * <p>The system is first withdrawn, in one transaction with marking every connection {@code needs_reconnect}, so from then
+     * on no instance serves it and no connection of it is usable, even when removing the connections fails. A withdrawn system
+     * is gone for the admin API except for a repeated DELETE, which finishes the job; its {@code If-Match} is required but not
+     * compared, since a withdrawn row can no longer change.
      */
     public void delete(Caller.PortalUser caller, String id, String ifMatch) {
         requireAdmin(caller);
@@ -280,23 +291,38 @@ public class SystemAdminService {
             }
             String expectedEtag = ifMatch == null ? null : etagOf(ifMatch);
             Optional<SystemDefinition> existing = repository.find(id);
-            if (existing.isEmpty()) {
+            Optional<SystemDefinition> withdrawn = existing.isPresent() ? Optional.empty() : repository.findWithdrawn(id);
+            if (existing.isEmpty() && withdrawn.isEmpty()) {
                 entry.ok("nothing_to_delete");
                 return;
             }
             entry.systemBeingChanged(id);
-            SystemDefinition system = existing.get();
+            SystemDefinition system = existing.orElseGet(withdrawn::get);
             if (ifMatch == null) {
                 throw SystemAdminException.preconditionRequired();
             }
-            if (!expectedEtag.equals(system.etag())) {
-                throw SystemAdminException.preconditionFailed();
+            if (existing.isPresent()) {
+                if (!expectedEtag.equals(system.etag())) {
+                    throw SystemAdminException.preconditionFailed();
+                }
+                boolean taken = Boolean.TRUE.equals(transaction.execute(status -> {
+                    Instant now = clock.instant();
+                    boolean done = repository.withdraw(id, system.etag(), now);
+                    if (done) {
+                        connections.markAllNeedsReconnect(id, now);
+                    }
+                    return done;
+                }));
+                if (!taken) {
+                    throw SystemAdminException.preconditionFailed();
+                }
+                refresh();
             }
             int removed = removeConnections(caller.requestId(), id);
             boolean deleted = false;
             for (int attempt = 1; !deleted; attempt++) {
                 try {
-                    deleted = repository.delete(id, system.etag());
+                    deleted = repository.deleteWithdrawn(id);
                     if (!deleted) {
                         throw SystemAdminException.preconditionFailed();
                     }
@@ -646,7 +672,7 @@ public class SystemAdminService {
                         "a token-exchange system uses the token endpoint of the identity provider of the broker"));
             }
             oauth = new SystemDefinition.Oauth(client.clientId(),
-                    client.authorizeUrl() == null ? null : url(client.authorizeUrl(), "authorizeUrl"),
+                    client.authorizeUrl() == null ? null : browserUrl(client.authorizeUrl(), "authorizeUrl"),
                     exchange ? idpTokenUrl : client.tokenUrl() == null ? null : url(client.tokenUrl(), "tokenUrl"), revokeUrl, scopes);
         }
         Duration timeout = request.timeout() == null ? null : Duration.parse(request.timeout());
@@ -664,7 +690,16 @@ public class SystemAdminService {
                         : new SystemDefinition.Whoami(request.whoami().path(), request.whoami().usernameField()));
     }
 
+    /** An address the broker itself calls: also refused when it points at the broker host or its link. */
     private URI url(String value, String field) {
+        URI uri = browserUrl(value, field);
+        if (!allowLoopbackUrls && SystemUrls.pointsAtLocalAddress(uri)) {
+            throw SystemAdminException.invalid(field);
+        }
+        return uri;
+    }
+
+    private URI browserUrl(String value, String field) {
         URI uri = SystemUrls.parse(value, allowPlainHttp);
         if (uri == null) {
             throw SystemAdminException.invalid(field);

@@ -94,7 +94,7 @@ public class BrokerConfiguration {
             throw new IllegalStateException("set exactly one of broker.gateway-jwt.jwks-uri and broker.gateway-jwt.jwks-file");
         }
         if (hasFile) {
-            return JwksGatewayKeys.fromFile(Path.of(config.jwksFile()), clock);
+            return JwksGatewayKeys.fromFile(Path.of(config.jwksFile()), clock, config.jwksRefresh());
         }
         if (config.tlsName() != null && !config.tlsName().isBlank() && "https".equals(config.jwksUri().getScheme())
                 && !config.tlsName().equalsIgnoreCase(config.jwksUri().getHost())) {
@@ -214,7 +214,7 @@ public class BrokerConfiguration {
         requireTls(properties.bffToken().effectiveTokenUrl(), "broker.bff-token.token-url", properties.allowPlainHttp());
         new LegacySystemImport(repository, connections, clientSecrets, audit, clock, new TransactionTemplate(transactions),
                 properties.bffToken().effectiveTokenUrl()).run(properties.systems());
-        SystemRegistry registry = new SystemRegistry(repository, adapters);
+        SystemRegistry registry = new SystemRegistry(repository, adapters, clock, properties.systemSync().maxAge());
         audit.knownSystems(id -> registry.find(id).isPresent());
         return registry;
     }
@@ -230,7 +230,7 @@ public class BrokerConfiguration {
             AuditLog audit, Clock clock, BrokerProperties properties, PlatformTransactionManager transactions, UpstreamLimits upstreamLimits) {
         return new SystemAdminService(repository, registry, clientSecrets, serviceAccountKeys, connections, secrets, invalidations, oauth, audit, clock,
                 properties.allowPlainHttp(), properties.bffToken().effectiveTokenUrl(), new TransactionTemplate(transactions),
-                properties.bffToken(), properties.tokenExchange(), upstreamLimits);
+                properties.bffToken(), properties.tokenExchange(), properties.allowLoopbackSystemUrls(), upstreamLimits);
     }
 
     @Bean

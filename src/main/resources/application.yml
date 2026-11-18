@@ -14,6 +14,11 @@ server:
 spring:
   application:
     name: mcp-credential-broker
+  task:
+    scheduling:
+      pool:
+        # One thread for each of the six @Scheduled jobs, so a long token sweep cannot hold back the 5 s system reload.
+        size: 6
   ssl:
     bundle:
       jks:
@@ -77,6 +82,8 @@ broker:
   component-id: mcp-credential-broker
   portal-base-url: ${MCP_PORTAL_URL}
   allow-plain-http: ${MCP_ALLOW_PLAIN_HTTP:false}
+  # Addresses of target systems on loopback or link-local are refused; only tests with local stubs set this.
+  allow-loopback-system-urls: false
   cache-ttl-seconds: 60
   expiring-threshold: 7d
   gateway-jwt:
@@ -119,3 +126,4 @@ broker:
   # How often an instance reads the systems table to see what another instance changed through /v1/admin/systems.
   system-sync:
     interval: 5s
+    max-age: 1m

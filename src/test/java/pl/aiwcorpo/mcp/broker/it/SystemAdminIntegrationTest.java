@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -41,6 +42,7 @@ import org.springframework.test.context.DynamicPropertySource;
 
 import com.sun.net.httpserver.HttpServer;
 
+import pl.aiwcorpo.mcp.broker.oauth.RefreshLock;
 import pl.aiwcorpo.mcp.broker.secret.SecretKey;
 import pl.aiwcorpo.mcp.broker.support.AuditLines;
 import pl.aiwcorpo.mcp.broker.support.BrokerClient;
@@ -79,6 +81,9 @@ class SystemAdminIntegrationTest {
 
     @Autowired
     SystemRegistry registry;
+
+    @Autowired
+    RefreshLock refreshLock;
 
     BrokerClient bff;
     BrokerClient gateway;
@@ -1185,6 +1190,39 @@ class SystemAdminIntegrationTest {
                 .contains("admin_change:system_deleted", "admin_change:connections_invalidated", "connection_change:system_deleted");
         assertThat(AuditLines.of(output, afterRid)).singleElement()
                 .satisfies(event -> assertThat(event.has("server")).as("an id that no system has is not written").isFalse());
+    }
+
+    @Test
+    void aDeleteThatFailsHalfwayLeavesTheSystemOutOfService() throws Exception {
+        Recorder backend = new Recorder();
+        String id = newId();
+        assertThat(create(id, jiraBody(backend.url())).status()).isEqualTo(200);
+        String alice = UUID.randomUUID().toString();
+        String bob = UUID.randomUUID().toString();
+        connectUserSecret(id, alice, "alice-pat");
+        connectUserSecret(id, bob, "bob-pat");
+        String etag = get(id).header("ETag");
+        // A change of each connection is in progress, so the walk over the connections cannot take either of them.
+        String aliceOwner = refreshLock.acquire(alice, id, Duration.ofSeconds(1)).orElseThrow();
+        String bobOwner = refreshLock.acquire(bob, id, Duration.ofSeconds(1)).orElseThrow();
+        try {
+            assertThat(delete(id, etag).status()).isEqualTo(503);
+            assertThat(get(id).status()).as("the system is withdrawn first").isEqualTo(404);
+            assertThat(list().json().findValuesAsString("id")).doesNotContain(id);
+            assertThat(registry.find(id)).as("and no longer served").isEmpty();
+            BrokerClient.Response refused = resolve(alice, id);
+            assertThat(refused.status()).isEqualTo(422);
+            assertThat(refused.body()).isEqualTo("{\"error\":\"system_not_configured\"}");
+            assertThat(jdbc.sql("select count(*) from connection where system = :id and state = 'needs_reconnect'").param("id", id)
+                    .query(Long.class).single()).as("the connections are unusable on every instance").isEqualTo(2);
+            assertThat(create(id, jiraBody(backend.url())).status()).as("the id is not free until the delete is done").isEqualTo(412);
+        } finally {
+            refreshLock.release(alice, id, aliceOwner);
+            refreshLock.release(bob, id, bobOwner);
+        }
+        assertThat(delete(id, etag).status()).as("a repeat finishes the delete").isEqualTo(204);
+        assertThat(rows(id)).isZero();
+        assertThat(jdbc.sql("select count(*) from target_system where id = :id").param("id", id).query(Long.class).single()).isZero();
     }
 
     @Test

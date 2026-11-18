@@ -31,6 +31,7 @@ public record BrokerProperties(
         @DefaultValue("7d") @NotNull Duration expiringThreshold,
         @DefaultValue("16384") @Min(1024) int maxRequestBytes,
         @DefaultValue("false") boolean allowPlainHttp,
+        @DefaultValue("false") boolean allowLoopbackSystemUrls,
         @Valid @NotNull GatewayJwt gatewayJwt,
         @Valid @NotNull BffToken bffToken,
         @Valid @NotNull OpenBao openbao,
@@ -90,8 +91,11 @@ public record BrokerProperties(
     public record Upstream(@DefaultValue("20") @Min(1) int maxConcurrentCallsPerSystem) {
     }
 
-    /** How often an instance reads the systems table to see changes made through another instance. */
-    public record SystemSync(@DefaultValue("5s") @NotNull Duration interval) {
+    /**
+     * How often an instance reads the systems table to see changes made through another instance, and how old its copy may get
+     * before token-exchange and service-account systems are no longer resolved from it.
+     */
+    public record SystemSync(@DefaultValue("5s") @NotNull Duration interval, @DefaultValue("1m") @NotNull Duration maxAge) {
     }
 
     /** Internal JWT from the gateway (C2). Exactly one of jwksUri and jwksFile is set. */
