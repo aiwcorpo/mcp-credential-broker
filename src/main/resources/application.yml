@@ -82,6 +82,8 @@ broker:
   component-id: mcp-credential-broker
   portal-base-url: ${MCP_PORTAL_URL}
   allow-plain-http: ${MCP_ALLOW_PLAIN_HTTP:false}
+  # Addresses of target systems on loopback or link-local are refused; only tests with local stubs set this.
+  allow-loopback-system-urls: false
   cache-ttl-seconds: 60
   expiring-threshold: 7d
   gateway-jwt:

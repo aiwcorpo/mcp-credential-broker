@@ -87,11 +87,12 @@ public class SystemAdminService {
     private final TransactionTemplate transaction;
     private final BrokerProperties.BffToken mfaRules;
     private final BrokerProperties.TokenExchangePolicy tokenExchangePolicy;
+    private final boolean allowLoopbackUrls;
 
     public SystemAdminService(SystemRepository repository, SystemRegistry registry, OAuthClientSecrets clientSecrets,
             ServiceAccountKeys serviceAccountKeys, ConnectionRepository connections, SecretStore secrets, InvalidationPublisher invalidations, OAuthService oauth,
             AuditLog audit, Clock clock, boolean allowPlainHttp, URI idpTokenUrl, TransactionTemplate transaction,
-            BrokerProperties.BffToken mfaRules, BrokerProperties.TokenExchangePolicy tokenExchangePolicy) {
+            BrokerProperties.BffToken mfaRules, BrokerProperties.TokenExchangePolicy tokenExchangePolicy, boolean allowLoopbackUrls) {
         this.repository = repository;
         this.registry = registry;
         this.clientSecrets = clientSecrets;
@@ -107,6 +108,7 @@ public class SystemAdminService {
         this.transaction = transaction;
         this.mfaRules = mfaRules;
         this.tokenExchangePolicy = tokenExchangePolicy;
+        this.allowLoopbackUrls = allowLoopbackUrls;
     }
 
     public List<SystemAdminView> list(Caller.PortalUser caller) {
@@ -644,7 +646,7 @@ public class SystemAdminService {
                         "a token-exchange system uses the token endpoint of the identity provider of the broker"));
             }
             oauth = new SystemDefinition.Oauth(client.clientId(),
-                    client.authorizeUrl() == null ? null : url(client.authorizeUrl(), "authorizeUrl"),
+                    client.authorizeUrl() == null ? null : browserUrl(client.authorizeUrl(), "authorizeUrl"),
                     exchange ? idpTokenUrl : client.tokenUrl() == null ? null : url(client.tokenUrl(), "tokenUrl"), revokeUrl, scopes);
         }
         CredentialScheme userScheme = request.userSecretScheme();
@@ -658,7 +660,16 @@ public class SystemAdminService {
                         : new SystemDefinition.Whoami(request.whoami().path(), request.whoami().usernameField()));
     }
 
+    /** An address the broker itself calls: also refused when it points at the broker host or its link. */
     private URI url(String value, String field) {
+        URI uri = browserUrl(value, field);
+        if (!allowLoopbackUrls && SystemUrls.pointsAtLocalAddress(uri)) {
+            throw SystemAdminException.invalid(field);
+        }
+        return uri;
+    }
+
+    private URI browserUrl(String value, String field) {
         URI uri = SystemUrls.parse(value, allowPlainHttp);
         if (uri == null) {
             throw SystemAdminException.invalid(field);
