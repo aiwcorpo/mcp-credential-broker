@@ -81,8 +81,11 @@ public record BrokerProperties(
         }
     }
 
-    /** How often an instance reads the systems table to see changes made through another instance. */
-    public record SystemSync(@DefaultValue("5s") @NotNull Duration interval) {
+    /**
+     * How often an instance reads the systems table to see changes made through another instance, and how old its copy may get
+     * before token-exchange and service-account systems are no longer resolved from it.
+     */
+    public record SystemSync(@DefaultValue("5s") @NotNull Duration interval, @DefaultValue("1m") @NotNull Duration maxAge) {
     }
 
     /** Internal JWT from the gateway (C2). Exactly one of jwksUri and jwksFile is set. */

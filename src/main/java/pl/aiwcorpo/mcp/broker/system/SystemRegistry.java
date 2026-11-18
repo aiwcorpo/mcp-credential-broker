@@ -1,5 +1,8 @@
 package pl.aiwcorpo.mcp.broker.system;
 
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -7,6 +10,7 @@ import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessResourceFailureException;
 
 import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
 import pl.aiwcorpo.mcp.broker.credential.CredentialType;
@@ -66,11 +70,17 @@ public class SystemRegistry {
 
     private final SystemRepository repository;
     private final SystemAdapters adapters;
+    private final Clock clock;
+    private final Duration maxAge;
     private volatile Map<String, ConfiguredSystem> systems = Map.of();
+    private volatile Instant loadedAt;
 
-    public SystemRegistry(SystemRepository repository, SystemAdapters adapters) {
+    /** @param maxAge how old the snapshot may get before {@link #requireRecentLoad()} refuses it */
+    public SystemRegistry(SystemRepository repository, SystemAdapters adapters, Clock clock, Duration maxAge) {
         this.repository = repository;
         this.adapters = adapters;
+        this.clock = clock;
+        this.maxAge = maxAge;
         reload();
     }
 
@@ -99,6 +109,17 @@ public class SystemRegistry {
             log.info("Systems loaded: {}", next.keySet());
         }
         systems = Map.copyOf(next);
+        loadedAt = clock.instant();
+    }
+
+    /**
+     * For a resolve that reads no row of its own (token exchange, service account), the snapshot is the only proof that the
+     * system still exists in this form; one that has not been reloaded within {@code maxAge} is treated as a database outage.
+     */
+    public void requireRecentLoad() {
+        if (clock.instant().isAfter(loadedAt.plus(maxAge))) {
+            throw new DataAccessResourceFailureException("systems not reloaded within " + maxAge);
+        }
     }
 
     public Optional<ConfiguredSystem> find(String id) {

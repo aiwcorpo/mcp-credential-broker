@@ -120,3 +120,4 @@ broker:
   # How often an instance reads the systems table to see what another instance changed through /v1/admin/systems.
   system-sync:
     interval: 5s
+    max-age: 1m
