@@ -77,15 +77,24 @@ class BasicUserSecretIntegrationTest {
         for (JsonNode system : systems.json()) {
             assertThat(Contracts.brokerSchemaErrors("SystemInfo", system)).isEmpty();
         }
-        JsonNode cloudwiki = systems.json().get(0);
-        assertThat(cloudwiki.path("system").stringValue()).isEqualTo("cloudwiki");
+        JsonNode cloudwiki = system(systems.json(), "cloudwiki");
         assertThat(cloudwiki.path("userSecretScheme").stringValue()).isEqualTo("Basic");
         assertThat(cloudwiki.path("deployment").stringValue()).isEqualTo("cloud");
-        JsonNode jira = systems.json().get(3);
+        JsonNode jira = system(systems.json(), "jira");
         assertThat(jira.path("userSecretScheme").stringValue()).isEqualTo("Bearer");
         assertThat(jira.has("deployment")).as("not configured, not told").isFalse();
-        JsonNode opensearch = systems.json().get(4);
+        JsonNode opensearch = system(systems.json(), "opensearch");
         assertThat(opensearch.has("userSecretScheme")).as("no user-secret, no scheme").isFalse();
+    }
+
+    // Other test classes can run first in the same Spring context and add systems, so a position in the list is not stable.
+    private static JsonNode system(JsonNode systems, String id) {
+        for (JsonNode system : systems) {
+            if (id.equals(system.path("system").stringValue())) {
+                return system;
+            }
+        }
+        throw new AssertionError("no system " + id + " in " + systems);
     }
 
     @Test
