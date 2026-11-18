@@ -9,6 +9,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
@@ -24,6 +25,7 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.scheduling.TaskScheduler;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -61,6 +63,9 @@ class BrokerIntegrationTest {
     @Autowired
     JdbcClient jdbc;
 
+    @Autowired
+    TaskScheduler taskScheduler;
+
     BrokerClient gateway;
     BrokerClient bff;
     BrokerClient offboarding;
@@ -92,6 +97,25 @@ class BrokerIntegrationTest {
             for (String pat : ALL_PATS) {
                 assertThat(everything).as(response.raw().request().uri().getPath()).doesNotContain(pat);
             }
+        }
+    }
+
+    @Test
+    void aScheduledJobThatRunsLongDoesNotHoldBackTheOthers() throws Exception {
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch otherRan = new CountDownLatch(1);
+        taskScheduler.schedule(() -> {
+            try {
+                release.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }, Instant.now());
+        try {
+            taskScheduler.schedule(otherRan::countDown, Instant.now().plusMillis(200));
+            assertThat(otherRan.await(3, TimeUnit.SECONDS)).as("a second job runs while the first is busy").isTrue();
+        } finally {
+            release.countDown();
         }
     }
 
