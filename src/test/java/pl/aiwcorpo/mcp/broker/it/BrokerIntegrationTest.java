@@ -562,14 +562,24 @@ class BrokerIntegrationTest {
         for (JsonNode system : fromGateway.json()) {
             assertThat(Contracts.brokerSchemaErrors("SystemInfo", system)).isEmpty();
         }
+        // Other test classes can run first in the same Spring context and add systems, so only the seeded ones are fixed.
         assertThat(fromGateway.json()).extracting(system -> system.path("system").stringValue())
-                .containsExactly("confluence", "gitlab", "jira", "opensearch");
-        assertThat(fromGateway.json().get(2).path("supportedTypes").get(0).stringValue()).isEqualTo("user-secret");
-        assertThat(fromGateway.json().get(3).path("supportedTypes").get(0).stringValue()).isEqualTo("token-exchange");
+                .containsSubsequence("confluence", "gitlab", "jira", "opensearch");
+        assertThat(system(fromGateway.json(), "jira").path("supportedTypes").get(0).stringValue()).isEqualTo("user-secret");
+        assertThat(system(fromGateway.json(), "opensearch").path("supportedTypes").get(0).stringValue()).isEqualTo("token-exchange");
 
         BrokerClient.Response fromPortal = bff.send("GET", "/v1/systems", tokens.bffUser(newSub(), "alice"), null, null);
         assertThat(fromPortal.status()).isEqualTo(200);
         assertThat(fromPortal.body()).isEqualTo(fromGateway.body());
+    }
+
+    private static JsonNode system(JsonNode systems, String id) {
+        for (JsonNode system : systems) {
+            if (id.equals(system.path("system").stringValue())) {
+                return system;
+            }
+        }
+        throw new AssertionError("no system " + id + " in " + systems);
     }
 
     @Test
