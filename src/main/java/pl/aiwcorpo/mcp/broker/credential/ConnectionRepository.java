@@ -151,6 +151,15 @@ public class ConnectionRepository {
                 .update();
     }
 
+    /** @return false when the row is gone or points at another version than {@code expectedVersion} */
+    public boolean deleteIfVersion(String sub, String system, String expectedVersion) {
+        return jdbc.sql("delete from connection where sub = :sub and system = :system and secret_version is not distinct from :expected")
+                .param("sub", sub)
+                .param("system", system)
+                .param("expected", expectedVersion)
+                .update() == 1;
+    }
+
     /**
      * Connections whose last use (their creation when they were never used) is before {@code cutoff}, oldest first; the
      * candidates of the cleanup of unused connections.
