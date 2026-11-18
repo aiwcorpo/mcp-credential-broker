@@ -119,6 +119,10 @@ broker:
     sweep-interval: PT1M
     refresh-lock-wait: 3s
     refresh-lock-lease: 60s
+  # Calls of one instance to one target system in flight at once; the next is refused with 503 instead of holding a request
+  # thread for the system's timeout. A system's timeout must stay below oauth-flow.refresh-lock-lease.
+  upstream:
+    max-concurrent-calls-per-system: 20
   # How often an instance reads the systems table to see what another instance changed through /v1/admin/systems.
   system-sync:
     interval: 5s

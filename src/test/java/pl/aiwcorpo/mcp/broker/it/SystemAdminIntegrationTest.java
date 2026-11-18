@@ -331,6 +331,17 @@ class SystemAdminIntegrationTest {
     }
 
     @Test
+    void aTimeoutMustStayBelowTheRefreshLockLease() {
+        ObjectNode body = gitlabBody(SECRET);
+        body.put("timeout", "PT60S");
+        assertThat(create(newId(), body).status()).as("equal to the 60 s lease").isEqualTo(400);
+        body.put("timeout", "PT5M");
+        assertThat(create(newId(), body).status()).as("over the lease").isEqualTo(400);
+        body.put("timeout", "PT59S");
+        assertThat(create(newId(), body).status()).as("below the lease").isEqualTo(200);
+    }
+
+    @Test
     void preconditionsAreEnforced() {
         String id = newId();
         assertThat(put(id, gitlabBody(SECRET), Map.of()).status()).as("neither header").isEqualTo(428);

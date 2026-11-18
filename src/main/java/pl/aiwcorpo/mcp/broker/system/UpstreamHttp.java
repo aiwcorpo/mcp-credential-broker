@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Flow;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -22,7 +23,8 @@ import tools.jackson.databind.json.JsonMapper;
  * Calls to a target system: transport failures, bodies that are not JSON, bodies over {@link #MAX_BODY_BYTES} and
  * responses that do not complete within the request timeout (headers and body together) become
  * {@link UpstreamUnavailableException}. The JDK's per-request timeout stops at the response headers, so a
- * provider trickling the body would otherwise hold a thread, and with it the refresh lock, indefinitely.
+ * provider trickling the body would otherwise hold a thread, and with it the refresh lock, indefinitely. A call beyond the
+ * calls in flight that {@link UpstreamLimits} allows the system is refused at once with the same exception.
  */
 final class UpstreamHttp {
 
@@ -31,16 +33,29 @@ final class UpstreamHttp {
 
     private final HttpClient http;
     private final JsonMapper json;
+    private final Semaphore inFlight;
 
-    UpstreamHttp(HttpClient http, JsonMapper json) {
+    UpstreamHttp(HttpClient http, JsonMapper json, Semaphore inFlight) {
         if (http.followRedirects() != HttpClient.Redirect.NEVER) {
             throw new IllegalArgumentException("client for target systems must not follow redirects");
         }
         this.http = http;
         this.json = json;
+        this.inFlight = inFlight;
     }
 
     HttpResponse<byte[]> send(HttpRequest request) {
+        if (!inFlight.tryAcquire()) {
+            throw new UpstreamUnavailableException("too many calls in flight to the target system");
+        }
+        try {
+            return sendWithinDeadline(request);
+        } finally {
+            inFlight.release();
+        }
+    }
+
+    private HttpResponse<byte[]> sendWithinDeadline(HttpRequest request) {
         Duration deadline = request.timeout().orElse(DEFAULT_DEADLINE);
         CompletableFuture<HttpResponse<byte[]>> call = http.sendAsync(request, info -> new LimitedBody());
         try {

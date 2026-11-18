@@ -28,6 +28,7 @@ import pl.aiwcorpo.mcp.broker.support.MutableClock;
 import pl.aiwcorpo.mcp.broker.system.SystemAdapters;
 import pl.aiwcorpo.mcp.broker.system.SystemDefinition;
 import pl.aiwcorpo.mcp.broker.system.SystemRegistry;
+import pl.aiwcorpo.mcp.broker.system.UpstreamLimits;
 import pl.aiwcorpo.mcp.broker.system.SystemRegistryRefreshJob;
 import pl.aiwcorpo.mcp.broker.system.SystemRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -50,7 +51,7 @@ class SystemRegistryTest {
         when(keys.read("svc", CredentialScheme.BEARER)).thenReturn(new ServiceAccountKeys.Key(SecretValue.of("dummy-key"), null));
         SystemAdapters adapters = new SystemAdapters(HttpClient.newHttpClient(), JsonMapper.builder().build(),
                 mock(OAuthClientSecrets.class), keys, clock, new SimpleMeterRegistry(),
-                new BrokerProperties.TokenExchangePolicy(List.of("*")));
+                new BrokerProperties.TokenExchangePolicy(List.of("*")), new UpstreamLimits(20, Duration.ofSeconds(60)));
         SystemRegistry registry = new SystemRegistry(repository, adapters, clock, Duration.ofMinutes(1));
         CredentialService service = new CredentialService(registry, mock(ConnectionRepository.class), mock(SecretStore.class),
                 mock(InvalidationPublisher.class), mock(OAuthService.class), mock(SubjectTokenVerifier.class),

@@ -5,6 +5,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.concurrent.Semaphore;
 
 import pl.aiwcorpo.mcp.broker.audit.AuditLog;
 import pl.aiwcorpo.mcp.broker.credential.CredentialScheme;
@@ -30,14 +31,14 @@ public class GenericRestAdapter implements ServiceAccountSource, SystemAdapter {
     private final UpstreamHttp http;
 
     public GenericRestAdapter(String system, CredentialScheme scheme, ServiceAccountKeys keys, URI baseUrl,
-            SystemDefinition.Whoami whoami, Duration timeout, HttpClient http, JsonMapper json) {
+            SystemDefinition.Whoami whoami, Duration timeout, HttpClient http, JsonMapper json, Semaphore inFlight) {
         this.system = system;
         this.scheme = scheme;
         this.keys = keys;
         this.baseUrl = baseUrl;
         this.whoami = whoami;
         this.timeout = timeout;
-        this.http = new UpstreamHttp(http, json);
+        this.http = new UpstreamHttp(http, json, inFlight);
     }
 
     public boolean hasWhoami() {
