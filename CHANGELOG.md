@@ -3,7 +3,10 @@
 The broker ships as a container image (`ghcr.io/aiwcorpo/mcp-credential-broker`); the version in `pom.xml` follows SemVer. Local and
 integration builds tag the image `m6-<short sha>`.
 
-## Unreleased
+## 2.2.0 - 2026-11-19
+
+Built on `mcp-contracts` 7.2.0. Secret writes are rate limited per user; the release also carries hardening of the target system checks, the
+JWKS refresh, the client CN and jti windows, per-system call caps, and Spring Boot 4.1.2.
 
 - `PUT /v1/connections/{system}/secret` is limited per user before the target system is asked: `broker.rate-limits.secret-writes`
   (default 10 per minute, same window and Redis prefix as the OAuth limits). Over the limit the answer is `429 rate_limited` with
