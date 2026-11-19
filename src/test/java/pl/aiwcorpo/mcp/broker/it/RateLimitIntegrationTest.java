@@ -2,7 +2,11 @@ package pl.aiwcorpo.mcp.broker.it;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -16,12 +20,17 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
+import com.sun.net.httpserver.HttpServer;
+
+import pl.aiwcorpo.mcp.broker.credential.CredentialScheme;
+import pl.aiwcorpo.mcp.broker.credential.CredentialType;
 import pl.aiwcorpo.mcp.broker.secret.SecretKey;
 import pl.aiwcorpo.mcp.broker.support.AuditLines;
 import pl.aiwcorpo.mcp.broker.support.BrokerClient;
 import pl.aiwcorpo.mcp.broker.support.Contracts;
 import pl.aiwcorpo.mcp.broker.support.TestEnvironment;
 import pl.aiwcorpo.mcp.broker.support.TestTokens;
+import pl.aiwcorpo.mcp.broker.system.SystemDefinition;
 
 /**
  * The per-user limits of the OAuth operations (CC-156): over the limit the answer is 429 rate_limited with Retry-After
@@ -91,6 +100,49 @@ class RateLimitIntegrationTest {
     }
 
     @Test
+    void secretWritesAreLimitedPerUserBeforeTheSystemIsAsked(CapturedOutput output) throws Exception {
+        AtomicInteger whoamiCalls = new AtomicInteger();
+        HttpServer whoami = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        whoami.createContext("/api/me", exchange -> {
+            whoamiCalls.incrementAndGet();
+            exchange.sendResponseHeaders(401, -1);
+            exchange.close();
+        });
+        whoami.start();
+        String id = "ratebasic";
+        env.putSystem(new SystemDefinition(id, URI.create("http://127.0.0.1:" + whoami.getAddress().getPort()), "generic-rest", null,
+                List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET, CredentialScheme.BASIC, null, null, null, null,
+                CredentialScheme.BASIC, null, SystemDefinition.newToken(), SystemDefinition.newToken(), null,
+                new SystemDefinition.Whoami("/api/me", "username")));
+        env.awaitSystemSync();
+        try {
+            String sub = UUID.randomUUID().toString();
+            for (int i = 0; i < 10; i++) {
+                assertThat(putSecret(sub, id, "wrong-" + i, null).status()).as("write %d", i + 1).isEqualTo(422);
+            }
+            String rid = TestTokens.newRequestId();
+            BrokerClient.Response limited = putSecret(sub, id, "wrong-10", rid);
+            assertThat(limited.status()).isEqualTo(429);
+            assertThat(limited.body()).isEqualTo("{\"error\":\"rate_limited\"}");
+            assertThat(Integer.parseInt(limited.header("Retry-After"))).isBetween(1, 60);
+            for (int i = 11; i < 50; i++) {
+                assertThat(putSecret(sub, id, "wrong-" + i, null).status()).as("write %d", i + 1).isEqualTo(429);
+            }
+            assertThat(whoamiCalls.get()).as("the system saw only the writes within the limit").isEqualTo(10);
+            assertThat(AuditLines.of(output, rid)).singleElement().satisfies(e -> {
+                assertThat(e.path("event").stringValue()).isEqualTo("connection_change");
+                assertThat(e.path("reason").stringValue()).isEqualTo("rate_limited");
+                assertThat(e.path("outcome").stringValue()).isEqualTo("denied");
+            });
+            assertThat(putSecret(UUID.randomUUID().toString(), id, "wrong-0", null).status()).as("another user").isEqualTo(422);
+        } finally {
+            env.removeSystem(id);
+            env.awaitSystemSync();
+            whoami.stop(0);
+        }
+    }
+
+    @Test
     void aCounterThatLostItsExpiryIsGivenOneInsteadOfBlockingTheUserForGood() {
         String sub = UUID.randomUUID().toString();
         String key = "broker:rate:oauth-start:" + SecretKey.hashOf(sub);
@@ -121,6 +173,11 @@ class RateLimitIntegrationTest {
     private BrokerClient.Response start(String sub, String rid) {
         return bff.send("POST", "/v1/connections/gitlab/oauth/start", tokens.bffUser(sub, "alice"), rid,
                 "{\"returnPath\":\"/catalog\"}");
+    }
+
+    private BrokerClient.Response putSecret(String sub, String system, String secret, String rid) {
+        return bff.send("PUT", "/v1/connections/" + system + "/secret", tokens.bffUser(sub, "alice"), rid,
+                "{\"username\":\"other-user\",\"secret\":\"" + secret + "\"}");
     }
 
     private BrokerClient.Response complete(String sub) {

@@ -26,6 +26,7 @@ import pl.aiwcorpo.mcp.broker.auth.KeySourceUnavailableException;
 import pl.aiwcorpo.mcp.broker.auth.SubjectTokenVerifier;
 import pl.aiwcorpo.mcp.broker.auth.TokenRejectedException;
 import pl.aiwcorpo.mcp.broker.event.InvalidationPublisher;
+import pl.aiwcorpo.mcp.broker.oauth.RateLimiter;
 import pl.aiwcorpo.mcp.broker.secret.SecretStore;
 import pl.aiwcorpo.mcp.broker.secret.ServiceAccountKeys;
 import pl.aiwcorpo.mcp.broker.secret.SecretStoreUnavailableException;
@@ -75,11 +76,16 @@ public class CredentialService {
     private final Duration expiringThreshold;
     private final SubjectTokenVerifier subjectTokens;
     private final LostSecretSignal lostSecrets;
+    private final RateLimiter limiter;
+    private final int secretWritesLimit;
 
     public CredentialService(SystemRegistry systems, ConnectionRepository connections, SecretStore secrets,
             InvalidationPublisher invalidations, OAuthService oauth, SubjectTokenVerifier subjectTokens, AuditLog audit,
-            Clock clock, int cacheTtlSeconds, Duration expiringThreshold, LostSecretSignal lostSecrets) {
+            Clock clock, int cacheTtlSeconds, Duration expiringThreshold, LostSecretSignal lostSecrets, RateLimiter limiter,
+            int secretWritesLimit) {
         this.lostSecrets = lostSecrets;
+        this.limiter = limiter;
+        this.secretWritesLimit = secretWritesLimit;
         this.subjectTokens = subjectTokens;
         this.systems = systems;
         this.connections = connections;
@@ -244,6 +250,7 @@ public class CredentialService {
                 .system(systemId)
                 .credentialType(CredentialType.USER_SECRET.wire());
         try {
+            limiter.check("secret-write", caller.sub(), secretWritesLimit);
             ConfiguredSystem system = systems.find(systemId)
                     .filter(s -> s.supports(CredentialType.USER_SECRET))
                     .orElseThrow(() -> new InvalidRequestException("system does not accept user secrets"));
@@ -284,6 +291,12 @@ public class CredentialService {
             Stored stored = new Stored(replaced.connection().status(now, expiringThreshold), backendUser, expires, verified);
             entry.ok(!verified ? "secret_stored_unverified" : previous.isPresent() ? "secret_replaced" : "secret_stored");
             return stored;
+        } catch (RateLimitedException e) {
+            entry.denied("rate_limited", "rate_limited");
+            throw e;
+        } catch (RateLimitUnavailableException e) {
+            entry.error("rate_limit_unavailable", "upstream_unavailable");
+            throw e;
         } catch (SecretRejectedException e) {
             entry.denied(e.reason(), null);
             throw e;

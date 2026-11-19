@@ -396,7 +396,9 @@ class GenericRestUserSecretIntegrationTest {
         assertThat(env.bao("LIST", "secret/metadata/mcp/connections/" + pl.aiwcorpo.mcp.broker.secret.SecretKey.hashOf(sub) + "/", null)
                 .statusCode()).isEqualTo(404);
         assertThat(requests).isEmpty();
-        assertThat(connect(id, sub, "an-ordinary-token").status()).as("a header safe value is still stored").isEqualTo(200);
+        // Another user: the ten refused writes used up this user's secret-write limit (CC-256).
+        assertThat(connect(id, UUID.randomUUID().toString(), "an-ordinary-token").status()).as("a header safe value is still stored")
+                .isEqualTo(200);
     }
 
     @Test
