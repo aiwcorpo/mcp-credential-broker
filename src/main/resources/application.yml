@@ -66,6 +66,20 @@ spring:
       enabled: false
 
 management:
+  logging:
+    export:
+      otlp:
+        # Only traces are exported (MCP_OTLP_ENDPOINT); the OpenTelemetry starter would otherwise also try to export logs.
+        enabled: false
+  observations:
+    enable:
+      # Redis commands and scheduled tasks have no trace of a request to join; they would only add spans of their own.
+      lettuce: false
+      tasks: false
+  tracing:
+    baggage:
+      # Only the W3C trace context is read from a caller, never baggage.
+      enabled: false
   endpoints:
     web:
       exposure:

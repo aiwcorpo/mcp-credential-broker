@@ -64,6 +64,28 @@ The broker has two trust stores. `MCP_TLS_TRUSTSTORE` decides which client certi
 
 Other settings are in `src/main/resources/application.yml`.
 
+## Tracing
+
+Off by default; no collector is needed. Set `MCP_OTLP_ENDPOINT` to the OTLP/HTTP traces URL of your collector, with the path, for example
+`http://collector:4318/v1/traces`, and restart. Spans are exported under the service name `mcp-credential-broker`.
+
+- A W3C `traceparent` (and `tracestate`) on a request is continued: the span of the request is a child of the caller's span, so the
+  gateway's call to `POST /v1/credentials/resolve` joins the trace of the client request. A request without the header starts a trace.
+  Baggage is not read.
+- The broker sends no `traceparent` to OpenBao, the identity provider, Redis or a target system, and starts no span for those calls.
+- Of the traces that start at the broker 10 % are sampled (`MANAGEMENT_TRACING_SAMPLING_PROBABILITY`, 0.0 to 1.0); a trace the caller
+  marked as sampled is kept. Callers present a client certificate from the internal CA (the gateway, the portal, the offboarding job), and their trace context is trusted. Spring Boot propagates the trace context only while span export is on, so
+  `MANAGEMENT_TRACING_EXPORT_ENABLED=false` also stops it. `MANAGEMENT_OPENTELEMETRY_ENABLED=false` (the SDK and exporter) or
+  `MANAGEMENT_TRACING_EXPORT_ENABLED=false` (the spans) switches tracing off even when `MCP_OTLP_ENDPOINT` is set;
+  `management.tracing.enabled` has no effect in Spring Boot 4. Other exporter settings (headers, TLS bundle, timeouts, gRPC) are the Spring Boot properties under
+  `management.opentelemetry.tracing.export.otlp.*`.
+- While tracing is on, log lines carry the trace id and span id of the request they belong to.
+
+Recorded on the span of a request, and nothing else: HTTP method, route template (`/v1/connections/{system}/secret`, never the path with the
+real system or user), status, outcome and the exception class. No token, header, request or response body, secret, user id, `sub` or
+credential is recorded. Redis and scheduled-job spans are switched off. A request that ends in an exception no handler answers has it
+recorded on its span as Spring Boot does (type, message, stack); exception messages are held to the same rule as log lines.
+
 ## Build
 
 ```bash
