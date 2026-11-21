@@ -83,8 +83,10 @@ Off by default; no collector is needed. Set `MCP_OTLP_ENDPOINT` to the OTLP/HTTP
 
 Recorded on the span of a request, and nothing else: HTTP method, route template (`/v1/connections/{system}/secret`, never the path with the
 real system or user), status, outcome and the exception class. No token, header, request or response body, secret, user id, `sub` or
-credential is recorded. Redis and scheduled-job spans are switched off. A request that ends in an exception no handler answers has it
-recorded on its span as Spring Boot does (type, message, stack); exception messages are held to the same rule as log lines.
+credential is recorded. Redis and scheduled-job spans are switched off. A span of a request that ends in an exception has the exception
+class only: the message and stack trace are removed before export, as are the status description and any attribute that holds a URL
+(`http.url`, `url.full`, `http.target`, `url.query`). The `uri` tag keeps a route template without query or credentials; a value that is
+not a template (literal query or user info) becomes `unknown`; on a call to another system the tag is kept only if it contains a template variable.
 
 ## Build
 
