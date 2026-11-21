@@ -82,6 +82,7 @@ public final class TestEnvironment {
     public final PostgreSQLContainer postgres;
     public final GenericContainer<?> redis;
     public final GenericContainer<?> openbao;
+    public final TraceCollectorStub collector;
     public final HttpServer upstream;
     public final HttpServer confluenceUpstream;
     public final SystemRepository systems;
@@ -110,6 +111,7 @@ public final class TestEnvironment {
     private TestEnvironment() {
         try {
             workDir = Files.createTempDirectory("broker-it");
+            collector = new TraceCollectorStub();
             TestPki.writeKeyStore(pki.server("mcp-credential-broker", "localhost", "mcp-credential-broker.internal"),
                     workDir.resolve("keystore.p12"));
             pki.writeTrustStore(workDir.resolve("truststore.p12"));
@@ -315,6 +317,13 @@ public final class TestEnvironment {
         registry.add("MCP_OIDC_JWKS_URI", () -> upstreamUrl() + "/jwks");
         registry.add("MCP_GATEWAY_JWKS_FILE", () -> workDir.resolve("gateway-jwks.json").toString());
         registry.add("MCP_ALLOW_TEST_KEYS", () -> "true");
+        // Tracing on for every integration test; Spring Boot propagates the trace context only while span export is on, so the spans
+        // go to a stub collector.
+        registry.add("management.tracing.export.enabled", () -> "true");
+        registry.add("management.opentelemetry.enabled", () -> "true");
+        registry.add("management.tracing.sampling.probability", () -> "1.0");
+        registry.add("management.opentelemetry.tracing.export.otlp.endpoint", collector::endpoint);
+        registry.add("management.opentelemetry.tracing.export.schedule-delay", () -> "200ms");
         registry.add("broker.system-sync.interval", () -> "200ms");
         registry.add("broker.bff-token.token-url", idp::tokenUrl);
         registry.add("broker.bff-token.mfa-acr-values", () -> "urn:test:mfa");

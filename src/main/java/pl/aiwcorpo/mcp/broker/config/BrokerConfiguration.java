@@ -62,6 +62,8 @@ import pl.aiwcorpo.mcp.broker.system.SystemRegistry;
 import pl.aiwcorpo.mcp.broker.system.SystemRegistryRefreshJob;
 import pl.aiwcorpo.mcp.broker.system.SystemRepository;
 import pl.aiwcorpo.mcp.broker.system.UpstreamLimits;
+import pl.aiwcorpo.mcp.broker.tracing.RedactingSpanExporters;
+import pl.aiwcorpo.mcp.broker.tracing.RequestUrlFilter;
 import tools.jackson.databind.json.JsonMapper;
 
 @Configuration(proxyBeanMethods = false)
@@ -74,6 +76,16 @@ public class BrokerConfiguration {
 
     /** Trust material for outgoing TLS only; never consulted for client certificates. */
     public static final String OUTBOUND_SSL_BUNDLE = "broker-outbound";
+
+    @Bean
+    RequestUrlFilter requestUrlFilter() {
+        return new RequestUrlFilter();
+    }
+
+    @Bean
+    static RedactingSpanExporters redactingSpanExporters() {
+        return new RedactingSpanExporters();
+    }
 
     @Bean
     Clock clock() {
