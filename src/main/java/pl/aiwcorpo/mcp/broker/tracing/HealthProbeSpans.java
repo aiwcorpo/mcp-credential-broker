@@ -9,13 +9,13 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.server.observation.ServerRequestObservationContext;
 
 /**
- * Container and Kubernetes health probes run every few seconds and would otherwise be most of the exported spans, each a trace of its
- * own. Only the span is dropped: the {@code http.server.requests} metric of the probe stays, which is why the observation itself is not
- * disabled. The decision is made on the real request path (the decoded, normalised servlet path that routing sees), because the
- * {@code uri} tag of a probe is not reliable: a request refused before it reaches a handler (no client certificate, the public port) has
- * no route template and carries {@code UNKNOWN}. As an observation filter this class marks the request with a high cardinality key (a
- * low cardinality one would become a metric tag); as a span exporting predicate it keeps the marked spans back. Only
- * {@code /actuator/health} and {@code /actuator/health/**} match, nothing that merely starts with that text.
+ * Kubernetes HTTP probes of the health endpoint run every few seconds and would otherwise be most of the exported spans, each a trace of
+ * its own. Only the span is dropped: the {@code http.server.requests} metric of the probe stays, which is why the observation itself is
+ * not disabled. The decision is made on the request path, not on the {@code uri} tag. As an observation filter this class marks the
+ * request with a high cardinality key (a low cardinality one would become a metric tag); as a span exporting predicate it keeps the
+ * marked spans back. Only the canonical {@code /actuator/health} and {@code /actuator/health/**} match: the raw request URI must equal
+ * the decoded, normalised path, so {@code //actuator/health}, {@code /x/../actuator/health}, {@code /actuator/health;a=b} and
+ * {@code /actuator/%68ealth} are traced like any request.
  */
 public final class HealthProbeSpans implements ObservationFilter, SpanExportingPredicate {
 
@@ -39,6 +39,9 @@ public final class HealthProbeSpans implements ObservationFilter, SpanExportingP
             return false;
         }
         String path = request.getServletPath();
-        return path.equals("/actuator/health") || path.startsWith("/actuator/health/");
+        if (!path.equals("/actuator/health") && !path.startsWith("/actuator/health/")) {
+            return false;
+        }
+        return request.getRequestURI().equals(request.getContextPath() + path);
     }
 }

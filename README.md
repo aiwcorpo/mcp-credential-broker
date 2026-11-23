@@ -79,8 +79,9 @@ Off by default; no collector is needed. Set `MCP_OTLP_ENDPOINT` to the OTLP/HTTP
   `MANAGEMENT_TRACING_EXPORT_ENABLED=false` (the spans) switches tracing off even when `MCP_OTLP_ENDPOINT` is set;
   `management.tracing.enabled` has no effect in Spring Boot 4. Other exporter settings (headers, TLS bundle, timeouts, gRPC) are the Spring Boot properties under
   `management.opentelemetry.tracing.export.otlp.*`.
-- Requests for `/actuator/health` and `/actuator/health/**` export no span. The `http.server.requests` metric still counts them. The match is
-  on the request path, nothing else (`/actuator/healthx` is traced).
+- An HTTP probe of `/actuator/health` exports no span; the `http.server.requests` metric still counts it. Only the canonical path
+  `/actuator/health` or `/actuator/health/...` matches; a path with `//`, `..`, `;` or percent-encoding in it is traced like any request.
+  The Compose and Helm health checks of the broker are TCP connects and create no span.
 - While tracing is on, log lines carry the trace id and span id of the request they belong to.
 
 Recorded on the span of a request, and nothing else: HTTP method, route template (`/v1/connections/{system}/secret`, never the path with the

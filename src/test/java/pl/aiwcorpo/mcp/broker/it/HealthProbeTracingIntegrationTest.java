@@ -72,18 +72,26 @@ class HealthProbeTracingIntegrationTest {
         assertThat(exported(traceId)).as(path).isEqualTo(expected);
     }
 
-    private double requests() {
-        return meters.find("http.server.requests").timers().stream().mapToDouble(Timer::count).sum();
+    private long healthRequests() {
+        return meters.find("http.server.requests").tag("uri", "/actuator/health").timers().stream().mapToLong(Timer::count).sum();
     }
 
     @Test
     void aHealthProbeIsNotExportedButIsCounted() throws Exception {
         SSLContext caller = env.pki.clientContext(env.gatewayClient);
-        double before = requests();
+        long before = healthRequests();
         assertExported("/actuator/health", caller, false);
         assertExported("/actuator/health/liveness", caller, false);
-        assertThat(requests()).isGreaterThan(before);
-        assertThat(meters.find("http.server.requests").tag("uri", "/actuator/health").timers()).isNotEmpty();
+        assertThat(healthRequests()).isGreaterThan(before);
+    }
+
+    @Test
+    void aPathThatOnlyNormalisesToTheHealthPathIsStillExported() throws Exception {
+        SSLContext caller = env.pki.clientContext(env.gatewayClient);
+        for (String path : List.of("//actuator/health", "/actuator//health", "/x/../actuator/health", "/x/..;/actuator/health",
+                "/actuator/./health", "/actuator/health;a=b", "/actuator/%68ealth", "/actuator/%2e/health", "/v1/../actuator/health")) {
+            assertExported(path, caller, true);
+        }
     }
 
     @Test

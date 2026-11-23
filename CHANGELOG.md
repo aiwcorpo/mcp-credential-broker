@@ -3,6 +3,14 @@
 The broker ships as a container image (`ghcr.io/aiwcorpo/mcp-credential-broker`); the version in `pom.xml` follows SemVer. Local and
 integration builds tag the image `m6-<short sha>`.
 
+## Unreleased
+
+- OpenTelemetry tracing, off by default. Set `MCP_OTLP_ENDPOINT` (the OTLP/HTTP traces URL of a collector, with the path) and restart to
+  export spans. A request that carries a `traceparent` from the gateway or the portal continues that trace; a request without one starts
+  a trace that is sampled at `MANAGEMENT_TRACING_SAMPLING_PROBABILITY` (10 % by default). Spans carry method, route template, status and
+  exception class only, never tokens, secrets, user ids, URLs with a query, exception messages or stack traces (README, "Tracing"). HTTP
+  probes of `/actuator/health` export no span (the metric stays). Nothing changes while the variable is unset.
+
 ## 2.2.0 - 2026-11-19
 
 Built on `mcp-contracts` 7.2.0. Secret writes are rate limited per user; the release also carries hardening of the target system checks, the
