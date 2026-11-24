@@ -76,6 +76,9 @@ public class AuditLog {
         private String username;
         private String backendUser;
         private String client;
+        private String principalType;
+        private String actorSub;
+        private String actorClient;
         private String server;
         private String tool;
         private Long policyRevision;
@@ -96,6 +99,17 @@ public class AuditLog {
             this.sub = sub;
             this.username = username;
             this.client = client;
+            return this;
+        }
+
+        /**
+         * Who is behind {@code sub} when it is not a human (CC-264): {@code agent}, or {@code delegated} with the acting agent.
+         * A human is never written. Only claims of a verified token are passed here.
+         */
+        public Entry principal(pl.aiwcorpo.mcp.broker.auth.InternalJwtClaims claims) {
+            this.principalType = claims.pty();
+            this.actorSub = claims.act() == null ? null : claims.act().sub();
+            this.actorClient = claims.act() == null ? null : claims.act().azp();
             return this;
         }
 
@@ -177,7 +191,7 @@ public class AuditLog {
         private void emit(String outcome) {
             Instant now = clock.instant();
             AuditEvent line = new AuditEvent(TS.format(now.truncatedTo(ChronoUnit.MILLIS)), requestId, "broker",
-                    componentId, event, sub, username, backendUser, client, server, tool, policyRevision,
+                    componentId, event, sub, username, backendUser, client, principalType, actorSub, actorClient, server, tool, policyRevision,
                     credentialType, decision, reason, outcome, errorCode, kvVersion, expiresAt,
                     Math.max(0, now.toEpochMilli() - start.toEpochMilli()));
             audit.info(serialize(line));

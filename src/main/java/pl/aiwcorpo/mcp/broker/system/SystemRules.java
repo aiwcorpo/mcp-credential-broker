@@ -19,6 +19,18 @@ public final class SystemRules {
     private SystemRules() {
     }
 
+    /**
+     * The rule of a write (admin API, import), not of a load: a stored row can lose service-account through a writer that does
+     * not know the flag (an older instance, a rollback), and refusing to load it would take the system away from every human.
+     * At load the flag is dropped instead, see {@link SystemAdapters#build}.
+     */
+    public static void checkAgentsFlag(SystemDefinition system) {
+        if (system.agentsAllowed() && !system.supportedTypes().contains(CredentialType.SERVICE_ACCOUNT)) {
+            throw new SystemRejectedException("agents_allowed_without_service_account",
+                    "agentsAllowed needs service-account in supportedTypes");
+        }
+    }
+
     public static void check(SystemDefinition system) {
         if (SystemIds.isReserved(system.id())) {
             throw new SystemRejectedException("system_reserved", "the system id is reserved");

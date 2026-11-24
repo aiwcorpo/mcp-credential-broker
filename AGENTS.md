@@ -28,7 +28,7 @@ formatter step.
 
 - `src/test/java/.../broker/it/`: integration tests (`*IntegrationTest`, Testcontainers). Everything else under
   `src/test` runs without Docker.
-- `src/main/resources/db/migration/`: Flyway `V1`..`V11`. Never edit an applied migration; add the next number.
+- `src/main/resources/db/migration/`: Flyway `V1`..`V13`. Never edit an applied migration; add the next number.
 - `deploy/`: standalone Compose install of the broker. `deploy/certs/` is git-ignored; nothing goes in there in a commit.
 - `.run/`: IntelliJ run configuration against the dev stack of `mcp-platform-dev`.
 

@@ -10,7 +10,7 @@ import com.fasterxml.jackson.annotation.JsonPropertyOrder;
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder({"ts", "requestId", "component", "componentId", "event", "sub", "username", "backendUser", "client",
-        "server", "tool", "policyRevision", "credentialType", "decision", "reason", "outcome",
+        "principalType", "actorSub", "actorClient", "server", "tool", "policyRevision", "credentialType", "decision", "reason", "outcome",
         "errorCode", "kvVersion", "expiresAt", "latencyMs"})
 public record AuditEvent(
         String ts,
@@ -22,6 +22,9 @@ public record AuditEvent(
         String username,
         String backendUser,
         String client,
+        String principalType,
+        String actorSub,
+        String actorClient,
         String server,
         String tool,
         Long policyRevision,

@@ -138,6 +138,14 @@ class SystemAdminIntegrationTest {
         return body;
     }
 
+    private ObjectNode serviceAccountBody(boolean agentsAllowed) {
+        ObjectNode body = Contracts.JSON.createObjectNode();
+        body.put("baseUrl", env.upstreamUrl()).put("adapter", "generic-rest");
+        body.putArray("supportedTypes").add("service-account");
+        body.put("defaultType", "service-account").put("secretScheme", "Bearer").put("agentsAllowed", agentsAllowed);
+        return body;
+    }
+
     private ObjectNode jiraBody(String baseUrl) {
         ObjectNode body = Contracts.JSON.createObjectNode();
         body.put("baseUrl", baseUrl).put("adapter", "atlassian-dc").put("product", "jira");
@@ -328,6 +336,83 @@ class SystemAdminIntegrationTest {
         assertThat(create(newId(), badTimeout).status()).as("more than 10 minutes").isEqualTo(400);
         badTimeout.put("timeout", "30s");
         assertThat(create(newId(), badTimeout).status()).as("not ISO 8601").isEqualTo(400);
+    }
+
+    @Test
+    void agentsAllowedIsOffUnlessSetAndRoundTripsOnAServiceAccountSystem() {
+        String id = newId();
+        ObjectNode withoutFlag = serviceAccountBody(false);
+        withoutFlag.remove("agentsAllowed");
+        BrokerClient.Response created = create(id, withoutFlag);
+        assertThat(created.status()).isEqualTo(200);
+        assertThat(created.json().path("agentsAllowed").booleanValue()).isFalse();
+        assertThat(Contracts.brokerSchemaErrors("SystemAdminView", created.json())).isEmpty();
+
+        BrokerClient.Response enabled = replace(id, serviceAccountBody(true), created.header("ETag"));
+        assertThat(enabled.status()).isEqualTo(200);
+        assertThat(enabled.json().path("agentsAllowed").booleanValue()).isTrue();
+        assertThat(get(id).json().path("agentsAllowed").booleanValue()).isTrue();
+        assertThat(env.systems.find(id)).hasValueSatisfying(system -> assertThat(system.agentsAllowed()).isTrue());
+
+        ObjectNode omitted = serviceAccountBody(true);
+        omitted.remove("agentsAllowed");
+        assertThat(replace(id, omitted, enabled.header("ETag")).json().path("agentsAllowed").booleanValue())
+                .as("a replace without the field is a replace with false").isFalse();
+    }
+
+    @Test
+    void agentsAllowedThatIsNullIsAMalformedRequest() {
+        ObjectNode body = serviceAccountBody(false);
+        body.putNull("agentsAllowed");
+        assertThat(create(newId(), body).status()).isEqualTo(400);
+    }
+
+    @Test
+    void agentsAllowedWithoutServiceAccountIsRejectedWithItsReason() {
+        ObjectNode body = jiraBody("https://jira.test");
+        body.put("agentsAllowed", true);
+        BrokerClient.Response refused = create(newId(), body);
+        assertThat(refused.status()).isEqualTo(422);
+        assertThat(refused.json().path("error").stringValue()).isEqualTo("system_rejected");
+        assertThat(refused.json().path("reason").stringValue()).isEqualTo("agents_allowed_without_service_account");
+        assertThat(Contracts.brokerSchemaErrors("SystemRejected", refused.json())).isEmpty();
+    }
+
+    @Test
+    void turningAgentsAllowedOnNeedsAFreshMfaAndTurningItOffDoesNot() {
+        String id = newId();
+        String etag = create(id, serviceAccountBody(false)).header("ETag");
+        String stale = tokens.bffAdmin(adminSub, "root", Instant.now().minusSeconds(3600));
+
+        BrokerClient.Response refused = put(id, serviceAccountBody(true), Map.of("If-Match", etag), stale);
+        assertThat(refused.status()).isEqualTo(401);
+        assertThat(refused.json().path("error").stringValue()).isEqualTo("step_up_required");
+        assertThat(get(id).json().path("agentsAllowed").booleanValue()).as("nothing changed").isFalse();
+
+        BrokerClient.Response enabled = replace(id, serviceAccountBody(true), etag);
+        assertThat(enabled.status()).isEqualTo(200);
+
+        BrokerClient.Response disabled = put(id, serviceAccountBody(false), Map.of("If-Match", enabled.header("ETag")), stale);
+        assertThat(disabled.status()).isEqualTo(200);
+        assertThat(disabled.json().path("agentsAllowed").booleanValue()).isFalse();
+    }
+
+    @Test
+    void aReplaceThatTurnsAgentsOffAndChangesAnythingElseStillNeedsAFreshMfa() {
+        String id = newId();
+        BrokerClient.Response enabled = create(id, serviceAccountBody(true));
+        String stale = tokens.bffAdmin(adminSub, "root", Instant.now().minusSeconds(3600));
+
+        ObjectNode moved = serviceAccountBody(false);
+        moved.put("timeout", "PT30S");
+        assertThat(put(id, moved, Map.of("If-Match", enabled.header("ETag")), stale).status()).isEqualTo(401);
+
+        ObjectNode stillOn = serviceAccountBody(true);
+        assertThat(put(id, stillOn, Map.of("If-Match", enabled.header("ETag")), stale).status())
+                .as("no change of the flag is no exemption").isEqualTo(401);
+        assertThat(put(id, serviceAccountBody(false), Map.of("If-Match", "\"stale-etag-value\""), stale).status())
+                .as("an If-Match that is not the current etag is no exemption").isEqualTo(401);
+        assertThat(get(id).json().path("agentsAllowed").booleanValue()).isTrue();
     }
 
     @Test

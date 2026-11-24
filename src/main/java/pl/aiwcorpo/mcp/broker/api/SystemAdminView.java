@@ -8,7 +8,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record SystemAdminView(String system, String displayName, String baseUrl, String adapter, String product, List<String> supportedTypes,
         String defaultType, String secretScheme, String revokeUrl, String timeout, String exchangeAudience, String userSecretScheme,
-        Oauth oauth, Whoami whoami, ServiceAccountKeySummary serviceAccountKey) {
+        Oauth oauth, Whoami whoami, ServiceAccountKeySummary serviceAccountKey, boolean agentsAllowed) {
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Whoami(String path, String usernameField) {

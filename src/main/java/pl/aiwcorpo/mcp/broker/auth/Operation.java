@@ -24,7 +24,7 @@ public record Operation(String operationId, String method, Pattern path, Set<Str
     }
 
     public static final Operation RESOLVE = new Operation("resolveCredential", "POST",
-            Pattern.compile("^/v1/credentials/resolve$"), Set.of(GATEWAY), false, InternalJwtVerifier.ToolClaim.REQUIRED, "credential_resolve");
+            Pattern.compile("^/v1/credentials/resolve$"), Set.of(GATEWAY), false, InternalJwtVerifier.ToolClaim.TOOL_OR_RESOURCE, "credential_resolve");
     public static final Operation PUT_SECRET = new Operation("putSecret", "PUT",
             Pattern.compile("^/v1/connections/[^/]+/secret$"), Set.of(PORTAL_BFF), false, InternalJwtVerifier.ToolClaim.FORBIDDEN, "connection_change");
     public static final Operation LIST_SYSTEMS = new Operation("listSystems", "GET",
@@ -90,6 +90,24 @@ public record Operation(String operationId, String method, Pattern path, Set<Str
             START_OAUTH, COMPLETE_OAUTH, GET_AUTHENTICATOR, DELETE_AUTHENTICATOR, START_ENROLLMENT, CONFIRM_ENROLLMENT,
             VERIFY_CODE, INVALIDATE_CODES, RESET_AUTHENTICATOR, PURGE_USER, LIST_ADMIN_SYSTEMS, GET_ADMIN_SYSTEM, PUT_ADMIN_SYSTEM,
             DELETE_ADMIN_SYSTEM, GET_SERVICE_ACCOUNT_KEY, PUT_SERVICE_ACCOUNT_KEY, DELETE_SERVICE_ACCOUNT_KEY);
+
+    /**
+     * What the broker answers a gateway token with {@code pty} on this operation (CC-261), or null when it is served. The
+     * contract allows a principal that is not a human on resolve (agent and delegated) and on the three authenticator calls of
+     * the gateway (delegated only: an agent has no authenticator). Everywhere else the token is refused, so a new operation
+     * never starts serving agents by accident. The refusal on the other operations is a deliberate tightening beyond the
+     * contract: only {@code GET /v1/systems} is reachable by the gateway among them, and the gateway calls it with the service
+     * variant, so no contract-conformant caller meets it.
+     */
+    public String refusalForPrincipal(String pty) {
+        if (pty == null || this == RESOLVE) {
+            return null;
+        }
+        if (this == GET_AUTHENTICATOR || this == VERIFY_CODE || this == INVALIDATE_CODES) {
+            return InternalJwtClaims.PTY_AGENT.equals(pty) ? "principal_not_eligible" : null;
+        }
+        return "forbidden";
+    }
 
     private static final Pattern SYSTEM_IN_PATH = Pattern.compile("^/v1/(?:connections|admin/systems)/([^/;]+)(?:/|$)");
 

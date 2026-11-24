@@ -10,6 +10,26 @@ integration builds tag the image `m6-<short sha>`.
   a trace that is sampled at `MANAGEMENT_TRACING_SAMPLING_PROBABILITY` (10 % by default). Spans carry method, route template, status and
   exception class only, never tokens, secrets, user ids, URLs with a query, exception messages or stack traces (README, "Tracing"). HTTP
   probes of `/actuator/health` export no span (the metric stays). Nothing changes while the variable is unset.
+- Built on `mcp-contracts` 8.0.0 (CC-260, CC-261, CC-264). Update the broker before the gateway starts to emit the new claims; a
+  gateway that sends `resource`, `pty` or `act` to a broker that does not know them gets 401 for every call. Migration `V13` adds
+  `target_system.agents_allowed` (default false) and runs at start.
+- The internal JWT may carry `resource` (the URI of a `resources/read`; `resolve` takes exactly one of `tool` and `resource`), `pty`
+  (`agent` or `delegated`) and `act` (`{sub, azp}`, exactly with `delegated`). Anything else, such as `pty: user`, an unknown value,
+  `act` without `delegated` or `delegated` without `act`, is `401`. Without `pty` nothing changes.
+- A token with `pty: agent` can resolve only `token-exchange` (the token of the agent is exchanged) and `service-account` for a
+  system with `agentsAllowed: true`. `user-oauth`, `user-secret` and a `service-account` system without the flag answer
+  `403 principal_not_eligible` before OpenBao, PostgreSQL or the IdP are asked. `GET /v1/authenticator`,
+  `POST /v1/authenticator/verify` and `POST /v1/authenticator/invalidate-codes` answer an agent the same way; for `pty: delegated`
+  they work by the `sub` of the human and `resolve` allows every type. Any other operation the gateway can reach (`GET /v1/systems`
+  with a user token) refuses a token with `pty` with `403 forbidden`.
+- `agentsAllowed` (default `false`) on `PUT /v1/admin/systems/{system}` and in the admin view. `true` without `service-account` in
+  `supportedTypes` is `422 system_rejected` (`agents_allowed_without_service_account`). Turning it on is an ordinary write with a
+  fresh MFA; a replace whose only change is `true` to `false` needs none. Enabling it hands the shared service-account key to every
+  agent the gateway lets through, and in the target system agent and human are indistinguishable: the audit tells them apart.
+  Turning it off reaches the other instances within `broker.system-sync.interval` (5 s). A stored row that has the flag without
+  `service-account` (written by an older instance) is still served to humans; the flag is ignored with a warning.
+- Audit events of `resolve` and of the authenticator calls carry `principalType` (`agent` or `delegated`) and, for `delegated`,
+  `actorSub` and `actorClient`; a human call is written as before. Refusals carry the reason `principal_not_eligible`.
 
 ## 2.2.0 - 2026-11-19
 

@@ -80,6 +80,37 @@ public final class TestTokens {
         return signGateway(claims.build());
     }
 
+    /**
+     * User variant with claims of CC-260 added: {@code extra} is applied over the standard claims, a null value removes one.
+     * The standard claims carry no tool, so a test names the tool or the resource itself.
+     */
+    public String gatewayUserWithClaims(String sub, String username, String requestId, Map<String, Object> extra) {
+        Instant now = Instant.now();
+        Map<String, Object> claims = new java.util.LinkedHashMap<>();
+        claims.put("iss", GATEWAY_ISSUER);
+        claims.put("aud", "mcp-credential-broker");
+        claims.put("use", "call");
+        claims.put("sub", sub);
+        claims.put("usr", username);
+        claims.put("grp", List.of("mcp-jira-read"));
+        claims.put("azp", "claude-code");
+        claims.put("rid", requestId);
+        claims.put("prv", 7L);
+        claims.put("iat", now.getEpochSecond());
+        claims.put("exp", now.getEpochSecond() + 60);
+        claims.put("jti", UUID.randomUUID().toString());
+        extra.forEach((name, value) -> {
+            if (value == null) {
+                claims.remove(name);
+            } else {
+                claims.put(name, value);
+            }
+        });
+        JWTClaimsSet.Builder builder = new JWTClaimsSet.Builder();
+        claims.forEach(builder::claim);
+        return signGateway(builder.build());
+    }
+
     /** Service variant (CC-030), accepted only for GET /v1/systems. */
     public String gatewayService(String requestId) {
         Instant now = Instant.now();
