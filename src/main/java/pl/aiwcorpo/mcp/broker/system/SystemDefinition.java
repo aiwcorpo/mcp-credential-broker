@@ -35,7 +35,17 @@ public record SystemDefinition(
         String etag,
         String clientRevision,
         String displayName,
-        Whoami whoami) {
+        Whoami whoami,
+        boolean agentsAllowed) {
+
+    /** Without the agents flag: no autonomous agent gets the shared credential of the system. */
+    public SystemDefinition(String id, URI baseUrl, String adapter, String product, List<CredentialType> supportedTypes,
+            CredentialType defaultType, CredentialScheme secretScheme, Oauth oauth, Integer secretVersion, Duration timeout,
+            String exchangeAudience, CredentialScheme userSecretScheme, BrokerProperties.Deployment deployment, String etag,
+            String clientRevision, String displayName, Whoami whoami) {
+        this(id, baseUrl, adapter, product, supportedTypes, defaultType, secretScheme, oauth, secretVersion, timeout,
+                exchangeAudience, userSecretScheme, deployment, etag, clientRevision, displayName, whoami, false);
+    }
 
     /** How a generic-rest system names the owner of a user secret: {@code GET baseUrl+path}, the name in {@code usernameField}. */
     public record Whoami(String path, String usernameField) {
@@ -72,22 +82,27 @@ public record SystemDefinition(
 
     public SystemDefinition withEtag(String newEtag) {
         return new SystemDefinition(id, baseUrl, adapter, product, supportedTypes, defaultType, secretScheme, oauth, secretVersion,
-                timeout, exchangeAudience, userSecretScheme, deployment, newEtag, clientRevision, displayName, whoami);
+                timeout, exchangeAudience, userSecretScheme, deployment, newEtag, clientRevision, displayName, whoami, agentsAllowed);
     }
 
     public SystemDefinition withSecretVersion(Integer version) {
         return new SystemDefinition(id, baseUrl, adapter, product, supportedTypes, defaultType, secretScheme, oauth, version,
-                timeout, exchangeAudience, userSecretScheme, deployment, etag, clientRevision, displayName, whoami);
+                timeout, exchangeAudience, userSecretScheme, deployment, etag, clientRevision, displayName, whoami, agentsAllowed);
     }
 
     public SystemDefinition withClientRevision(String revision) {
         return new SystemDefinition(id, baseUrl, adapter, product, supportedTypes, defaultType, secretScheme, oauth, secretVersion,
-                timeout, exchangeAudience, userSecretScheme, deployment, etag, revision, displayName, whoami);
+                timeout, exchangeAudience, userSecretScheme, deployment, etag, revision, displayName, whoami, agentsAllowed);
+    }
+
+    public SystemDefinition withAgentsAllowed(boolean allowed) {
+        return new SystemDefinition(id, baseUrl, adapter, product, supportedTypes, defaultType, secretScheme, oauth, secretVersion,
+                timeout, exchangeAudience, userSecretScheme, deployment, etag, clientRevision, displayName, whoami, allowed);
     }
 
     public SystemDefinition withTimeout(Duration newTimeout) {
         return new SystemDefinition(id, baseUrl, adapter, product, supportedTypes, defaultType, secretScheme, oauth, secretVersion,
-                newTimeout, exchangeAudience, userSecretScheme, deployment, etag, clientRevision, displayName, whoami);
+                newTimeout, exchangeAudience, userSecretScheme, deployment, etag, clientRevision, displayName, whoami, agentsAllowed);
     }
 
     /** Whether the other definition points to the same places with the same client: what decides if connections survive. */

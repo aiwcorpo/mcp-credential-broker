@@ -70,6 +70,6 @@ public class SystemAdapters {
         return new SystemRegistry.ConfiguredSystem(id, config, adapter instanceof SystemAdapter whoami ? whoami : null,
                 exchanger,
                 adapter instanceof ServiceAccountSource source ? source : null, definition.etag(), definition.clientRevision(),
-                definition.displayName());
+                definition.displayName(), definition.agentsAllowed());
     }
 }

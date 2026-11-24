@@ -28,7 +28,8 @@ public record SystemAdminRequest(
         @Size(min = 1, max = 255) String exchangeAudience,
         CredentialScheme userSecretScheme,
         @Valid Oauth oauth,
-        @Valid Whoami whoami) {
+        @Valid Whoami whoami,
+        Boolean agentsAllowed) {
 
     /** How a generic-rest system names the owner of a user secret (C4 SystemWhoami). */
     public record Whoami(

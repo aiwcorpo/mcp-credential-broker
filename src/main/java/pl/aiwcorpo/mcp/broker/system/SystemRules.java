@@ -32,6 +32,10 @@ public final class SystemRules {
                 throw new SystemRejectedException("credential_types_mixed", single.wire() + " cannot be combined with other types");
             }
         }
+        if (system.agentsAllowed() && !types.contains(CredentialType.SERVICE_ACCOUNT)) {
+            throw new SystemRejectedException("agents_allowed_without_service_account",
+                    "agentsAllowed needs service-account in supportedTypes");
+        }
         boolean userTypes = types.stream().anyMatch(USER_TYPES::contains);
         String adapter = system.adapter();
         if ("generic-rest".equals(adapter) && types.contains(CredentialType.USER_OAUTH)) {

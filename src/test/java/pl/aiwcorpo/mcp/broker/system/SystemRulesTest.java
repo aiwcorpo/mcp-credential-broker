@@ -46,6 +46,25 @@ class SystemRulesTest {
     }
 
     @Test
+    void agentsAllowedNeedsServiceAccountAmongTheSupportedTypes() {
+        SystemDefinition userSecret = system("notes", "generic-rest", List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET,
+                CredentialScheme.BEARER, null);
+        assertThat(reasonOf(userSecret.withAgentsAllowed(true))).isEqualTo("agents_allowed_without_service_account");
+        assertThat(reasonOf(userSecret)).isNull();
+
+        SystemDefinition serviceAccount = system("notes", "generic-rest", List.of(CredentialType.SERVICE_ACCOUNT),
+                CredentialType.SERVICE_ACCOUNT, CredentialScheme.BEARER, null);
+        assertThat(reasonOf(serviceAccount.withAgentsAllowed(true))).isNull();
+    }
+
+    @Test
+    void agentsAllowedIsNotMeantForTokenExchange() {
+        SystemDefinition exchange = system("notes", "opensearch", List.of(CredentialType.TOKEN_EXCHANGE), CredentialType.TOKEN_EXCHANGE,
+                CredentialScheme.BEARER, CLIENT);
+        assertThat(reasonOf(exchange.withAgentsAllowed(true))).isEqualTo("agents_allowed_without_service_account");
+    }
+
+    @Test
     void theAdapterMustFitTheCredentialTypes() {
         assertThat(reasonOf(system("notes", "generic-rest", List.of(CredentialType.USER_OAUTH), CredentialType.USER_OAUTH,
                 CredentialScheme.BEARER, CLIENT))).isEqualTo("credential_type_not_supported_by_adapter");

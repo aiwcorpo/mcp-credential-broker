@@ -130,7 +130,9 @@ public class SystemAdminService {
 
     public Stored put(Caller.PortalUser caller, String id, SystemAdminRequest request, String ifMatch, String ifNoneMatch) {
         requireAdmin(caller);
-        requireFreshMfa(caller);
+        if (!onlyTurnsAgentsOff(id, request, ifMatch)) {
+            requireFreshMfa(caller);
+        }
         AuditLog.Entry entry = entry(caller);
         try {
             return write(caller, id, request, ifMatch, ifNoneMatch, entry);
@@ -142,6 +144,28 @@ public class SystemAdminService {
                 entry.error(e instanceof StaleKeyNotRemovedException ? "secret_store_unavailable" : "system_change_failed", "upstream_unavailable");
             }
             throw e;
+        }
+    }
+
+    /**
+     * Taking agent access away is never blocked by the MFA check (CC-261): a replace of the current configuration whose only
+     * difference is {@code agentsAllowed} going from true to false needs no fresh MFA. Anything else, including a new client
+     * secret, still does.
+     */
+    private boolean onlyTurnsAgentsOff(String id, SystemAdminRequest request, String ifMatch) {
+        if (ifMatch == null || Boolean.TRUE.equals(request.agentsAllowed())
+                || request.oauth() != null && request.oauth().clientSecret() != null) {
+            return false;
+        }
+        try {
+            SystemDefinition previous = repository.find(id).orElse(null);
+            if (previous == null || !previous.agentsAllowed() || !previous.etag().equals(etagOf(ifMatch))) {
+                return false;
+            }
+            SystemDefinition candidate = definition(id, request, previous);
+            return candidate.equals(previous.withAgentsAllowed(false).withEtag(null).withSecretVersion(null).withClientRevision(null));
+        } catch (SystemAdminException e) {
+            return false;
         }
     }
 
@@ -687,7 +711,8 @@ public class SystemAdminService {
                 request.secretScheme(), oauth, null, timeout,
                 request.exchangeAudience(), userScheme, previous == null ? null : previous.deployment(), null, null,
                 request.displayName(), request.whoami() == null ? null
-                        : new SystemDefinition.Whoami(request.whoami().path(), request.whoami().usernameField()));
+                        : new SystemDefinition.Whoami(request.whoami().path(), request.whoami().usernameField()),
+                Boolean.TRUE.equals(request.agentsAllowed()));
     }
 
     /** An address the broker itself calls: also refused when it points at the broker host or its link. */
@@ -774,6 +799,6 @@ public class SystemAdminService {
                         client.authorizeUrl() == null ? null : client.authorizeUrl().toString(),
                         client.tokenUrl() == null ? null : client.tokenUrl().toString(), client.scopes(), system.clientSecretSet()),
                 system.whoami() == null ? null : new SystemAdminView.Whoami(system.whoami().path(), system.whoami().usernameField()),
-                keySummary(system));
+                keySummary(system), system.agentsAllowed());
     }
 }
