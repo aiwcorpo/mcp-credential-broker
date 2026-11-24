@@ -24,7 +24,7 @@ public record Operation(String operationId, String method, Pattern path, Set<Str
     }
 
     public static final Operation RESOLVE = new Operation("resolveCredential", "POST",
-            Pattern.compile("^/v1/credentials/resolve$"), Set.of(GATEWAY), false, InternalJwtVerifier.ToolClaim.REQUIRED, "credential_resolve");
+            Pattern.compile("^/v1/credentials/resolve$"), Set.of(GATEWAY), false, InternalJwtVerifier.ToolClaim.TOOL_OR_RESOURCE, "credential_resolve");
     public static final Operation PUT_SECRET = new Operation("putSecret", "PUT",
             Pattern.compile("^/v1/connections/[^/]+/secret$"), Set.of(PORTAL_BFF), false, InternalJwtVerifier.ToolClaim.FORBIDDEN, "connection_change");
     public static final Operation LIST_SYSTEMS = new Operation("listSystems", "GET",

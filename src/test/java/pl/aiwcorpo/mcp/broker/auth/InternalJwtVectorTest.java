@@ -45,11 +45,12 @@ import tools.jackson.databind.JsonNode;
  */
 class InternalJwtVectorTest {
 
-    private static final Set<String> PROTOCOL_METHODS = Set.of("initialize", "server/discover", "tools/list", "ping");
+    private static final Set<String> PROTOCOL_METHODS = Set.of("initialize", "server/discover", "tools/list", "resources/list",
+            "resources/templates/list", "ping");
 
     static Stream<Arguments> vectors() {
         List<Resource> files = Contracts.vectors("jwt");
-        assertThat(files).hasSizeGreaterThanOrEqualTo(75);
+        assertThat(files).hasSizeGreaterThanOrEqualTo(90);
         return files.stream().map(file -> Arguments.of(file.getFilename(), read(file)));
     }
 
@@ -69,11 +70,12 @@ class InternalJwtVectorTest {
         boolean jsonRpc = "jsonrpc".equals(request.path("kind").stringValue());
         String method = request.path("method").stringValue();
         boolean toolsCall = jsonRpc && "tools/call".equals(method);
+        boolean resourcesRead = jsonRpc && "resources/read".equals(method);
         boolean serviceAllowed;
         ToolClaim toolClaim;
         if (jsonRpc) {
             serviceAllowed = PROTOCOL_METHODS.contains(method);
-            toolClaim = toolsCall ? ToolClaim.REQUIRED : ToolClaim.FORBIDDEN;
+            toolClaim = toolsCall ? ToolClaim.REQUIRED : resourcesRead ? ToolClaim.TOOL_OR_RESOURCE : ToolClaim.FORBIDDEN;
         } else if (request.path("path").stringValue().startsWith("/.well-known/")) {
             // Endpoints of an MCP server: the broker has none. Only tokens whose use is neither call nor policy-data
             // say something about the broker; the rest belongs to the server receivers (policy-data is covered
@@ -95,8 +97,14 @@ class InternalJwtVectorTest {
         try {
             InternalJwtClaims claims = subject.verify(token, xRequestId, serviceAllowed, toolClaim);
             reason = toolsCall && !request.path("toolName").stringValue().equals(claims.tool()) ? "tool_mismatch" : null;
+            if (resourcesRead) {
+                // The server compares the claim with params.uri (CC-260); the verifier only checks that it may be there.
+                reason = claims.resource() == null ? "resource_missing"
+                        : !claims.resource().equals(request.path("uri").stringValue()) ? "resource_mismatch" : null;
+            }
         } catch (TokenRejectedException e) {
-            reason = e.reason();
+            // A server has no tool to miss at resources/read; the broker's rule for "neither" is the closest check.
+            reason = resourcesRead && e.reason().equals("tool_missing") ? "resource_missing" : e.reason();
         }
         String expectedReason = expected.path("valid").asBoolean() ? null : expected.path("reason").stringValue();
         if ("adapter".equals(verifier.path("receiverMode").asString(null))) {

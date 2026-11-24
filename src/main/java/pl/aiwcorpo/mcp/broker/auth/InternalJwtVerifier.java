@@ -38,10 +38,12 @@ public class InternalJwtVerifier {
     private static final Pattern GROUP_NAME = Pattern.compile("^mcp-[A-Za-z0-9][A-Za-z0-9._-]*$");
     private static final Pattern TOOL_NAME = Pattern.compile("^[a-z][a-z0-9]*(_[a-z0-9]+)*$");
     private static final Pattern COMPONENT_ID = Pattern.compile("^mcp-[a-z0-9]+(-[a-z0-9]+)*$");
+    /** ResourceUri of common.schema.json (CC-258), at most 2100 characters. */
+    private static final Pattern RESOURCE_URI = Pattern.compile("^[a-z][a-z0-9]{1,30}(?:\\+[a-z][a-z0-9.+-]{0,30})?://[!-~]{1,2000}$");
 
     private static final Set<String> COMMON_CLAIMS = Set.of("iss", "aud", "use", "sub", "grp", "rid", "prv", "iat", "exp", "jti");
     private static final Set<String> USER_REQUIRED = union(COMMON_CLAIMS, Set.of("usr", "azp"));
-    private static final Set<String> USER_ALLOWED = union(USER_REQUIRED, Set.of("tool", "mfa"));
+    private static final Set<String> USER_ALLOWED = union(USER_REQUIRED, Set.of("tool", "mfa", "resource", "pty", "act"));
 
     /**
      * SHA-256 of the SPKI of every EC key published in mcp-contracts test-vectors/keys (gateway A and B,
@@ -53,12 +55,14 @@ public class InternalJwtVerifier {
             "c679efaec91adf76e792b3d56d1d59d5da3a3a6c4378da690c9c00f6ceff010a",
             "8a264c8d907f48620d4f5963d2e5250766b5845cd5263677554575041e86de2f");
 
-    /** Rule for the {@code tool} claim of the user variant (CC-038). */
+    /** Rule for the {@code tool} and {@code resource} claims of the user variant (CC-038, CC-260). */
     public enum ToolClaim {
-        /** tools/call and the broker's resolve: the call is for one tool. */
+        /** tools/call and the authenticator calls of the gateway: the call is for one tool, and carries no resource. */
         REQUIRED,
-        /** Protocol methods and GET /v1/systems: no tool is being called. */
-        FORBIDDEN
+        /** Protocol methods and GET /v1/systems: neither a tool nor a resource. */
+        FORBIDDEN,
+        /** The broker's resolve: exactly one of tool (tools/call) and resource (resources/read). */
+        TOOL_OR_RESOURCE
     }
 
     private final String issuer;
@@ -147,11 +151,8 @@ public class InternalJwtVerifier {
         if (service && !serviceVariantAllowed) {
             throw new TokenRejectedException("service_token_not_allowed");
         }
-        if (!service && toolClaim == ToolClaim.REQUIRED && verified.tool() == null) {
-            throw new TokenRejectedException("tool_missing");
-        }
-        if (!service && toolClaim == ToolClaim.FORBIDDEN && verified.tool() != null) {
-            throw new TokenRejectedException("tool_not_allowed");
+        if (!service) {
+            checkCallTarget(verified, toolClaim);
         }
         // Accepted up to and including the second exp + skew, on each instance's own clock, so the jti is kept one second
         // longer than that and one more skew for an instance whose clock is behind this one.
@@ -160,6 +161,29 @@ public class InternalJwtVerifier {
             throw new TokenRejectedException("replayed_jti");
         }
         return verified;
+    }
+
+    private static void checkCallTarget(InternalJwtClaims claims, ToolClaim rule) {
+        if (rule != ToolClaim.TOOL_OR_RESOURCE && claims.resource() != null) {
+            throw new TokenRejectedException("resource_not_allowed");
+        }
+        switch (rule) {
+            case REQUIRED -> {
+                if (claims.tool() == null) {
+                    throw new TokenRejectedException("tool_missing");
+                }
+            }
+            case FORBIDDEN -> {
+                if (claims.tool() != null) {
+                    throw new TokenRejectedException("tool_not_allowed");
+                }
+            }
+            case TOOL_OR_RESOURCE -> {
+                if (claims.tool() == null && claims.resource() == null) {
+                    throw new TokenRejectedException("tool_missing");
+                }
+            }
+        }
     }
 
     /**
@@ -249,8 +273,37 @@ public class InternalJwtVerifier {
                 || mfa.doubleValue() != mfa.longValue())) {
             throw new TokenRejectedException("invalid_claims");
         }
+        String resource = null;
+        if (claims.containsKey("resource")) {
+            resource = string(claims, "resource", 2100);
+            if (tool != null || !RESOURCE_URI.matcher(resource).matches()) {
+                throw new TokenRejectedException("invalid_claims");
+            }
+        }
+        String pty = null;
+        if (claims.containsKey("pty")) {
+            pty = claims.get("pty") instanceof String value ? value : null;
+            if (!InternalJwtClaims.PTY_AGENT.equals(pty) && !InternalJwtClaims.PTY_DELEGATED.equals(pty)) {
+                throw new TokenRejectedException("invalid_claims");
+            }
+        }
+        boolean delegated = InternalJwtClaims.PTY_DELEGATED.equals(pty);
+        if (delegated != claims.containsKey("act")) {
+            throw new TokenRejectedException("invalid_claims");
+        }
+        InternalJwtClaims.Actor actor = delegated ? actor(claims.get("act")) : null;
         return new InternalJwtClaims(sub, usr, grp, azp, tool,
-                (String) claims.get("rid"), ((Number) claims.get("prv")).longValue(), (String) claims.get("jti"), false);
+                (String) claims.get("rid"), ((Number) claims.get("prv")).longValue(), (String) claims.get("jti"), false,
+                resource, pty, actor);
+    }
+
+    private static InternalJwtClaims.Actor actor(Object value) {
+        if (!(value instanceof Map<?, ?> act) || !act.keySet().equals(Set.of("sub", "azp"))) {
+            throw new TokenRejectedException("invalid_claims");
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> fields = (Map<String, Object>) act;
+        return new InternalJwtClaims.Actor(string(fields, "sub", 255), string(fields, "azp", 255));
     }
 
     private static void commonShape(Map<String, Object> claims) {
