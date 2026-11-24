@@ -95,7 +95,9 @@ public record Operation(String operationId, String method, Pattern path, Set<Str
      * What the broker answers a gateway token with {@code pty} on this operation (CC-261), or null when it is served. The
      * contract allows a principal that is not a human on resolve (agent and delegated) and on the three authenticator calls of
      * the gateway (delegated only: an agent has no authenticator). Everywhere else the token is refused, so a new operation
-     * never starts serving agents by accident.
+     * never starts serving agents by accident. The refusal on the other operations is a deliberate tightening beyond the
+     * contract: only {@code GET /v1/systems} is reachable by the gateway among them, and the gateway calls it with the service
+     * variant, so no contract-conformant caller meets it.
      */
     public String refusalForPrincipal(String pty) {
         if (pty == null || this == RESOLVE) {

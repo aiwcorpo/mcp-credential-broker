@@ -10,6 +10,7 @@ import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import pl.aiwcorpo.mcp.broker.credential.CredentialScheme;
 import pl.aiwcorpo.mcp.broker.credential.CredentialType;
+import tools.jackson.databind.annotation.JsonDeserialize;
 
 /**
  * C4 SystemAdminRequest. Unknown properties are rejected by strict JSON binding. The URLs stay strings: whether http is
@@ -29,7 +30,7 @@ public record SystemAdminRequest(
         CredentialScheme userSecretScheme,
         @Valid Oauth oauth,
         @Valid Whoami whoami,
-        Boolean agentsAllowed) {
+        @JsonDeserialize(using = StrictBoolean.class) Boolean agentsAllowed) {
 
     /** How a generic-rest system names the owner of a user secret (C4 SystemWhoami). */
     public record Whoami(

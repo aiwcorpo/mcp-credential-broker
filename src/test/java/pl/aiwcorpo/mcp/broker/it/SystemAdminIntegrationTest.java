@@ -361,6 +361,13 @@ class SystemAdminIntegrationTest {
     }
 
     @Test
+    void agentsAllowedThatIsNullIsAMalformedRequest() {
+        ObjectNode body = serviceAccountBody(false);
+        body.putNull("agentsAllowed");
+        assertThat(create(newId(), body).status()).isEqualTo(400);
+    }
+
+    @Test
     void agentsAllowedWithoutServiceAccountIsRejectedWithItsReason() {
         ObjectNode body = jiraBody("https://jira.test");
         body.put("agentsAllowed", true);

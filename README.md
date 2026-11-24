@@ -40,6 +40,8 @@ Target systems are not configuration. An administrator adds them in the portal (
 
 `whoami` checks a secret when the user stores it: a 2xx answer stores it, 401 or 403 rejects it (`secret_invalid`), anything else is `upstream_unavailable`. Addresses of a system are `https`. A change that moves a system to another address or OAuth client makes every connection to it `needs_reconnect`. Rules, API and storage details for developers: [CONTRIBUTING.md](CONTRIBUTING.md).
 
+Autonomous agents (tokens with `pty: agent` from the gateway) get no user credential: `user-secret` and `user-oauth` answer `403 principal_not_eligible`, as does the authenticator. They can use `token-exchange`, and the shared `service-account` key only of a system with `agentsAllowed` turned on (needs `service-account`; turning it on needs a fresh MFA). The change reaches every instance within 5 seconds. Upgrading to this release runs migration `V13` at start, and the broker has to be upgraded before the gateway starts sending `resource`, `pty` and `act`.
+
 ## Port
 
 | Port | What |

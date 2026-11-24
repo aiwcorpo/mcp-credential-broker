@@ -26,6 +26,8 @@ integration builds tag the image `m6-<short sha>`.
   `supportedTypes` is `422 system_rejected` (`agents_allowed_without_service_account`). Turning it on is an ordinary write with a
   fresh MFA; a replace whose only change is `true` to `false` needs none. Enabling it hands the shared service-account key to every
   agent the gateway lets through, and in the target system agent and human are indistinguishable: the audit tells them apart.
+  Turning it off reaches the other instances within `broker.system-sync.interval` (5 s). A stored row that has the flag without
+  `service-account` (written by an older instance) is still served to humans; the flag is ignored with a warning.
 - Audit events of `resolve` and of the authenticator calls carry `principalType` (`agent` or `delegated`) and, for `delegated`,
   `actorSub` and `actorClient`; a human call is written as before. Refusals carry the reason `principal_not_eligible`.
 
