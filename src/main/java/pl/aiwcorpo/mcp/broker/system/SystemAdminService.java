@@ -164,7 +164,9 @@ public class SystemAdminService {
             }
             SystemDefinition candidate = definition(id, request, previous);
             return candidate.equals(previous.withAgentsAllowed(false).withEtag(null).withSecretVersion(null).withClientRevision(null));
-        } catch (SystemAdminException e) {
+        } catch (RuntimeException e) {
+            // Only an exemption is at stake: any failure here sends the call down the normal path, with the MFA check and the
+            // audited error handling of the write.
             return false;
         }
     }
@@ -220,6 +222,7 @@ public class SystemAdminService {
         SystemDefinition candidate = definition(id, request, previous);
         try {
             SystemRules.check(candidate);
+            SystemRules.checkAgentsFlag(candidate);
         } catch (SystemRejectedException e) {
             throw SystemAdminException.rejected(e);
         }
