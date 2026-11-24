@@ -127,8 +127,26 @@ public class CallerAuthenticationFilter extends OncePerRequestFilter {
             write(response, 503, "upstream_unavailable");
             return;
         }
+        if (caller instanceof Caller.Gateway gateway && !gateway.claims().service()) {
+            String refusal = operation.refusalForPrincipal(gateway.claims().pty());
+            if (refusal != null) {
+                refusePrincipal(operation, gateway, refusal);
+                write(response, 403, refusal);
+                return;
+            }
+        }
         request.setAttribute(CALLER, caller);
         chain.doFilter(new LimitedBodyRequest(request, maxRequestBytes), response);
+    }
+
+    /** Before any controller or store: the token is valid, the principal it names may not use this operation. */
+    private void refusePrincipal(Operation operation, Caller.Gateway gateway, String reason) {
+        InternalJwtClaims claims = gateway.claims();
+        log.warn("Principal type {} refused for {}", claims.pty(), operation.operationId());
+        if (operation.auditEvent() != null) {
+            audit.event(operation.auditEvent(), gateway.requestId()).user(claims.sub(), claims.usr(), claims.azp())
+                    .gatewayContext(claims.tool(), claims.prv()).principal(claims).denied(reason, null);
+        }
     }
 
     private void deny(Operation operation, String requestId, String path, String reason, String errorCode) {

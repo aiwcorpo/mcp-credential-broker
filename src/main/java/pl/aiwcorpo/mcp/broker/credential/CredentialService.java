@@ -104,11 +104,15 @@ public class CredentialService {
         AuditLog.Entry entry = audit.event("credential_resolve", caller.requestId())
                 .user(user.sub(), user.usr(), user.azp())
                 .gatewayContext(user.tool(), user.prv())
+                .principal(user)
                 .system(systemId);
         try {
             ConfiguredSystem system = systems.find(systemId).orElseThrow(() -> SystemIds.isValid(systemId)
                     ? new SystemNotConfiguredException(systemId)
                     : new InvalidRequestException("unknown system"));
+            if (user.isAgent()) {
+                requireEligibleAgent(system, entry);
+            }
             if (scopes != null && new HashSet<>(scopes).size() != scopes.size()) {
                 throw new InvalidRequestException("scopes must be unique");
             }
@@ -131,6 +135,9 @@ public class CredentialService {
             }
             entry.ok("resolved");
             return resolved;
+        } catch (PrincipalNotEligibleException e) {
+            entry.denied("principal_not_eligible", null);
+            throw e;
         } catch (CredentialRequiredException e) {
             entry.denied("credential_required", "credential_required");
             throw e;
@@ -156,6 +163,20 @@ public class CredentialService {
         } catch (RuntimeException e) {
             entry.error(unavailableDatabase(e) ? "database_unavailable" : "internal_error", "upstream_unavailable");
             throw e;
+        }
+    }
+
+    /**
+     * An autonomous agent has no connection and no portal (CC-261): it may take a token exchange of its own identity, and the
+     * shared service-account credential only of a system that says so. Decided from the system definition alone, before the
+     * connection table, the secret store or the IdP are touched.
+     */
+    private static void requireEligibleAgent(ConfiguredSystem system, AuditLog.Entry entry) {
+        boolean exchange = system.supports(CredentialType.TOKEN_EXCHANGE);
+        boolean sharedKey = system.supports(CredentialType.SERVICE_ACCOUNT) && system.agentsAllowed();
+        if (!exchange && !sharedKey) {
+            entry.credentialType(system.config().defaultType().wire());
+            throw new PrincipalNotEligibleException();
         }
     }
 

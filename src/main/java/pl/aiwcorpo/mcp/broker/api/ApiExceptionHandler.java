@@ -31,6 +31,7 @@ import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
 import pl.aiwcorpo.mcp.broker.credential.CredentialRequiredException;
 import pl.aiwcorpo.mcp.broker.credential.InvalidRequestException;
 import pl.aiwcorpo.mcp.broker.credential.RateLimitUnavailableException;
+import pl.aiwcorpo.mcp.broker.credential.PrincipalNotEligibleException;
 import pl.aiwcorpo.mcp.broker.credential.RateLimitedException;
 import pl.aiwcorpo.mcp.broker.credential.SecretRejectedException;
 import pl.aiwcorpo.mcp.broker.credential.SystemNotConfiguredException;
@@ -87,6 +88,12 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(422).body(Map.of("error", "system_not_configured"));
     }
 
+    /** Audited by resolve (CC-261). */
+    @ExceptionHandler(PrincipalNotEligibleException.class)
+    ResponseEntity<Map<String, String>> principalNotEligible(PrincipalNotEligibleException e) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", "principal_not_eligible"));
+    }
+
     /** The IdP refused the token exchange; audited by resolve (CC-157). */
     @ExceptionHandler(ExchangeDeniedException.class)
     ResponseEntity<Map<String, String>> exchangeDenied(ExchangeDeniedException e) {
@@ -134,7 +141,7 @@ public class ApiExceptionHandler {
                     .system(Operation.systemOf(request.getRequestURI()));
             switch (request.getAttribute(CallerAuthenticationFilter.CALLER)) {
                 case Caller.Gateway gateway -> entry.user(gateway.claims().sub(), gateway.claims().usr(), gateway.claims().azp())
-                        .gatewayContext(gateway.claims().tool(), gateway.claims().prv());
+                        .gatewayContext(gateway.claims().tool(), gateway.claims().prv()).principal(gateway.claims());
                 case Caller.PortalUser user -> entry.user(user.sub(), user.username(), user.azp());
                 case null, default -> {
                 }

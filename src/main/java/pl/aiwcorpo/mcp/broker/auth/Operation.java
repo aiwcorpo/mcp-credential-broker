@@ -91,6 +91,22 @@ public record Operation(String operationId, String method, Pattern path, Set<Str
             VERIFY_CODE, INVALIDATE_CODES, RESET_AUTHENTICATOR, PURGE_USER, LIST_ADMIN_SYSTEMS, GET_ADMIN_SYSTEM, PUT_ADMIN_SYSTEM,
             DELETE_ADMIN_SYSTEM, GET_SERVICE_ACCOUNT_KEY, PUT_SERVICE_ACCOUNT_KEY, DELETE_SERVICE_ACCOUNT_KEY);
 
+    /**
+     * What the broker answers a gateway token with {@code pty} on this operation (CC-261), or null when it is served. The
+     * contract allows a principal that is not a human on resolve (agent and delegated) and on the three authenticator calls of
+     * the gateway (delegated only: an agent has no authenticator). Everywhere else the token is refused, so a new operation
+     * never starts serving agents by accident.
+     */
+    public String refusalForPrincipal(String pty) {
+        if (pty == null || this == RESOLVE) {
+            return null;
+        }
+        if (this == GET_AUTHENTICATOR || this == VERIFY_CODE || this == INVALIDATE_CODES) {
+            return InternalJwtClaims.PTY_AGENT.equals(pty) ? "principal_not_eligible" : null;
+        }
+        return "forbidden";
+    }
+
     private static final Pattern SYSTEM_IN_PATH = Pattern.compile("^/v1/(?:connections|admin/systems)/([^/;]+)(?:/|$)");
 
     /** System named in a connection path, or null; the audit log keeps only known system ids. */
