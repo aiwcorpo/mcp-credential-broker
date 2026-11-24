@@ -74,6 +74,7 @@ public class LegacySystemImport {
                 for (Map.Entry<String, BrokerProperties.SystemConfig> entry : new TreeMap<>(legacy).entrySet()) {
                     SystemDefinition definition = definition(entry.getKey(), entry.getValue());
                     SystemRules.check(definition);
+                    SystemRules.checkAgentsFlag(definition);
                     if (repository.insert(definition, clock.instant())) {
                         connections.adoptRevision(definition.id(), definition.clientRevision());
                         audit.event("admin_change", RequestIds.next(clock)).systemBeingChanged(definition.id()).ok("system_imported");

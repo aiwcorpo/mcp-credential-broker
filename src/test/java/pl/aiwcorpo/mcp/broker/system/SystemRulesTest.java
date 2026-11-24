@@ -26,6 +26,15 @@ class SystemRulesTest {
                 null, "etag-etag-etag", "revision-revision");
     }
 
+    private static String agentsReasonOf(SystemDefinition definition) {
+        try {
+            SystemRules.checkAgentsFlag(definition);
+            return null;
+        } catch (SystemRejectedException e) {
+            return e.reason();
+        }
+    }
+
     private static String reasonOf(SystemDefinition definition) {
         try {
             SystemRules.check(definition);
@@ -49,19 +58,20 @@ class SystemRulesTest {
     void agentsAllowedNeedsServiceAccountAmongTheSupportedTypes() {
         SystemDefinition userSecret = system("notes", "generic-rest", List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET,
                 CredentialScheme.BEARER, null);
-        assertThat(reasonOf(userSecret.withAgentsAllowed(true))).isEqualTo("agents_allowed_without_service_account");
-        assertThat(reasonOf(userSecret)).isNull();
+        assertThat(agentsReasonOf(userSecret.withAgentsAllowed(true))).isEqualTo("agents_allowed_without_service_account");
+        assertThat(agentsReasonOf(userSecret)).isNull();
 
         SystemDefinition serviceAccount = system("notes", "generic-rest", List.of(CredentialType.SERVICE_ACCOUNT),
                 CredentialType.SERVICE_ACCOUNT, CredentialScheme.BEARER, null);
-        assertThat(reasonOf(serviceAccount.withAgentsAllowed(true))).isNull();
+        assertThat(agentsReasonOf(serviceAccount.withAgentsAllowed(true))).isNull();
+        assertThat(reasonOf(userSecret.withAgentsAllowed(true))).as("a load does not refuse the row").isNull();
     }
 
     @Test
     void agentsAllowedIsNotMeantForTokenExchange() {
         SystemDefinition exchange = system("notes", "opensearch", List.of(CredentialType.TOKEN_EXCHANGE), CredentialType.TOKEN_EXCHANGE,
                 CredentialScheme.BEARER, CLIENT);
-        assertThat(reasonOf(exchange.withAgentsAllowed(true))).isEqualTo("agents_allowed_without_service_account");
+        assertThat(agentsReasonOf(exchange.withAgentsAllowed(true))).isEqualTo("agents_allowed_without_service_account");
     }
 
     @Test

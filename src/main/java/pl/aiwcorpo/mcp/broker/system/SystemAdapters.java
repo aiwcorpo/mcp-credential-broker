@@ -8,6 +8,7 @@ import java.util.function.Supplier;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import pl.aiwcorpo.mcp.broker.config.BrokerProperties;
+import pl.aiwcorpo.mcp.broker.credential.CredentialType;
 import pl.aiwcorpo.mcp.broker.secret.OAuthClientSecrets;
 import pl.aiwcorpo.mcp.broker.secret.SecretValue;
 import pl.aiwcorpo.mcp.broker.secret.ServiceAccountKeys;
@@ -40,6 +41,11 @@ public class SystemAdapters {
     }
 
     public SystemRegistry.ConfiguredSystem build(SystemDefinition definition) {
+        if (definition.agentsAllowed() && !definition.supportedTypes().contains(CredentialType.SERVICE_ACCOUNT)) {
+            log.warn("System {} has agentsAllowed without service-account (written by something other than this broker's admin API):"
+                    + " agents stay refused, humans are served", definition.id());
+            definition = definition.withAgentsAllowed(false);
+        }
         SystemRules.check(definition);
         BrokerProperties.SystemConfig config = definition.toConfig();
         String id = definition.id();

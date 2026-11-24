@@ -49,6 +49,9 @@ import pl.aiwcorpo.mcp.broker.support.AuditLines;
 import pl.aiwcorpo.mcp.broker.support.Contracts;
 import pl.aiwcorpo.mcp.broker.support.TestTokens;
 import pl.aiwcorpo.mcp.broker.system.ServiceAccountSource;
+import pl.aiwcorpo.mcp.broker.system.SystemDefinition;
+import pl.aiwcorpo.mcp.broker.system.SystemRejectedException;
+import pl.aiwcorpo.mcp.broker.system.SystemRules;
 import pl.aiwcorpo.mcp.broker.system.SystemRegistry;
 import pl.aiwcorpo.mcp.broker.system.TokenExchanger;
 import tools.jackson.databind.JsonNode;
@@ -63,6 +66,10 @@ class AgentEligibilityTest {
     private static final Instant NOW = Instant.parse("2026-10-27T12:00:00Z");
     private static final String RID = "0192d1b2-7c3a-7d4e-8f10-2a3b4c5d6e7f";
     private static final String SYSTEM = "desk";
+
+    /** Vectors about the admin write: the 422 rule is replayed here, the MFA rules by SystemAdminIntegrationTest. */
+    private static final List<String> ADMIN_VECTORS = List.of("agents-allowed-disabled-alone-no-mfa.json",
+            "agents-allowed-enabled-needs-fresh-mfa.json", "agents-allowed-without-service-account-422.json");
 
     private final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
     private final ConnectionRepository connections = mock(ConnectionRepository.class);
@@ -83,6 +90,8 @@ class AgentEligibilityTest {
         JsonNode input = vector.path("input");
         JsonNode expected = vector.path("expected");
         if (!input.has("operation")) {
+            assertThat(ADMIN_VECTORS).as("a vector without an operation must be known and replayed elsewhere").contains(name);
+            replayAdminVector(name, input, expected);
             return;
         }
         Map<String, Object> claims = claimsOf(input.path("claims"));
@@ -118,6 +127,20 @@ class AgentEligibilityTest {
         } else {
             assertThat(service.resolve(new Caller.Gateway(RID, verified), SYSTEM, null, subjectToken).type()).as(name).isEqualTo(type);
         }
+    }
+
+    private static void replayAdminVector(String name, JsonNode input, JsonNode expected) {
+        if (expected.path("status").asInt() != 422) {
+            return;
+        }
+        List<CredentialType> types = new java.util.ArrayList<>();
+        input.path("after").path("supportedTypes").forEach(type -> types.add(CredentialType.fromWire(type.stringValue()).orElseThrow()));
+        SystemDefinition definition = new SystemDefinition("desk", URI.create("https://desk.test"), "generic-rest", null, types,
+                types.get(0), CredentialScheme.BEARER, null, null, null, null, null, null, "etag-etag-etag", "revision-revision")
+                .withAgentsAllowed(input.path("after").path("agentsAllowed").booleanValue());
+        assertThatThrownBy(() -> SystemRules.checkAgentsFlag(definition)).as(name)
+                .isInstanceOfSatisfying(SystemRejectedException.class,
+                        e -> assertThat(e.reason()).isEqualTo(expected.path("reason").stringValue()));
     }
 
     @Test

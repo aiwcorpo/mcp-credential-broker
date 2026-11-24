@@ -36,6 +36,7 @@ class AgentPrincipalIntegrationTest {
     private static final TestEnvironment env = TestEnvironment.get();
     private static final String OPEN_DESK = "opendesk";
     private static final String CLOSED_DESK = "closeddesk";
+    private static final String FLAGGED_DESK = "flaggeddesk";
     private static final String RESOURCE = "opendesk://ticket/SD-1042";
 
     @DynamicPropertySource
@@ -47,6 +48,10 @@ class AgentPrincipalIntegrationTest {
     static void addSystems() {
         env.putSystem(desk(OPEN_DESK).withAgentsAllowed(true));
         env.putSystem(desk(CLOSED_DESK));
+        // A row an older instance left behind: the flag set, service-account gone.
+        env.putSystem(new SystemDefinition(FLAGGED_DESK, URI.create(env.upstreamUrl()), "generic-rest", null,
+                List.of(CredentialType.USER_SECRET), CredentialType.USER_SECRET, CredentialScheme.BEARER, null, null, null, null, null,
+                null, SystemDefinition.newToken(), SystemDefinition.newToken()).withAgentsAllowed(true));
         for (String id : List.of(OPEN_DESK, CLOSED_DESK)) {
             assertThat(env.bao("POST", "secret/data/mcp/service-accounts/" + id, "{\"data\":{\"value\":\"" + keyOf(id) + "\"}}")
                     .statusCode()).isEqualTo(200);
@@ -56,6 +61,7 @@ class AgentPrincipalIntegrationTest {
 
     @AfterAll
     static void removeSystems() {
+        env.removeSystem(FLAGGED_DESK);
         for (String id : List.of(OPEN_DESK, CLOSED_DESK)) {
             env.removeSystem(id);
             env.bao("DELETE", "secret/metadata/mcp/service-accounts/" + id, null);
@@ -133,6 +139,16 @@ class AgentPrincipalIntegrationTest {
         assertThat(refused.body()).isEqualTo("{\"error\":\"principal_not_eligible\"}");
         assertThat(AuditLines.of(output, rid)).singleElement()
                 .satisfies(event -> assertThat(event.path("reason").stringValue()).isEqualTo("principal_not_eligible"));
+    }
+
+    @Test
+    void aStoredRowWithAgentsAllowedButNoServiceAccountStaysServedToHumansAndRefusedToAgents() {
+        BrokerClient.Response human = resolve(FLAGGED_DESK, claims("tool", "get_ticket"), TestTokens.newRequestId());
+        assertThat(human.status()).as("served: the user has no connection, which is 409, not 422 system_not_configured").isEqualTo(409);
+
+        BrokerClient.Response agent = resolve(FLAGGED_DESK, claims("pty", "agent", "tool", "get_ticket"), TestTokens.newRequestId());
+        assertThat(agent.status()).isEqualTo(403);
+        assertThat(agent.body()).isEqualTo("{\"error\":\"principal_not_eligible\"}");
     }
 
     @Test
